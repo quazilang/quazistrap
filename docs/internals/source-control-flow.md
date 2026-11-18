@@ -104,9 +104,10 @@ order, matching lowering's resolved-target path. A resolved module or
 associated call (`module.f(...)`, `Type.f(...)`) without a receiver actual
 evaluates no namespace operand and schedules its actuals like a direct call.
 Enum constructors, receivers passed through a type name, and `free` (a
-separate destruction path) stay opaque. Generic, variadic,
-indirect, dynamic, foreign, unsafe and diverging calls remain opaque, as do
-calls with special lowering such as layout queries.
+separate destruction path) stay opaque. Generic targets follow the same
+schedule (lowering calls the specialization after the same actuals).
+Variadic, indirect, dynamic, foreign, unsafe and diverging calls remain
+opaque, as do calls with special lowering such as layout queries.
 
 Refinement is iterative and charges expansion to the existing aggregate budget.
 Completed wrappers are not scanned again as opaque regions, so an exposed `?`

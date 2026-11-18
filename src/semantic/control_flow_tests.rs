@@ -1510,3 +1510,45 @@ fn main() void {}
     ) && block.events.is_empty()));
     graph.validate().unwrap();
 }
+
+#[test]
+fn source_control_flow_invokes_generic_calls_in_declared_slot_order() {
+    let source = r#"
+fn pick[T](first: T, second: T) T { ret first; }
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn choose(value: Option[i32]) Option[i32] {
+    const chosen = pick(second = later(), first = step(value)?);
+    ret Some(chosen);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "choose")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let invoke = |needle: &str| {
+        let start = source.find(needle).unwrap();
+        graph
+            .blocks
+            .iter()
+            .position(|block| {
+                block.events.iter().any(
+                    |event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == start),
+                )
+            })
+            .unwrap_or_else(|| panic!("missing invoke {needle}"))
+    };
+    let pick = invoke("pick(second");
+    let first = invoke("step(value)?");
+    let second = invoke("later(), first");
+    assert!(reachable(graph, first).contains(&second));
+    assert!(!reachable(graph, second).contains(&first));
+    assert!(reachable(graph, second).contains(&pick));
+}

@@ -946,7 +946,6 @@ where
         let signature = self.analyzer.ownership_signature_index.get(name)?;
         let symbol = self.analyzer.resolve_symbol(name)?;
         if !signature.has_body
-            || signature.generic_template
             || signature.receiver.is_some() != receiver
             || signature.variadic.is_some()
             || signature.result == OwnershipResult::Never
