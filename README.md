@@ -55,6 +55,8 @@ borrowed. This corrects loan tracking within the existing ownership milestone.
 Project QZI builds now require every supported target to compile. The success
 summary identifies the artifact as `QZI`, and a failed build preserves any
 previous output. This fixes publication behavior within the existing plan.
+The dependency interface cache keys target-specific signatures by their content,
+so successive native builds can use different interfaces from the same QZI.
 On 2026-11-10 LSP reached 17/20: loader-backed navigation snapshots are
 cached while their inputs are unchanged and `scripts/check_lsp_performance.py`
 enforces measured latency targets (cold 150 ms, warm 0.6 ms in release).

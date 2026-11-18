@@ -83,7 +83,10 @@ pub fn materialize_qzi_interface(
     }
     let bundle = crate::bytecode::parse_qzi_interface(interface)?;
     let checksum = sha256_file(qzi_path)?;
-    let root = cache_root.join(checksum);
+    // A unified artifact can expose a different interface for each target.
+    let root = cache_root
+        .join(checksum)
+        .join(sha256_bytes(interface.as_bytes()));
     let src_dir = root.join("src");
     let entry = src_dir.join("mod.qz");
     if !entry.exists() {
@@ -759,6 +762,20 @@ mod tests {
         let gateway = fs::read_to_string(materialized.entry).expect("read gateway");
         assert!(gateway.contains("pub import ./types.Api;"));
         assert!(gateway.contains("import ./methods;"));
+
+        let alternate = interface.replace("i32;", "bool;");
+        let alternate = materialize_qzi_interface(
+            &root.join("cache"),
+            "library",
+            &qzi_path,
+            &alternate,
+        )
+        .expect("materialize alternate target interface");
+        assert_ne!(materialized.root, alternate.root);
+        let original = fs::read_to_string(materialized.src_dir.join("methods.qz")).unwrap();
+        let alternate = fs::read_to_string(alternate.src_dir.join("methods.qz")).unwrap();
+        assert!(original.contains("i32;"));
+        assert!(alternate.contains("bool;"));
 
         fs::remove_dir_all(root).expect("remove test directory");
     }
