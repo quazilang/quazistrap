@@ -21,6 +21,22 @@ pub(crate) enum ExpressionControl<'a> {
         evaluate_right_on: bool,
     },
     TryOperand(&'a Expr),
+    /// `name = value`: the named target is not evaluated; the value completes
+    /// before the target's previous value is replaced.
+    NamedAssignment {
+        name: &'a str,
+        target: &'a Expr,
+        value: &'a Expr,
+    },
+}
+
+/// The local or global name an assignment target spells, through groups.
+pub(crate) fn assignment_target_name(target: &Expr) -> Option<&str> {
+    match &target.node {
+        ExprKind::Ident(name) => Some(name),
+        ExprKind::Group(inner) => assignment_target_name(inner),
+        _ => None,
+    }
 }
 
 pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
@@ -48,6 +64,14 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
         },
         ExprKind::Binary { left, right, .. } => ExpressionControl::EagerBinary { left, right },
         ExprKind::Try { expr } => ExpressionControl::TryOperand(expr),
+        ExprKind::Assign { target, value } => match assignment_target_name(target) {
+            Some(name) => ExpressionControl::NamedAssignment {
+                name,
+                target,
+                value,
+            },
+            None => ExpressionControl::Opaque,
+        },
         _ => ExpressionControl::Opaque,
     }
 }

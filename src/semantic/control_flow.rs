@@ -117,6 +117,12 @@ pub enum OwnershipExpressionResult {
     Truth(Span),
     Boolean(bool),
     TryPayload(Span),
+    /// The named target receives the completed value. Releasing the previous
+    /// value, the store, moves and aliasing remain unverified.
+    NamedAssignment {
+        target: Span,
+        value: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -897,6 +903,19 @@ where
                     self.budget.charge(6, expression.span)?;
                     pending.push((right_entry, right, right_result));
                     pending.push((current, left, branch));
+                }
+                ExpressionControl::NamedAssignment { target, value, .. } => {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::NamedAssignment {
+                            target: target.span,
+                            value: value.span,
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(3, value.span)?;
+                    pending.push((current, value, complete));
                 }
                 ExpressionControl::TryOperand(operand) => {
                     let success = self.expression_result(

@@ -831,3 +831,72 @@ fn source_control_flow_refinement_is_iterative_bounded_and_cancellable() {
     assert!(matches!(cancelled, Err(crate::cancel::Cancelled)));
     assert_eq!(polls, 100);
 }
+
+#[test]
+fn source_control_flow_named_assignment_completes_its_value_first() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn assign(value: Option[i32]) Option[i32] {
+    var total = 0;
+    (total) = produce(value)? + later();
+    var pair = Pair { left: 0, right: 0 };
+    pair.left = later();
+    ret Some(total + pair.left);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "assign")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+    };
+    let target = source.find("(total) =").unwrap();
+    let store = block_with(&|event| {
+        matches!(event, OwnershipFlowEvent::ExpressionResult {
+            value: OwnershipExpressionResult::NamedAssignment { target: span, .. }, ..
+        } if span.start == target)
+    })
+    .expect("named assignment result");
+    let later = source.find("later();").unwrap();
+    let invoke_later = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == later),
+    )
+    .expect("the assigned value's calls are scheduled");
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    assert!(reachable(graph, invoke_later).contains(&store));
+    assert!(!reachable(graph, failure).contains(&store));
+    assert!(!reachable(graph, store).contains(&invoke_later));
+
+    // Field targets keep lowering's separate address/value order opaque.
+    let field_value = source.rfind("later();").unwrap();
+    assert!(
+        block_with(&|event| {
+            matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == field_value)
+        })
+        .is_none()
+    );
+}

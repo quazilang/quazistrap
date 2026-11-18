@@ -35,14 +35,6 @@ fn chunk_requires_generated_companions(chunk: &Chunk) -> bool {
     })
 }
 
-fn assignment_target_ident(expr: &Expr) -> Option<&str> {
-    match &expr.node {
-        ExprKind::Ident(name) => Some(name),
-        ExprKind::Group(inner) => assignment_target_ident(inner),
-        _ => None,
-    }
-}
-
 /// Find the source file path for a given span.
 fn source_file_for_span(span: Span, source_files: &[SourceFile]) -> String {
     source_files
@@ -9415,7 +9407,7 @@ impl<'a> FnCompiler<'a> {
 
             ExprKind::Assign { target, value } => {
                 self.mark_consumed_expr(value);
-                if let Some(name) = assignment_target_ident(target) {
+                if let ExpressionControl::NamedAssignment { name, .. } = expression_control(expr) {
                     let src = self.compile_expr(value);
                     if let Some(addr) = self.foreign_global_lvalue(target.span) {
                         self.store_lvalue(&addr, src);

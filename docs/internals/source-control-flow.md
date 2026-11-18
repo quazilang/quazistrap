@@ -60,6 +60,14 @@ expression's result: canonical boolean truthiness of the RHS, or a shortcut
 `false` for `&&` / `true` for `||`. The physical lowering consumes the same
 branch-polarity plan and normalizes integer operands' logical results to 0/1.
 
+An assignment whose target is a bare name, possibly grouped (`total = value`,
+`(total) = value`), evaluates no target operand. Its value completes first,
+then a `NamedAssignment` result names the target and value spans. Lowering
+selects the same form through the shared classification. The event does not
+certify releasing the previous value, the store, moves, or aliasing. Field,
+index and dereference targets remain opaque because lowering computes their
+address before the value.
+
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
 Success records payload extraction; failure returns from the current callable
@@ -91,7 +99,8 @@ its deferred graph. The edge does not identify the exact failing subexpression
 or prove which preceding effects occurred. A `?` on a conditionally unexecuted
 path can therefore introduce a conservative extra edge.
 
-Other calls, assignments, increment/decrement, guarded matches, fields/indexes and
+Other calls, assignments to places other than a bare name,
+increment/decrement, guarded matches, fields/indexes and
 aggregate initializers remain whole opaque regions. Controls nested inside
 these regions are not individually expanded. Multi-input iteration regions also
 remain opaque. Their internal branches and operand order require further shared
