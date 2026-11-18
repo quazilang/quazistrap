@@ -123,6 +123,15 @@ pub enum OwnershipExpressionResult {
         target: Span,
         value: Span,
     },
+    /// The named target's previous value is read; no operand is evaluated.
+    NamedTargetRead(Span),
+    /// The read target and completed value are combined and stored. Arithmetic
+    /// traps or panics, the store and aliasing remain unverified.
+    NamedCompoundAssignment {
+        op: CompoundAssignOp,
+        target: Span,
+        value: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -916,6 +925,35 @@ where
                     )?;
                     self.budget.charge(3, value.span)?;
                     pending.push((current, value, complete));
+                }
+                ExpressionControl::NamedCompoundAssignment { target, op, value } => {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::NamedCompoundAssignment {
+                            op: op.clone(),
+                            target: target.span,
+                            value: value.span,
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    let value_entry = self.block(scopes, value.span)?;
+                    let read = self.expression_result(
+                        target.span,
+                        OwnershipExpressionResult::NamedTargetRead(target.span),
+                        value_entry,
+                        scopes,
+                    )?;
+                    self.terminate(
+                        current,
+                        OwnershipFlowTerminator::Goto {
+                            target: read,
+                            exited_scopes: Vec::new(),
+                        },
+                        target.span,
+                    )?;
+                    self.budget.charge(3, value.span)?;
+                    pending.push((value_entry, value, complete));
                 }
                 ExpressionControl::TryOperand(operand) => {
                     let success = self.expression_result(

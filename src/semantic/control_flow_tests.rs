@@ -900,3 +900,75 @@ fn main() void {}
         .is_none()
     );
 }
+
+#[test]
+fn source_control_flow_named_compound_assignment_reads_target_before_value() {
+    let source = r#"
+fn produce(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn accumulate(value: Option[i32]) Option[i32] {
+    var total = 1;
+    total += produce(value)? * later();
+    ret Some(total);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "accumulate")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let read = block_with(&|event| {
+        matches!(
+            event,
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::NamedTargetRead(_),
+                ..
+            }
+        )
+    });
+    let store = block_with(&|event| {
+        matches!(
+            event,
+            OwnershipFlowEvent::ExpressionResult {
+                value: OwnershipExpressionResult::NamedCompoundAssignment {
+                    op: CompoundAssignOp::Add,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    let produce = source.find("produce(value)?").unwrap();
+    let invoke_produce = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == produce),
+    );
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    assert!(reachable(graph, read).contains(&invoke_produce));
+    assert!(reachable(graph, invoke_produce).contains(&store));
+    assert!(!reachable(graph, invoke_produce).contains(&read));
+    assert!(!reachable(graph, failure).contains(&store));
+}

@@ -5,7 +5,7 @@
 //! Operand control shared by physical lowering and source control-flow evidence.
 //! Unclassified expressions remain opaque; this is not an ownership effect model.
 
-use crate::parser::ast::{BinOpKind, Expr, ExprKind, Literal, UnaryOpKind};
+use crate::parser::ast::{BinOpKind, CompoundAssignOp, Expr, ExprKind, Literal, UnaryOpKind};
 use crate::semantic::OwnershipArgumentRole;
 
 pub(crate) enum ExpressionControl<'a> {
@@ -26,6 +26,13 @@ pub(crate) enum ExpressionControl<'a> {
     NamedAssignment {
         name: &'a str,
         target: &'a Expr,
+        value: &'a Expr,
+    },
+    /// `name op= value`: the named target's previous value is read before the
+    /// value is evaluated; the combined result is stored afterwards.
+    NamedCompoundAssignment {
+        target: &'a Expr,
+        op: &'a CompoundAssignOp,
         value: &'a Expr,
     },
 }
@@ -72,6 +79,11 @@ pub(crate) fn expression_control(expression: &Expr) -> ExpressionControl<'_> {
             },
             None => ExpressionControl::Opaque,
         },
+        ExprKind::CompoundAssign { target, op, value }
+            if assignment_target_name(target).is_some() =>
+        {
+            ExpressionControl::NamedCompoundAssignment { target, op, value }
+        }
         _ => ExpressionControl::Opaque,
     }
 }

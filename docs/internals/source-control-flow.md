@@ -64,9 +64,16 @@ An assignment whose target is a bare name, possibly grouped (`total = value`,
 `(total) = value`), evaluates no target operand. Its value completes first,
 then a `NamedAssignment` result names the target and value spans. Lowering
 selects the same form through the shared classification. The event does not
-certify releasing the previous value, the store, moves, or aliasing. Field,
-index and dereference targets remain opaque because lowering computes their
-address before the value.
+certify releasing the previous value, the store, moves, or aliasing.
+
+A compound assignment to a bare name (`total += value`) first records a
+`NamedTargetRead` of the target, matching lowering, which loads the previous
+value before it evaluates the value. After the value completes, a
+`NamedCompoundAssignment` result records the operator. Its arithmetic guards
+can panic and are not modeled as edges.
+
+Field, index and dereference targets of either form remain opaque because
+lowering computes their address before the value.
 
 An exposed `?` evaluates its operand once and branches on `TrySuccess`, a wrapper
 success-discriminant condition distinct from ordinary pointer truthiness.
