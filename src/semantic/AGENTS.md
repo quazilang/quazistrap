@@ -100,7 +100,9 @@ updates of dereference, field and single-index places (address operands, then
 value, then `PlaceUpdate`), single-index reads (object, index, `Index`) and
 field reads of non-name objects (object, `Field`) and enum variant constructors
 (payloads, `VariantConstructor`), calls through local function values
-and `dyn` methods (receiver, arguments, `IndirectInvoke`) and struct initializers (values in declaration
+and `dyn` methods (receiver, arguments, `IndirectInvoke`), and format calls
+(expanded template arguments, `FormatInvoke`; expansions are made outside the
+builder and the family is rebuilt) and struct initializers (values in declaration
 order, `StructInit`), array literals (elements, `ArrayLiteral`) and `match`
 (scrutinee, `MatchArm` branches, guard branches, arm, `Match`; no-match stops
 for values).

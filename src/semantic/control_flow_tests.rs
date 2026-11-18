@@ -1716,3 +1716,106 @@ fn main() void {}
     assert!(reachable(graph, second).contains(&dynamic));
     assert!(!reachable(graph, dynamic).contains(&first));
 }
+
+#[test]
+fn source_control_flow_format_calls_schedule_expanded_arguments() {
+    let source = r#"
+fn show(template: str, ...args: Display) void {}
+fn step(value: Option[i32]) Option[i32] { ret value; }
+fn later() i32 { ret 2; }
+fn report(value: Option[i32]) Option[i32] {
+    show("first {} then {later()}", step(value)?);
+    ret Some(1);
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "report")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let explicit = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("step(value)?")),
+    );
+    // Placeholder expressions are evaluated as regions of their own.
+    let placeholder = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Evaluate { spans, .. } if spans[0].start == at("later()}")),
+    );
+    let shown = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::FormatInvoke { span } if span.start == at("show(\"first")),
+    );
+    let failure = graph
+        .blocks
+        .iter()
+        .find_map(|block| match block.terminator {
+            OwnershipFlowTerminator::Branch {
+                condition: OwnershipBranchCondition::TrySuccess { .. },
+                else_target,
+                ..
+            } => Some(else_target),
+            _ => None,
+        })
+        .unwrap();
+    // Template order: the explicit `{}` argument, then the `{later()}` placeholder.
+    assert!(reachable(graph, explicit).contains(&placeholder));
+    assert!(!reachable(graph, placeholder).contains(&explicit));
+    assert!(reachable(graph, placeholder).contains(&shown));
+    assert!(!reachable(graph, failure).contains(&shown));
+    graph.validate().unwrap();
+}
+
+#[test]
+fn source_control_flow_nested_format_calls_expand_in_later_rounds() {
+    let source = r#"
+fn show(template: str, ...args: Display) void {}
+fn count(template: str, ...args: Display) i32 { ret 1; }
+fn later() i32 { ret 2; }
+fn report() void {
+    show("outer {}", count("inner {}", later()));
+}
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let graph = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "report")
+        .unwrap()
+        .control_flow
+        .as_deref()
+        .unwrap();
+    let block_with = |matches: &dyn Fn(&OwnershipFlowEvent) -> bool| {
+        graph
+            .blocks
+            .iter()
+            .position(|block| block.events.iter().any(matches))
+            .unwrap()
+    };
+    let at = |needle: &str| source.find(needle).unwrap();
+    let value = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later()))")),
+    );
+    let inner = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::FormatInvoke { span } if span.start == at("count(\"inner")),
+    );
+    let outer = block_with(
+        &|event| matches!(event, OwnershipFlowEvent::FormatInvoke { span } if span.start == at("show(\"outer")),
+    );
+    assert!(reachable(graph, value).contains(&inner));
+    assert!(reachable(graph, inner).contains(&outer));
+    assert!(!reachable(graph, inner).contains(&value));
+}

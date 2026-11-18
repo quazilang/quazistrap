@@ -7,7 +7,7 @@
 //! implicit runtime effects and typed accesses remain unverified; these graphs
 //! grant no ownership permission and are not artifact certificates.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::{
@@ -21,6 +21,14 @@ use crate::evaluation::{
 use crate::parser::ast::*;
 
 pub type OwnershipFlowBlockId = usize;
+
+/// Template expansions of format calls, keyed by call span; `None` when the
+/// call has no literal template (lowering then formats at run time).
+type FormatExpansions = HashMap<(usize, usize), Option<crate::parser::format::ExpandedFormatArgs>>;
+/// A format call the builder met without an expansion: its span and arguments.
+type FormatRequest = ((usize, usize), Vec<Expr>);
+/// Rebuilds of one family while nested format calls keep requesting expansions.
+const FORMAT_EXPANSION_ROUNDS: usize = 8;
 pub type OwnershipFlowScopeId = usize;
 
 #[derive(Debug, Clone)]
@@ -96,6 +104,13 @@ pub enum OwnershipFlowEvent {
     /// The direct source call at this span is reached after all actuals
     /// complete. Its result and storage effects remain opaque.
     Invoke { span: Span },
+    /// A call of a format function (`str_variadic`, e.g. `println`) after
+    /// the expanded template arguments complete in template order. Their
+    /// display conversions (which may run `Display` impls) and the callee's
+    /// effects remain opaque.
+    FormatInvoke {
+        span: Span,
+    },
     /// A call through a local function value or closure, reached after its
     /// positional arguments complete in source order. The target and its
     /// effects are unknown.
@@ -475,6 +490,7 @@ impl Analyzer {
             edges: 0,
         };
         let mut result = BTreeMap::new();
+        let mut expansions = FormatExpansions::new();
         for item in &program.items {
             checkpoint()?;
             let functions = match &item.node {
@@ -529,7 +545,34 @@ impl Analyzer {
                     );
                     return Ok(BTreeMap::new());
                 }
-                match build_family(self, &canonical, body, &mut budget, checkpoint) {
+                // Format calls are expanded outside the builder, which only
+                // borrows source and expansion trees; nested calls inside an
+                // expansion are requested by the following round.
+                let counters = (budget.nodes, budget.blocks, budget.edges);
+                let mut rounds = 0;
+                let built = loop {
+                    let built =
+                        build_family(self, &canonical, body, &expansions, &mut budget, checkpoint);
+                    let requests = match &built {
+                        Ok((_, requests)) if rounds < FORMAT_EXPANSION_ROUNDS => requests
+                            .iter()
+                            .filter(|(span, _)| !expansions.contains_key(span))
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                        _ => Vec::new(),
+                    };
+                    if requests.is_empty() {
+                        break built.map(|(graph, _)| graph);
+                    }
+                    for (span, args) in requests {
+                        checkpoint()?;
+                        let expansion = crate::parser::format::expand_format_call_args(&args);
+                        expansions.insert(span, expansion);
+                    }
+                    (budget.nodes, budget.blocks, budget.edges) = counters;
+                    rounds += 1;
+                };
+                match built {
                     Ok(graph) => {
                         result.insert(canonical, graph);
                     }
@@ -573,6 +616,8 @@ struct Sequence<'a> {
 struct Builder<'a, 'b, F> {
     graph: OwnershipControlFlow,
     closures: Vec<&'a Expr>,
+    expansions: &'a FormatExpansions,
+    format_requests: Vec<FormatRequest>,
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
@@ -591,13 +636,14 @@ struct RootTask<'a> {
     parent: Option<(usize, Span)>,
 }
 
-fn build_family<F>(
+fn build_family<'a, F>(
     analyzer: &Analyzer,
     caller: &str,
-    body: &Block,
+    body: &'a Block,
+    expansions: &'a FormatExpansions,
     budget: &mut Budget,
     checkpoint: &mut F,
-) -> FlowResult<Arc<OwnershipControlFlow>>
+) -> FlowResult<(Arc<OwnershipControlFlow>, Vec<FormatRequest>)>
 where
     F: FnMut() -> Result<(), Cancelled>,
 {
@@ -607,6 +653,7 @@ where
         parent: None,
     }]);
     let mut drafts = Vec::<(OwnershipControlFlow, Vec<(Span, usize)>)>::new();
+    let mut format_requests = Vec::new();
     while let Some(RootTask {
         root,
         depth,
@@ -627,6 +674,8 @@ where
                 deferred: Vec::new(),
             },
             closures: Vec::new(),
+            expansions,
+            format_requests: Vec::new(),
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
@@ -655,6 +704,7 @@ where
                 parent: Some((index, closure.span)),
             });
         }
+        format_requests.append(&mut builder.format_requests);
         drafts.push((builder.graph, Vec::new()));
     }
     let mut completed = vec![None; drafts.len()];
@@ -669,7 +719,10 @@ where
         }
         completed[index] = Some(Arc::new(graph));
     }
-    Ok(completed[0].take().expect("function graph"))
+    Ok((
+        completed[0].take().expect("function graph"),
+        format_requests,
+    ))
 }
 
 impl<'a, 'b, F> Builder<'a, 'b, F>
@@ -855,6 +908,31 @@ where
             return None;
         }
         self.scheduled_call_site(expression, false)
+    }
+
+    /// A direct call of a non-generic format function with positional
+    /// arguments, lowered by expanding its literal template.
+    fn format_call(&self, expression: &Expr, callee: &Expr, named_args: &[(String, Expr)]) -> bool {
+        if !named_args.is_empty() || !matches!(callee.node, ExprKind::Ident(_)) {
+            return false;
+        }
+        let Some(name) = self
+            .sites
+            .and_then(|sites| sites.get(&(expression.span.start, expression.span.end)))
+            .and_then(|site| site.target.as_ref())
+            .map(|(name, _)| name)
+        else {
+            return false;
+        };
+        name != "fmt.format"
+            && self.analyzer.resolve_symbol(name).is_some_and(|symbol| {
+                symbol.generic_params.is_empty()
+                    && !self.analyzer.is_runtime_panic(&symbol)
+                    && symbol
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute == "str_variadic")
+            })
     }
 
     /// `value(args...)` where `value` is a local or parameter holding a
@@ -1089,6 +1167,51 @@ where
                         scopes,
                         expression.span,
                     )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::Call {
+                        callee,
+                        args,
+                        named_args,
+                        ..
+                    } = &expression.node
+                        && !args.is_empty()
+                        && self.format_call(expression, callee, named_args) =>
+                {
+                    let key = (expression.span.start, expression.span.end);
+                    match self.expansions.get(&key) {
+                        Some(Some(expanded)) => {
+                            let span = expression.span;
+                            let invocation = self.block(scopes, span)?;
+                            self.graph.blocks[invocation]
+                                .events
+                                .push(OwnershipFlowEvent::FormatInvoke { span });
+                            self.terminate(
+                                invocation,
+                                OwnershipFlowTerminator::Opaque {
+                                    normal,
+                                    early_return: None,
+                                },
+                                span,
+                            )?;
+                            self.budget.charge(1 + expanded.args.len() * 3, span)?;
+                            self.schedule_sequence(
+                                &mut pending,
+                                current,
+                                expanded.args.iter().collect(),
+                                invocation,
+                                scopes,
+                                span,
+                            )?;
+                        }
+                        Some(None) => {
+                            self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                        }
+                        None => {
+                            self.format_requests.push((key, args.clone()));
+                            self.evaluate_opaque(current, &[expression], kind, normal, scopes)?;
+                        }
+                    }
                 }
                 ExpressionControl::Opaque
                     if let ExprKind::Call {

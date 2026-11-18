@@ -115,7 +115,20 @@ or parameter holding a function value or closure (`callback(a, b)`)
 evaluates its positional arguments in source order and records an
 `IndirectInvoke`: the target and its effects are unknown. A method call on a
 `dyn Trait` receiver evaluates the receiver, then its positional arguments,
-then records an `IndirectInvoke` for the vtable call. Variadic and foreign
+then records an `IndirectInvoke` for the vtable call.
+
+A direct call of a non-generic format function (`str_variadic`, such as
+`println`) with a literal template is lowered by expanding the template: the
+explicit arguments and placeholder expressions are evaluated in template
+order, then converted for display and passed to the callee. The graph
+schedules the expanded arguments and records a `FormatInvoke`; display
+conversions (which may run `Display` impls) and the callee stay opaque.
+Expansions are computed outside the builder, which only borrows source
+trees: a family is rebuilt with the requested expansions, up to
+`FORMAT_EXPANSION_ROUNDS` times for format calls nested inside expansions,
+restoring its budget counters before each rebuild. Calls without a literal
+template stay opaque, as do placeholder calls (analysis records no call site
+for them, so their region is evaluated whole). Other variadic and foreign
 calls remain opaque, as do the runtime panic and calls
 with special lowering such as layout queries.
 
