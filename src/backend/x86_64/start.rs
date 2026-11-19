@@ -25,6 +25,16 @@ pub struct StartStub {
     pub start_offset: usize,
 }
 
+/// CONTEXT offsets of the registers the crash report prints, in the order
+/// of `sections::CRASH_REGISTERS` (Linux `gregs` order).
+const WINDOWS_CONTEXT_REGISTERS: [i32; 18] = [
+    0xB8, 0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, // r8-r15
+    0xB0, 0xA8, 0xA0, 0x90, 0x88, 0x78, 0x80, 0x98, // rdi rsi rbp rbx rdx rax rcx rsp
+    0xF8, WINDOWS_CONTEXT_EFLAGS,                   // rip eflags
+];
+/// CONTEXT.EFlags is a 32-bit field.
+const WINDOWS_CONTEXT_EFLAGS: i32 = 0x44;
+
 impl StartStub {
     pub fn generate(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         if no_crash {
@@ -1159,189 +1169,166 @@ impl StartStub {
 
         // ── Labels for intra-stub references ──
         let mut print_bt_label = asm.create_label();
+        let mut write_label = asm.create_label();
+        let mut hex16_label = asm.create_label();
+        let mut symbolize_label = asm.create_label();
+        let mut overflow_handler_label = asm.create_label();
+
+        // Every routine below keeps rsp 16-byte aligned (with 32 bytes of
+        // shadow space) at each Win64 call: a routine entered by `call` has
+        // rsp = 8 (mod 16), so pushes plus `sub` must total 8 (mod 16).
 
         // ═══════════════════════════════════════════════════════
-        // __quazi_crash_handler_win
+        // __quazi_crash_handler_win (unhandled-exception filter)
         // ═══════════════════════════════════════════════════════
+        // Registered with SetUnhandledExceptionFilter, so exceptions that a
+        // structured handler catches (inside Windows or Wine, or in foreign
+        // code) never reach it. Register use: r15 stderr handle,
+        // r14 EXCEPTION_POINTERS*, r12/r13 backtrace walk, rbx/rsi/rdi
+        // scratch preserved by the Win32 calls.
         let crash_handler_idx = asm.instructions().len();
         asm.set_label(&mut fn_start).expect("label");
 
-        // Prologue
         emit!(asm.push(rbx));
+        emit!(asm.push(rsi));
+        emit!(asm.push(rdi));
         emit!(asm.push(r12));
         emit!(asm.push(r13));
         emit!(asm.push(r14));
         emit!(asm.push(r15));
-        emit!(asm.sub(rsp, 40i32));
+        emit!(asm.sub(rsp, 32i32)); // 8 + 56 + 32 = 96: aligned
 
-        // Save EXCEPTION_POINTERS* (rcx is caller-saved)
         emit!(asm.mov(r14, rcx));
 
-        // Extract exception info
-        emit!(asm.mov(rax, qword_ptr(r14))); // ExceptionRecord*
-        emit!(asm.mov(ebx, dword_ptr(rax))); // ExceptionCode
-        emit!(asm.mov(r12, qword_ptr(rax + 0x10))); // ExceptionAddress
-        emit!(asm.mov(rax, qword_ptr(r14 + 8))); // ContextRecord*
-        emit!(asm.mov(r13, qword_ptr(rax + 0xF8))); // Rip
+        // A fault while reporting (or in a second thread) ends the process
+        // at once instead of reporting again. The flag lives in the runtime
+        // state block (offset 88, docs/internals/runtime-state.md).
+        let mut first_report = asm.create_label();
+        lea_rip!(rax, "__quazi_runtime_state");
+        emit!(asm.lock().bts(dword_ptr(rax + 88i32), 0i32));
+        emit!(asm.jnc(first_report));
+        emit!(asm.mov(ecx, 101i32));
+        call_ext!("ExitProcess", RelocKind::Plt32);
+        emit!(asm.set_label(&mut first_report));
 
-        // Get stderr handle
         emit!(asm.mov(ecx, -12i32));
         call_ext!("GetStdHandle", RelocKind::Plt32);
         emit!(asm.mov(r15, rax));
 
         // "== CRASHED ==\n"
-        emit!(asm.mov(rcx, r15));
         lea_rip!(rdx, "__quazi_crash_header");
         emit!(asm.mov(r8d, 14i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.call(write_label));
 
-        // ── "fatal: exception 0x" + hex code ──
-        emit!(asm.mov(rcx, r15));
+        // "fatal: exception 0x" + 8 hex digits of ExceptionCode
         lea_rip!(rdx, "__quazi_fatal_exc");
         emit!(asm.mov(r8d, 19i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        // Format ebx as 8 hex digits
-        emit!(asm.mov(rbx, rbx)); // zero-extended from ebx
-        emit!(asm.mov(ecx, 8i32));
-        lea_rip!(r8, "__quazi_hex_buf");
-        emit!(asm.add(r8, 7i32));
-        let mut h1 = asm.create_label();
-        let mut s1 = asm.create_label();
-        emit!(asm.set_label(&mut h1));
-        emit!(asm.mov(rax, rbx));
-        emit!(asm.and(rax, 0x0Fi32));
-        emit!(asm.cmp(al, 10i32));
-        emit!(asm.jb(s1));
-        emit!(asm.add(al, 7i32));
-        emit!(asm.set_label(&mut s1));
-        emit!(asm.add(al, '0' as i32));
-        emit!(asm.mov(byte_ptr(r8), al));
-        emit!(asm.dec(r8));
-        emit!(asm.shr(rbx, 4i32));
-        emit!(asm.dec(ecx));
-        emit!(asm.jne(h1));
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(rax, qword_ptr(r14))); // ExceptionRecord*
+        emit!(asm.mov(ebx, dword_ptr(rax))); // ExceptionCode
+        emit!(asm.shl(rbx, 32i32));
+        emit!(asm.call(hex16_label));
         lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 8i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
         lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.call(write_label));
 
-        // ── "fault: 0x" + hex address ──
-        emit!(asm.mov(rcx, r15));
+        // "fault: 0x" + the faulting data address for access violations
+        // (ExceptionInformation[1]), otherwise the exception address.
         lea_rip!(rdx, "__quazi_fault");
         emit!(asm.mov(r8d, 9i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rbx, r12));
-        emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__quazi_hex_buf");
-        emit!(asm.add(r8, 15i32));
-        let mut h2 = asm.create_label();
-        let mut s2 = asm.create_label();
-        emit!(asm.set_label(&mut h2));
-        emit!(asm.mov(rax, rbx));
-        emit!(asm.and(rax, 0x0Fi32));
-        emit!(asm.cmp(al, 10i32));
-        emit!(asm.jb(s2));
-        emit!(asm.add(al, 7i32));
-        emit!(asm.set_label(&mut s2));
-        emit!(asm.add(al, '0' as i32));
-        emit!(asm.mov(byte_ptr(r8), al));
-        emit!(asm.dec(r8));
-        emit!(asm.shr(rbx, 4i32));
-        emit!(asm.dec(ecx));
-        emit!(asm.jne(h2));
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
+        let mut fault_is_address = asm.create_label();
+        emit!(asm.mov(rax, qword_ptr(r14)));
+        emit!(asm.mov(rbx, qword_ptr(rax + 0x10))); // ExceptionAddress
+        emit!(asm.cmp(dword_ptr(rax), 0xC000_0005u32 as i32));
+        emit!(asm.jne(fault_is_address));
+        emit!(asm.cmp(dword_ptr(rax + 0x18), 2i32)); // NumberParameters
+        emit!(asm.jb(fault_is_address));
+        emit!(asm.mov(rbx, qword_ptr(rax + 0x28))); // ExceptionInformation[1]
+        emit!(asm.set_label(&mut fault_is_address));
+        emit!(asm.call(hex16_label));
         lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
         lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.call(write_label));
 
-        // ── "rip: 0x" + hex RIP ──
-        emit!(asm.mov(rcx, r15));
+        // "rip: 0x" + ContextRecord->Rip and " in <function>"
         lea_rip!(rdx, "__quazi_rip");
         emit!(asm.mov(r8d, 7i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rbx, r13));
-        emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__quazi_hex_buf");
-        emit!(asm.add(r8, 15i32));
-        let mut h3 = asm.create_label();
-        let mut s3 = asm.create_label();
-        emit!(asm.set_label(&mut h3));
-        emit!(asm.mov(rax, rbx));
-        emit!(asm.and(rax, 0x0Fi32));
-        emit!(asm.cmp(al, 10i32));
-        emit!(asm.jb(s3));
-        emit!(asm.add(al, 7i32));
-        emit!(asm.set_label(&mut s3));
-        emit!(asm.add(al, '0' as i32));
-        emit!(asm.mov(byte_ptr(r8), al));
-        emit!(asm.dec(r8));
-        emit!(asm.shr(rbx, 4i32));
-        emit!(asm.dec(ecx));
-        emit!(asm.jne(h3));
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(rax, qword_ptr(r14 + 8))); // ContextRecord*
+        emit!(asm.mov(rbx, qword_ptr(rax + 0xF8)));
+        emit!(asm.call(hex16_label));
         lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(rax, qword_ptr(r14 + 8)));
+        emit!(asm.mov(rdi, qword_ptr(rax + 0xF8)));
+        emit!(asm.call(symbolize_label));
         lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.call(write_label));
 
-        // ── Backtrace from crash context (uses ContextRecord->Rbp) ──
+        // QUAZI_TRACE=2: the general registers from the CONTEXT record, in
+        // the order and with the labels the Linux report uses.
+        let mut skip_registers = asm.create_label();
+        lea_rip!(rax, "__quazi_trace_enabled");
+        emit!(asm.cmp(byte_ptr(rax), 2i32));
+        emit!(asm.jb(skip_registers));
+        lea_rip!(rdx, "__quazi_regs_header");
+        emit!(asm.mov(
+            r8d,
+            crate::backend::x86_64::sections::REGISTERS_HEADER.len() as i32
+        ));
+        emit!(asm.call(write_label));
+        for (index, offset) in WINDOWS_CONTEXT_REGISTERS.iter().enumerate() {
+            lea_rip!(rdx, "__quazi_reg_names");
+            emit!(asm.add(
+                rdx,
+                (index * crate::backend::x86_64::sections::REGISTER_LABEL_STRIDE) as i32
+            ));
+            emit!(asm.mov(
+                r8d,
+                crate::backend::x86_64::sections::REGISTER_LABEL_LEN as i32
+            ));
+            emit!(asm.call(write_label));
+            emit!(asm.mov(rax, qword_ptr(r14 + 8)));
+            if *offset == WINDOWS_CONTEXT_EFLAGS {
+                emit!(asm.mov(ebx, dword_ptr(rax + *offset)));
+            } else {
+                emit!(asm.mov(rbx, qword_ptr(rax + *offset)));
+            }
+            emit!(asm.call(hex16_label));
+            lea_rip!(rdx, "__quazi_hex_buf");
+            emit!(asm.mov(r8d, 16i32));
+            emit!(asm.call(write_label));
+            lea_rip!(rdx, "__quazi_nl");
+            emit!(asm.mov(r8d, 1i32));
+            emit!(asm.call(write_label));
+        }
+        emit!(asm.set_label(&mut skip_registers));
+
+        // Backtrace from ContextRecord->Rbp, or the hint.
         let mut bt_done_c = asm.create_label();
         lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
-        emit!(asm.je(bt_done_c));
-
-        // Reload ContextRecord* and get Rbp
+        let mut show_backtrace = asm.create_label();
+        emit!(asm.jne(show_backtrace));
+        lea_rip!(rdx, "__quazi_trace_hint");
+        emit!(asm.mov(r8d, crate::backend::x86_64::sections::TRACE_HINT.len() as i32));
+        emit!(asm.call(write_label));
+        emit!(asm.jmp(bt_done_c));
+        emit!(asm.set_label(&mut show_backtrace));
         emit!(asm.mov(rax, qword_ptr(r14 + 8)));
-        emit!(asm.mov(r12, qword_ptr(rax + 0xA0)));
-
-        // "stack backtrace:\n"
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.mov(r12, qword_ptr(rax + 0xA0))); // Rbp
         lea_rip!(rdx, "__quazi_bt_prefix");
         emit!(asm.mov(r8d, 17i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
+        emit!(asm.call(write_label));
         emit!(asm.mov(r13, 16i64));
         let mut bt_loop_c = asm.create_label();
         emit!(asm.set_label(&mut bt_loop_c));
@@ -1349,80 +1336,126 @@ impl StartStub {
         emit!(asm.je(bt_done_c));
         emit!(asm.test(r13, r13));
         emit!(asm.je(bt_done_c));
-
-        // "  at 0x"
-        emit!(asm.mov(rcx, r15));
         lea_rip!(rdx, "__quazi_at_0x");
         emit!(asm.mov(r8d, 7i32));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
+        emit!(asm.mov(rdi, rbx));
+        emit!(asm.call(hex16_label));
+        lea_rip!(rdx, "__quazi_hex_buf");
+        emit!(asm.mov(r8d, 16i32));
+        emit!(asm.call(write_label));
+        // A return address follows its call: name the calling function.
+        emit!(asm.dec(rdi));
+        emit!(asm.call(symbolize_label));
+        lea_rip!(rdx, "__quazi_nl");
+        emit!(asm.mov(r8d, 1i32));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(r12, qword_ptr(r12)));
+        emit!(asm.dec(r13));
+        emit!(asm.jmp(bt_loop_c));
+        emit!(asm.set_label(&mut bt_done_c));
+
+        emit!(asm.mov(ecx, 101i32));
+        call_ext!("ExitProcess", RelocKind::Plt32);
+        emit!(asm.ud2());
+
+        // write: WriteFile(r15, rdx, r8d, NULL, NULL). Clobbers the
+        // volatile registers only.
+        emit!(asm.set_label(&mut write_label));
+        emit!(asm.sub(rsp, 40i32));
+        emit!(asm.mov(rcx, r15));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.add(rsp, 40i32));
+        emit!(asm.ret());
 
-        // return address
-        emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
+        // hex16: format rbx as 16 hex digits into __quazi_hex_buf.
+        // Clobbers rax, rbx, rcx and r8.
+        emit!(asm.set_label(&mut hex16_label));
         emit!(asm.mov(ecx, 16i32));
         lea_rip!(r8, "__quazi_hex_buf");
         emit!(asm.add(r8, 15i32));
-        let mut hbt = asm.create_label();
-        let mut sbt = asm.create_label();
-        emit!(asm.set_label(&mut hbt));
+        let mut hex_digit = asm.create_label();
+        let mut hex_decimal = asm.create_label();
+        emit!(asm.set_label(&mut hex_digit));
         emit!(asm.mov(rax, rbx));
         emit!(asm.and(rax, 0x0Fi32));
         emit!(asm.cmp(al, 10i32));
-        emit!(asm.jb(sbt));
+        emit!(asm.jb(hex_decimal));
         emit!(asm.add(al, 7i32));
-        emit!(asm.set_label(&mut sbt));
+        emit!(asm.set_label(&mut hex_decimal));
         emit!(asm.add(al, '0' as i32));
         emit!(asm.mov(byte_ptr(r8), al));
         emit!(asm.dec(r8));
         emit!(asm.shr(rbx, 4i32));
         emit!(asm.dec(ecx));
-        emit!(asm.jne(hbt));
+        emit!(asm.jne(hex_digit));
+        emit!(asm.ret());
 
-        emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__quazi_hex_buf");
-        emit!(asm.mov(r8d, 16i32));
+        // symbolize: write " in <function>" when rdi lies in an entry of
+        // __quazi_fn_table. Clobbers rbx, rsi and the volatile registers.
+        emit!(asm.set_label(&mut symbolize_label));
+        emit!(asm.sub(rsp, 8i32));
+        lea_rip!(r9, "__quazi_fn_table");
+        emit!(asm.mov(r10, qword_ptr(r9)));
+        emit!(asm.add(r9, 8i32));
+        let mut lookup = asm.create_label();
+        let mut found = asm.create_label();
+        let mut unknown = asm.create_label();
+        emit!(asm.set_label(&mut lookup));
+        emit!(asm.test(r10, r10));
+        emit!(asm.je(unknown));
+        emit!(asm.mov(rax, rdi));
+        emit!(asm.sub(rax, qword_ptr(r9)));
+        emit!(asm.mov(ecx, dword_ptr(r9 + 8)));
+        emit!(asm.cmp(rax, rcx));
+        emit!(asm.jb(found));
+        emit!(asm.add(r9, 24i32));
+        emit!(asm.dec(r10));
+        emit!(asm.jmp(lookup));
+        emit!(asm.set_label(&mut found));
+        emit!(asm.mov(rsi, qword_ptr(r9 + 16)));
+        emit!(asm.mov(ebx, dword_ptr(r9 + 12)));
+        lea_rip!(rdx, "__quazi_bt_in");
+        emit!(asm.mov(
+            r8d,
+            crate::backend::x86_64::sections::FUNCTION_SEPARATOR.len() as i32
+        ));
+        emit!(asm.call(write_label));
+        emit!(asm.mov(rdx, rsi));
+        emit!(asm.mov(r8d, ebx));
+        emit!(asm.call(write_label));
+        emit!(asm.set_label(&mut unknown));
+        emit!(asm.add(rsp, 8i32));
+        emit!(asm.ret());
+
+        // Vectored handler for stack overflow only: the unhandled-exception
+        // filter may not get to run on an exhausted stack. Other exceptions
+        // continue to the structured handlers (EXCEPTION_CONTINUE_SEARCH).
+        emit!(asm.set_label(&mut overflow_handler_label));
+        let mut not_overflow = asm.create_label();
+        emit!(asm.mov(rax, qword_ptr(rcx)));
+        emit!(asm.cmp(dword_ptr(rax), 0xC000_00FDu32 as i32));
+        emit!(asm.jne(not_overflow));
+        emit!(asm.sub(rsp, 40i32));
+        emit!(asm.mov(ecx, -12i32));
+        call_ext!("GetStdHandle", RelocKind::Plt32);
+        emit!(asm.mov(rcx, rax));
+        lea_rip!(rdx, "__quazi_stack_overflow");
+        emit!(asm.mov(
+            r8d,
+            crate::backend::x86_64::sections::STACK_OVERFLOW_MESSAGE.len() as i32
+        ));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__quazi_nl");
-        emit!(asm.mov(r8d, 1i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(r12, qword_ptr(r12)));
-        emit!(asm.dec(r13));
-        emit!(asm.jmp(bt_loop_c));
-
-        emit!(asm.set_label(&mut bt_done_c));
-
-        // Print hint when backtrace was skipped
-        lea_rip!(rax, "__quazi_trace_enabled");
-        emit!(asm.cmp(byte_ptr(rax), 0i32));
-        let mut skip_hint = asm.create_label();
-        emit!(asm.jne(skip_hint));
-        emit!(asm.mov(rcx, r15));
-        lea_rip!(rdx, "__quazi_trace_hint");
-        emit!(asm.mov(r8d, crate::backend::x86_64::sections::TRACE_HINT.len() as i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-        emit!(asm.set_label(&mut skip_hint));
-
-        // ExitProcess(101)
-        emit!(asm.mov(ecx, 101i32));
+        emit!(asm.mov(ecx, 134i32));
         call_ext!("ExitProcess", RelocKind::Plt32);
-
-        // Epilogue (unreachable)
-        emit!(asm.add(rsp, 40i32));
-        emit!(asm.pop(r15));
-        emit!(asm.pop(r14));
-        emit!(asm.pop(r13));
-        emit!(asm.pop(r12));
-        emit!(asm.pop(rbx));
+        emit!(asm.ud2());
+        emit!(asm.set_label(&mut not_overflow));
+        emit!(asm.xor(eax, eax));
         emit!(asm.ret());
 
         let crash_handler_end_idx = asm.instructions().len();
@@ -1434,84 +1467,49 @@ impl StartStub {
         emit!(asm.set_label(&mut print_bt_label));
 
         emit!(asm.push(rbx));
+        emit!(asm.push(rsi));
+        emit!(asm.push(rdi));
         emit!(asm.push(r12));
         emit!(asm.push(r13));
-        emit!(asm.push(r14));
         emit!(asm.push(r15));
-        emit!(asm.sub(rsp, 40i32));
+        emit!(asm.sub(rsp, 40i32)); // 8 + 48 + 40 = 96: aligned
 
         let mut bt_done = asm.create_label();
         lea_rip!(rax, "__quazi_trace_enabled");
         emit!(asm.cmp(byte_ptr(rax), 0i32));
         emit!(asm.je(bt_done));
 
-        // Get stderr handle
         emit!(asm.mov(ecx, -12i32));
         call_ext!("GetStdHandle", RelocKind::Plt32);
         emit!(asm.mov(r15, rax));
 
-        // "stack backtrace:\n"
-        emit!(asm.mov(rcx, r15));
         lea_rip!(rdx, "__quazi_bt_prefix");
         emit!(asm.mov(r8d, 17i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
+        emit!(asm.call(write_label));
 
-        // Walk current RBP chain
+        // Walk the current RBP chain.
         emit!(asm.mov(r12, rbp));
         emit!(asm.mov(r13, 16i64));
-
         let mut bt_loop = asm.create_label();
         emit!(asm.set_label(&mut bt_loop));
         emit!(asm.test(r12, r12));
         emit!(asm.je(bt_done));
         emit!(asm.test(r13, r13));
         emit!(asm.je(bt_done));
-
-        // "  at 0x"
-        emit!(asm.mov(rcx, r15));
         lea_rip!(rdx, "__quazi_at_0x");
         emit!(asm.mov(r8d, 7i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        // return address
+        emit!(asm.call(write_label));
         emit!(asm.mov(rbx, qword_ptr(r12 + 8)));
-        emit!(asm.mov(ecx, 16i32));
-        lea_rip!(r8, "__quazi_hex_buf");
-        emit!(asm.add(r8, 15i32));
-        let mut hbt2 = asm.create_label();
-        let mut sbt2 = asm.create_label();
-        emit!(asm.set_label(&mut hbt2));
-        emit!(asm.mov(rax, rbx));
-        emit!(asm.and(rax, 0x0Fi32));
-        emit!(asm.cmp(al, 10i32));
-        emit!(asm.jb(sbt2));
-        emit!(asm.add(al, 7i32));
-        emit!(asm.set_label(&mut sbt2));
-        emit!(asm.add(al, '0' as i32));
-        emit!(asm.mov(byte_ptr(r8), al));
-        emit!(asm.dec(r8));
-        emit!(asm.shr(rbx, 4i32));
-        emit!(asm.dec(ecx));
-        emit!(asm.jne(hbt2));
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.mov(rdi, rbx));
+        emit!(asm.call(hex16_label));
         lea_rip!(rdx, "__quazi_hex_buf");
         emit!(asm.mov(r8d, 16i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
-        emit!(asm.mov(rcx, r15));
+        emit!(asm.call(write_label));
+        emit!(asm.dec(rdi));
+        emit!(asm.call(symbolize_label));
         lea_rip!(rdx, "__quazi_nl");
         emit!(asm.mov(r8d, 1i32));
-        emit!(asm.xor(r9d, r9d));
-        emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
-        call_ext!("WriteFile", RelocKind::Plt32);
-
+        emit!(asm.call(write_label));
         emit!(asm.mov(r12, qword_ptr(r12)));
         emit!(asm.dec(r13));
         emit!(asm.jmp(bt_loop));
@@ -1519,9 +1517,10 @@ impl StartStub {
         emit!(asm.set_label(&mut bt_done));
         emit!(asm.add(rsp, 40i32));
         emit!(asm.pop(r15));
-        emit!(asm.pop(r14));
         emit!(asm.pop(r13));
         emit!(asm.pop(r12));
+        emit!(asm.pop(rdi));
+        emit!(asm.pop(rsi));
         emit!(asm.pop(rbx));
         emit!(asm.ret());
 
@@ -1534,25 +1533,34 @@ impl StartStub {
 
         emit!(asm.sub(rsp, 40i32));
 
-        // AddVectoredExceptionHandler(1, crash_handler_label)
+        // Stack overflow: a vectored handler with a reserved stack
+        // guarantee. Every other fatal exception: the unhandled-exception
+        // filter, after structured handlers had their chance.
+        emit!(asm.mov(dword_ptr(rsp + 32), 0x8000i32));
+        emit!(asm.lea(rcx, qword_ptr(rsp + 32)));
+        call_ext!("SetThreadStackGuarantee", RelocKind::Plt32);
         emit!(asm.mov(ecx, 1i32));
-        emit!(asm.lea(rdx, qword_ptr(fn_start)));
+        emit!(asm.lea(rdx, qword_ptr(overflow_handler_label)));
         call_ext!("AddVectoredExceptionHandler", RelocKind::Plt32);
+        emit!(asm.lea(rcx, qword_ptr(fn_start)));
+        call_ext!("SetUnhandledExceptionFilter", RelocKind::Plt32);
 
-        // GetEnvironmentVariableA("QUAZI_TRACE", buf, 8)
+        // GetEnvironmentVariableA("QUAZI_TRACE", buf, 8): "1" enables
+        // backtraces, "2" also dumps crash registers (as on Linux).
         lea_rip!(rcx, "__quazi_env_var_name");
         emit!(asm.lea(rdx, qword_ptr(rsp)));
         emit!(asm.mov(r8d, 8i32));
         call_ext!("GetEnvironmentVariableA", RelocKind::Plt32);
-
-        // If result > 0 and buf[0] == '1', set flag
         let mut no_env = asm.create_label();
-        emit!(asm.test(eax, eax));
-        emit!(asm.je(no_env));
-        emit!(asm.cmp(byte_ptr(rsp), '1' as i32));
+        emit!(asm.cmp(eax, 1i32));
         emit!(asm.jne(no_env));
+        emit!(asm.movzx(ecx, byte_ptr(rsp)));
+        emit!(asm.sub(ecx, '1' as i32));
+        emit!(asm.cmp(ecx, 1i32));
+        emit!(asm.ja(no_env));
+        emit!(asm.inc(ecx));
         lea_rip!(rax, "__quazi_trace_enabled");
-        emit!(asm.mov(byte_ptr(rax), 1i32));
+        emit!(asm.mov(byte_ptr(rax), cl));
         emit!(asm.set_label(&mut no_env));
 
         // Build `Array[str] args` if `fn main(args: Array[str])` was declared.
@@ -1771,7 +1779,7 @@ impl StartStub {
         emit!(asm.push(r13));
         emit!(asm.push(r14));
         emit!(asm.push(r15));
-        emit!(asm.sub(rsp, 40i32));
+        emit!(asm.sub(rsp, 48i32)); // 8 + 40 + 48 = 96: aligned calls
 
         let mut bt_done = asm.create_label();
         lea_rip!(rax, "__quazi_trace_enabled");
@@ -1850,7 +1858,7 @@ impl StartStub {
         emit!(asm.jmp(bt_loop));
 
         emit!(asm.set_label(&mut bt_done));
-        emit!(asm.add(rsp, 40i32));
+        emit!(asm.add(rsp, 48i32));
         emit!(asm.pop(r15));
         emit!(asm.pop(r14));
         emit!(asm.pop(r13));

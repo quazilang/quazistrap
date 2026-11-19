@@ -200,7 +200,8 @@ trimming for the default representation, and fractional rounding carry. These
 paths do not import `sprintf`.
 
 Linux `_start` reads `QUAZI_TRACE=1` or `QUAZI_TRACE=2` directly from the
-kernel-provided initial stack. Backtraces name each frame's function through a
+kernel-provided initial stack (Windows `mainCRTStartup` uses
+`GetEnvironmentVariableA`). Backtraces name each frame's function through a
 table of emitted functions in `.rodata`; `2` also prints crash registers. The full generated startup and crash handler therefore do not need
 `getenv` or a dynamic loader.
 

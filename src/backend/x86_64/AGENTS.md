@@ -8,7 +8,9 @@
 
 ### Windows `mainCRTStartup`
 
-`sub rsp,40` → `AddVectoredExceptionHandler` → `call main` → `ExitProcess`
+`sub rsp,40` → `SetThreadStackGuarantee(32 KiB)` → `AddVectoredExceptionHandler`
+(stack overflow only) → `SetUnhandledExceptionFilter` (every other fatal
+exception) → `QUAZI_TRACE` → `call main` → `ExitProcess`
 
 Both Linux and Windows stubs are generated via `iced-x86` `CodeAssembler` — raw-byte stubs with hand-computed relocations were removed to eliminate relocation-offset bugs.
 
@@ -61,7 +63,20 @@ Identical output format on Linux & Windows:
   relocations; one entry per emitted body, ICF copies share it). Return
   addresses look up `address - 1`. `QUAZI_TRACE=2` also prints the
   interrupted `ucontext` general registers (`r8`..`rip`, `eflags`) before the
-  backtrace. Windows and NetBSD still print raw addresses.
+  backtrace. Windows does the same from the `CONTEXT` record (2026-11-19);
+  NetBSD still prints raw addresses.
+- Windows (2026-11-19): the report runs in an unhandled-exception filter, so
+  exceptions caught by structured handlers (in Windows/Wine or foreign code)
+  are not fatal. A vectored handler reacts only to
+  `EXCEPTION_STACK_OVERFLOW` (the stack overflow message, status 134, like
+  the Linux guard-page check). A fault while reporting exits 101 at once
+  (flag at runtime state +88). Every stub routine keeps rsp 16-byte aligned
+  at Win64 calls: pushes plus `sub rsp` total 8 (mod 16) after a `call`;
+  the old stubs called WriteFile/ExitProcess misaligned, which crashed
+  inside Wine and re-entered the handler. Access violations print the data
+  address (`ExceptionInformation[1]`) as `fault:`.
+- `scripts/check_stack_overflow.py --wine WINE` runs the crash/panic matrix
+  as Windows executables.
 
 ---
 
@@ -85,7 +100,7 @@ source attributes must not be reintroduced.
 ## `QUAZI_TRACE` Detection
 
 Accepted values are `1` (backtraces) and `2` (backtraces plus crash
-registers on Linux); other values are ignored.
+registers); other values are ignored.
 
 - Windows `mainCRTStartup` uses `GetEnvironmentVariableA`.
 - Linux `_start` walks `envp` from the kernel-provided initial stack; it does

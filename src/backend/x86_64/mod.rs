@@ -218,9 +218,12 @@ fn emit_native_object(
         text_bytes.extend_from_slice(&fn_bytes);
     }
 
-    // The Linux crash handler and backtrace name addresses through a table of
+    // The Linux and Windows crash handlers and backtraces name addresses through a table of
     // emitted bodies (folded copies share their canonical body's entry).
-    if target.emit_start && !target.no_crash && target.os == target::Os::Linux {
+    if target.emit_start
+        && !target.no_crash
+        && matches!(target.os, target::Os::Linux | target::Os::Windows)
+    {
         let functions: Vec<(&str, &str, u64)> = chunks
             .iter()
             .enumerate()

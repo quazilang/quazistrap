@@ -64,8 +64,8 @@ Resolved 2026-11-18 (В28): the fatal contract stays — `@panic_handler fn(Pani
 runs once, the stack is not unwound, local destructors are not guaranteed,
 the default exits 101 and a qoroutine panic reaches `join()` (D-019). The
 maintainer asked for readable diagnostics: backtraces name their functions
-and `QUAZI_TRACE=2` adds crash registers (Linux implemented; Windows and
-NetBSD still print raw addresses).
+and `QUAZI_TRACE=2` adds crash registers (Linux implemented; Windows on
+2026-11-19, verified under Wine; NetBSD still prints raw addresses).
 
 ## D-007: concurrency model and terminology
 

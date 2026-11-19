@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check that unbounded recursion reports a stack overflow (Linux crash
-handler on an alternate signal stack, exit status 134) instead of dying
-with a bare SIGSEGV, and that other faults keep the generic crash report
+handler on an alternate signal stack, Windows vectored handler; exit status
+134) instead of dying with a bare SIGSEGV, and that other faults keep the generic crash report
 (exit status 101). A custom panic handler runs once, for fatal panics only.
-Native and QZI."""
+Native and QZI; with `--wine`, also Windows executables under Wine."""
 
 import argparse
 import os
@@ -50,11 +50,16 @@ fn main() i32 { ret middle(5); }
 """
 
 
-def build(qz, root, source, qzi, environment=None):
+def build(qz, root, source, qzi, environment=None, wine=None):
+    """Build and run `source`: natively, through a QZI, or (with `wine`) as a
+    Windows executable under Wine."""
     (root / "src/main.qz").write_text(source)
     common = ["--no-incremental", "--no-color", "--no-unicode", "--silent"]
     binary = root / "program"
-    if qzi:
+    if wine:
+        binary = root / "program.exe"
+        steps = [[str(qz), "build", *common, "--target", "x86_64-windows", "-o", str(binary)]]
+    elif qzi:
         steps = [[str(qz), "build", *common, "-i", "-o", str(root / "program.qzi")],
                  [str(qz), "build", str(root / "program.qzi"), *common, "-o", str(binary)]]
     else:
@@ -65,43 +70,52 @@ def build(qz, root, source, qzi, environment=None):
     env = dict(os.environ)
     env.pop("QUAZI_TRACE", None)
     env.update(environment or {})
-    return subprocess.run([str(binary)], cwd=root, text=True, capture_output=True,
-                          timeout=60, env=env)
+    command = [str(binary)]
+    if wine:
+        env.update(WINEDEBUG="-all", WINEPREFIX=str(root / "wineprefix"))
+        command = [str(wine), str(binary)]
+    return subprocess.run(command, cwd=root, text=True, capture_output=True,
+                          timeout=300, env=env)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
-    qz = parser.parse_args().qz.resolve()
+    parser.add_argument("--wine", type=Path, help="Wine executable for the Windows column")
+    args = parser.parse_args()
+    qz = args.qz.resolve()
+    variants = [(False, None), (True, None)]
+    if args.wine:
+        variants.append((False, args.wine))
     with tempfile.TemporaryDirectory(prefix="quazi-stack-") as directory:
         root = Path(directory)
         (root / "src").mkdir()
         (root / "quazi.toml").write_text('[package]\nname="stack"\n[build]\nentry="src/main.qz"\n')
-        for qzi in (False, True):
-            overflow = build(qz, root, RECURSION, qzi)
+        for qzi, wine in variants:
+            overflow = build(qz, root, RECURSION, qzi, wine=wine)
             assert overflow.returncode == 134, (overflow.returncode, overflow.stderr)
             assert "has overflowed its stack" in overflow.stderr, overflow.stderr
-            fault = build(qz, root, NULL_READ, qzi)
+            fault = build(qz, root, NULL_READ, qzi, wine=wine)
             assert fault.returncode == 101, (fault.returncode, fault.stderr)
             assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr
             assert fault.stderr.endswith("stack trace\n"), repr(fault.stderr)
-            traced = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "2"})
+            traced = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "2"}, wine=wine)
             assert traced.returncode == 101, (traced.returncode, traced.stderr)
             assert " in main\n" in traced.stderr, traced.stderr
             assert "registers:\n" in traced.stderr and "  rip    = 0x" in traced.stderr, traced.stderr
             assert "stack backtrace:" in traced.stderr, traced.stderr
-            plain = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "1"})
+            plain = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "1"}, wine=wine)
             assert "registers:" not in plain.stderr and "stack backtrace:" in plain.stderr, plain.stderr
-            frames = build(qz, root, NAMED_FRAMES, qzi, {"QUAZI_TRACE": "1"})
+            frames = build(qz, root, NAMED_FRAMES, qzi, {"QUAZI_TRACE": "1"}, wine=wine)
             assert frames.returncode == 101, (frames.returncode, frames.stderr)
             names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]
             assert names[-3:] == ["inner", "middle", "main"], frames.stderr
-            nested = build(qz, root, NESTED_PANIC, qzi)
+            nested = build(qz, root, NESTED_PANIC, qzi, wine=wine)
             assert nested.returncode == 101, (nested.returncode, nested.stderr)
             assert "panicked while processing a panic: 'inner failure'" in nested.stderr, nested.stderr
             # A custom handler runs once, for the fatal panic only: a
             # qoroutine panic still reaches its join (D-019, В28).
-            lifecycle = build(qz, root, HANDLER_LIFECYCLE, qzi)
+            lifecycle = build(qz, root, HANDLER_LIFECYCLE, qzi, wine=wine)
             assert lifecycle.returncode == 42, (lifecycle.returncode, lifecycle.stderr)
             assert lifecycle.stdout == "task panic reached join\n", lifecycle.stdout
             assert "qoroutine panicked at 'task failed 5'" in lifecycle.stderr, lifecycle.stderr
@@ -110,7 +124,7 @@ def main():
     print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101) "
           "with named frames and QUAZI_TRACE=2 registers, panic in panic handler aborts (101), "
           "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
-          "native and QZI")
+          "native and QZI" + (", Windows under Wine" if args.wine else ""))
 
 
 if __name__ == "__main__":
