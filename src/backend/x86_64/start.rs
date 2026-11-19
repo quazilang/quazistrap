@@ -74,6 +74,16 @@ impl StartStub {
         asm.mov(r12, rbx).expect("keep NetBSD ps_strings");
         asm.and(rsp, -16i32).expect("align stack before C calls");
         call_external!("_libc_init");
+        // Publish the initial environment (`ps_strings->ps_envstr`, +16) in
+        // the runtime state like Linux `_start`, so std.process can build a
+        // child environment and std.os keeps it current (runtime-state.md).
+        asm.mov(rax, qword_ptr(r12 + 16)).expect("NetBSD envp");
+        {
+            let index = asm.instructions().len();
+            asm.lea(rcx, qword_ptr(placeholder)).expect("envp slot");
+            pending.push((index, 3, RelocKind::Pc32, "__quazi_envp".into(), -4));
+        }
+        asm.mov(qword_ptr(rcx), rax).expect("store envp");
 
         if main_takes_args {
             asm.mov(r13, qword_ptr(r12)).expect("argv");

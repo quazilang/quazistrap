@@ -13,7 +13,7 @@ whose address `quazi.runtime.state()` returns. Owners of each range:
 | 92 | 4 | Windows startup | id of the main thread (`mainCRTStartup`), for the stack-overflow message |
 | 96–103 | 8 | — | reserved |
 | 104 | 8 | std `os.qz` | environment writer spin lock (0 free, 1 held) |
-| 112 | 8 | runtime / std `os.qz` | Linux `envp`: pointer to a null-terminated array of `NAME=VALUE` C strings |
+| 112 | 8 | runtime / std `os.qz` | Linux and NetBSD `envp`: pointer to a null-terminated array of `NAME=VALUE` C strings |
 | 120 | 8 | — | reserved |
 
 `__quazi_envp` is a symbol at offset 112. The Linux `_start` stores the
@@ -24,5 +24,7 @@ reader sees either the old or the new complete array. Replaced arrays and
 their strings are never freed (a reader may still hold them); each mutation
 therefore keeps one copy of the environment alive.
 
-Other targets do not use the slot: Windows and NetBSD keep the environment in
-their system libraries.
+NetBSD's startup stores `ps_strings->ps_envstr` there too; `std.os.set_env`
+and `remove_env` update both libc's environment and this array, which
+`std.process.Command` uses to build a child environment. Windows keeps the
+environment in its system library.
