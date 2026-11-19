@@ -207,6 +207,9 @@ pub struct Analyzer {
     pub(super) library_char_ranges: Vec<std::ops::Range<usize>>,
     /// Per-file source map for merged sources.
     pub(super) source_files: Vec<SourceFile>,
+    /// Function items whose `@ignore` attributes also cover the parameters
+    /// and locals declared in them (unused-variable warnings).
+    pub(super) warning_ignore_regions: Vec<(Span, Vec<String>)>,
     /// Files whose top-level definitions are mangled with their module name.
     /// Populated from LoadResult; empty when analyzing raw source without a loader.
     pub(super) namespaced_paths: std::collections::HashSet<String>,
@@ -334,8 +337,33 @@ pub(super) fn unwrap_type(ty: &Type) -> TypeKind {
     ty.node.clone()
 }
 
+/// Attribute names as symbols record them. `@ignore(category, ...)` keeps
+/// its categories as `ignore(category)` entries, so only a bare `@ignore`
+/// silences every warning.
 pub(super) fn extract_attribute_names(attributes: &[Attribute]) -> Vec<String> {
-    attributes.iter().map(|a| a.name.clone()).collect()
+    let mut names = Vec::with_capacity(attributes.len());
+    for attribute in attributes {
+        let categories: Vec<String> = if attribute.name == "ignore" {
+            attribute
+                .args
+                .iter()
+                .filter_map(|arg| match arg {
+                    AttrArg::Positional(AttrVal::Ident(name) | AttrVal::Str(name)) => {
+                        Some(format!("ignore({name})"))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if categories.is_empty() {
+            names.push(attribute.name.clone());
+        } else {
+            names.extend(categories);
+        }
+    }
+    names
 }
 
 fn resolve_layout_alias(
@@ -2579,6 +2607,7 @@ impl Analyzer {
             test_functions: Vec::new(),
             library_char_ranges: Vec::new(),
             source_files: Vec::new(),
+            warning_ignore_regions: Vec::new(),
             checked_string_abi: None,
             runtime_panic_span: None,
             runtime_panic_name: None,
@@ -7185,6 +7214,78 @@ fn main() void {
                 .any(|e| e.message.contains("cannot assign to const")),
             "expected const assign error"
         );
+    }
+
+    #[test]
+    fn const_fields_are_immutable_after_construction() {
+        let report = analyze(
+            r#"
+struct Config { const n: i32, retries: i32 }
+impl Config {
+    fn bump(self: &Config!) void { self.retries += 1; self.n = 3; }
+}
+fn main() void {
+    var c = Config { n: 1, retries: 2 };
+    c.retries = 5;
+    c.n = 7;
+    c.n += 1;
+    c.n++;
+    c.bump();
+}
+"#,
+        );
+        let const_field_errors = report
+            .errors
+            .iter()
+            .filter(|e| e.code == "S07" && e.message == "cannot assign to const field `n`")
+            .count();
+        assert_eq!(const_field_errors, 4, "{:?}", report.errors);
+        assert_eq!(report.errors.len(), 4, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn ignore_categories_cover_the_function_body() {
+        let report = analyze(
+            r#"
+@ignore(unused_vars)
+fn quiet_vars(x: i32) void { const q: i32 = 1; }
+@ignore
+fn quiet_all(y: i32) void { const r: i32 = 1; }
+@ignore(dead_code)
+fn quiet_dead(z: i32) void { const s: i32 = 1; }
+fn loud(w: i32) void { const t: i32 = 1; }
+fn main() void { quiet_vars(1); quiet_all(1); loud(1); }
+"#,
+        );
+        let warned: Vec<&str> = report
+            .warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect();
+        for quiet in ["'x'", "'q'", "'y'", "'r'", "quiet_dead"] {
+            assert!(!warned.iter().any(|message| message.contains(quiet)), "{quiet}: {warned:?}");
+        }
+        for loud in ["unused parameter 'z'", "unused const 's'", "unused parameter 'w'", "unused const 't'"] {
+            assert!(warned.contains(&loud), "{loud}: {warned:?}");
+        }
+    }
+
+    #[test]
+    fn fields_of_const_bindings_are_immutable() {
+        let report = analyze(
+            r#"
+struct Inner { v: i32 }
+struct Outer { inner: Inner }
+fn main() void {
+    const fixed = Outer { inner: Inner { v: 1 } };
+    fixed.inner.v = 2;
+    var open = Outer { inner: Inner { v: 1 } };
+    open.inner.v = 3;
+}
+"#,
+        );
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert_eq!(report.errors[0].message, "cannot assign to a field of const 'fixed'");
     }
 
     #[test]

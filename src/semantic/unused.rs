@@ -12,19 +12,19 @@ fn should_ignore_warning(attributes: &[String], warning_code: &str) -> bool {
         // Check for specific ignore categories
         if warning_code == "W01" || warning_code == "W02" {
             // unused variable/parameter warnings
-            if attr == "ignore" || attr.contains("unused_vars") || attr == "str_variadic" {
+            if attr == "ignore(unused_vars)" || attr == "str_variadic" {
                 return true;
             }
         }
         if warning_code == "W03" || warning_code == "W07" {
             // unused function / dead function warnings
-            if attr == "ignore" || attr.contains("dead_code") || attr == "panic_handler" {
+            if attr == "ignore(dead_code)" || attr == "panic_handler" {
                 return true;
             }
         }
         if warning_code == "W05" {
             // any-type warnings
-            if attr == "ignore" || attr.contains("any_type") {
+            if attr == "ignore(any_type)" {
                 return true;
             }
         }
@@ -33,6 +33,21 @@ fn should_ignore_warning(attributes: &[String], warning_code: &str) -> bool {
 }
 
 impl Analyzer {
+    /// A local's own attributes plus the `@ignore` attributes of the
+    /// function items enclosing it.
+    fn local_warning_attributes(&self, symbol: &Symbol) -> Vec<String> {
+        let mut attributes = symbol.attributes.clone();
+        for (region, ignores) in &self.warning_ignore_regions {
+            if region.start <= symbol.span.start
+                && symbol.span.start < region.end
+                && self.same_source_file(*region, symbol.span)
+            {
+                attributes.extend(ignores.iter().cloned());
+            }
+        }
+        attributes
+    }
+
     pub(super) fn run_unused_pass(&mut self) {
         let local_scopes = self.finished_scopes.clone();
         for scope in local_scopes {
@@ -94,7 +109,7 @@ impl Analyzer {
 
             match symbol.kind {
                 SymbolKind::Parameter => {
-                    if !should_ignore_warning(&symbol.attributes, "W02") {
+                    if !should_ignore_warning(&self.local_warning_attributes(&symbol), "W02") {
                         self.push_warning_with_suggestion(
                             symbol.span,
                             "W02",
@@ -104,7 +119,7 @@ impl Analyzer {
                     }
                 }
                 SymbolKind::Variable { mutable } => {
-                    if !should_ignore_warning(&symbol.attributes, "W01") {
+                    if !should_ignore_warning(&self.local_warning_attributes(&symbol), "W01") {
                         let label = if mutable { "variable" } else { "const" };
                         self.push_warning_with_suggestion(
                             symbol.span,

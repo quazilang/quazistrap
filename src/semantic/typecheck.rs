@@ -383,6 +383,13 @@ impl Analyzer {
                 self.current_module_path = self.module_path_for_span(item.span);
                 self.current_function.push(fn_name);
                 self.enter_scope();
+                let ignores: Vec<String> = extract_attribute_names(attributes)
+                    .into_iter()
+                    .filter(|name| name == "ignore" || name.starts_with("ignore("))
+                    .collect();
+                if !ignores.is_empty() {
+                    self.warning_ignore_regions.push((item.span, ignores));
+                }
                 let fn_is_str_variadic = crate::parser::format::is_format_variadic(params, attributes);
                 for p in params {
                     if erased_format_variadic && p.variadic && matches!(p.ty.node, TypeKind::Any) {
@@ -9371,6 +9378,26 @@ impl Analyzer {
             .and_then(|annotation| annotation.ty.clone())
     }
 
+    /// The binding whose own storage a field place `a.b.c` lies in: reached
+    /// through field accesses (and grouping) only, never through a value of
+    /// reference or pointer type (a write there goes through the pointer).
+    fn field_place_root<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
+        if self.assignment_operand_type(expr).is_some_and(|ty| {
+            matches!(
+                self.resolve_type_aliases(&ty),
+                TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::RawPtr { .. }
+            )
+        }) {
+            return None;
+        }
+        match &expr.node {
+            ExprKind::Ident(name) => Some(name.as_str()),
+            ExprKind::Group(inner) => self.field_place_root(inner),
+            ExprKind::Field { object, .. } => self.field_place_root(object),
+            _ => None,
+        }
+    }
+
     pub(super) fn analyze_assign_target(&mut self, target: &Expr) {
         if self.lvalue_contains_shared_deref(target) {
             self.push_error(
@@ -9439,6 +9466,41 @@ impl Analyzer {
             },
             ExprKind::Field { object, name } => {
                 let object_ty = self.assignment_operand_type(object);
+                // A field of an immutable (`const`) binding is immutable too,
+                // as `&T!` method calls on it already are. Paths through a
+                // dereference (`(*p).f`) are checked by their pointer instead.
+                if let Some(root) = self.field_place_root(object)
+                    && let Some(symbol) = self.resolve_symbol(root)
+                    && matches!(symbol.kind, SymbolKind::Variable { mutable: false })
+                {
+                    self.push_error(
+                        target.span,
+                        "S07",
+                        format!("cannot assign to a field of const '{root}'"),
+                    );
+                }
+                // A `const` field is immutable after construction, also
+                // through `&T!` and in the type's own methods.
+                let aggregate_ty = object_ty.as_ref().map(|ty| match self.resolve_type_aliases(ty) {
+                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                        self.resolve_type_aliases(&inner.node)
+                    }
+                    other => other,
+                });
+                if let Some(aggregate_ty) = &aggregate_ty {
+                    let type_name = super::declare::type_kind_base_name(aggregate_ty);
+                    if self
+                        .struct_const_fields
+                        .get(&type_name)
+                        .is_some_and(|fields| fields.contains(name))
+                    {
+                        self.push_error(
+                            target.span,
+                            "S07",
+                            format!("cannot assign to const field `{name}`"),
+                        );
+                    }
+                }
                 if let Some(TypeKind::Named {
                     name: aggregate_name,
                     ..
