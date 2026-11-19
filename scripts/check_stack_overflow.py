@@ -44,6 +44,22 @@ NULL_READ = """fn main() i32 {
     unsafe { ret (*p) as i32; }
 }
 """
+# A fault off the main thread (a qoroutine worker, a std.thread thread) gets
+# the same report; on Windows the vectored handler must catch it because
+# dispatch cannot walk Quazi frames (no unwind tables).
+QO_NULL_READ = """fn crash(n: i64) i64 {
+    var p: *i64 = 0;
+    unsafe { ret *p + n; }
+}
+fn main() i32 { ret (qo crash(1)).join().unwrap() as i32; }
+"""
+THREAD_NULL_READ = """import std.thread;
+fn crash(n: i64) i64 {
+    var p: *i64 = 0;
+    unsafe { ret *p + n; }
+}
+fn main() i32 { ret thread.spawn(|| crash(1)).unwrap().join().unwrap() as i32; }
+"""
 NAMED_FRAMES = """fn inner(v: i32) i32 { if v > 2 { panic("bad value {}", v); } ret v; }
 fn middle(v: i32) i32 { ret inner(v + 1) * 2; }
 fn main() i32 { ret middle(5); }
@@ -106,6 +122,12 @@ def main():
             assert "stack backtrace:" in traced.stderr, traced.stderr
             plain = build(qz, root, NULL_READ, qzi, {"QUAZI_TRACE": "1"}, wine=wine)
             assert "registers:" not in plain.stderr and "stack backtrace:" in plain.stderr, plain.stderr
+            for source in (QO_NULL_READ, THREAD_NULL_READ):
+                worker = build(qz, root, source, qzi, wine=wine)
+                assert worker.returncode == 101, (worker.returncode, worker.stderr)
+                assert worker.stderr.startswith("== CRASHED ==\n"), worker.stderr
+                assert worker.stderr.count("== CRASHED ==") == 1, worker.stderr
+                assert " in crash\n" in worker.stderr, worker.stderr
             frames = build(qz, root, NAMED_FRAMES, qzi, {"QUAZI_TRACE": "1"}, wine=wine)
             assert frames.returncode == 101, (frames.returncode, frames.stderr)
             names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]
@@ -122,7 +144,8 @@ def main():
             assert lifecycle.stderr.count("handled: ") == 1, lifecycle.stderr
             assert "handled: main failed at src/main.qz:19" in lifecycle.stderr, lifecycle.stderr
     print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101) "
-          "with named frames and QUAZI_TRACE=2 registers, panic in panic handler aborts (101), "
+          "with named frames and QUAZI_TRACE=2 registers (also from qoroutine and thread "
+          "faults), panic in panic handler aborts (101), "
           "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
           "native and QZI" + (", Windows under Wine" if args.wine else ""))
 

@@ -1173,6 +1173,7 @@ impl StartStub {
         let mut hex16_label = asm.create_label();
         let mut symbolize_label = asm.create_label();
         let mut overflow_handler_label = asm.create_label();
+        let mut stub_end_label = asm.create_label();
 
         // Every routine below keeps rsp 16-byte aligned (with 32 bytes of
         // shadow space) at each Win64 call: a routine entered by `call` has
@@ -1200,15 +1201,25 @@ impl StartStub {
 
         emit!(asm.mov(r14, rcx));
 
-        // A fault while reporting (or in a second thread) ends the process
-        // at once instead of reporting again. The flag lives in the runtime
-        // state block (offset 88, docs/internals/runtime-state.md).
+        // The first faulting thread reports; the owner id (TEB
+        // ClientId.UniqueThread) lives in the runtime state block (offset 88,
+        // docs/internals/runtime-state.md). A fault of the reporting thread
+        // itself exits 101 at once; another faulting thread waits for the
+        // report to finish the process instead of cutting it short.
         let mut first_report = asm.create_label();
-        lea_rip!(rax, "__quazi_runtime_state");
-        emit!(asm.lock().bts(dword_ptr(rax + 88i32), 0i32));
-        emit!(asm.jnc(first_report));
+        let mut other_thread = asm.create_label();
+        emit!(asm.mov(edx, dword_ptr(0x48).gs()));
+        lea_rip!(rcx, "__quazi_runtime_state");
+        emit!(asm.xor(eax, eax));
+        emit!(asm.lock().cmpxchg(dword_ptr(rcx + 88i32), edx));
+        emit!(asm.je(first_report));
+        emit!(asm.cmp(eax, edx));
+        emit!(asm.jne(other_thread));
         emit!(asm.mov(ecx, 101i32));
         call_ext!("ExitProcess", RelocKind::Plt32);
+        emit!(asm.set_label(&mut other_thread));
+        emit!(asm.mov(ecx, -1i32)); // INFINITE
+        call_ext!("Sleep", RelocKind::Plt32);
         emit!(asm.set_label(&mut first_report));
 
         emit!(asm.mov(ecx, -12i32));
@@ -1431,11 +1442,17 @@ impl StartStub {
         emit!(asm.add(rsp, 8i32));
         emit!(asm.ret());
 
-        // Vectored handler for stack overflow only: the unhandled-exception
-        // filter may not get to run on an exhausted stack. Other exceptions
-        // continue to the structured handlers (EXCEPTION_CONTINUE_SEARCH).
+        // Vectored handler. Stack overflow anywhere: the message and 134
+        // (the filter may not get to run on an exhausted stack). An error
+        // raised by Quazi code (this object's .text, which has no unwind
+        // tables, so no structured handler can catch it and dispatch could
+        // not even walk past its frames on other threads): the crash report.
+        // Anything else, such as an exception a Windows DLL raises and
+        // handles itself, continues the search (EXCEPTION_CONTINUE_SEARCH);
+        // if nothing handles it, the unhandled-exception filter reports it.
         emit!(asm.set_label(&mut overflow_handler_label));
         let mut not_overflow = asm.create_label();
+        let mut continue_search = asm.create_label();
         emit!(asm.mov(rax, qword_ptr(rcx)));
         emit!(asm.cmp(dword_ptr(rax), 0xC000_00FDu32 as i32));
         emit!(asm.jne(not_overflow));
@@ -1455,6 +1472,27 @@ impl StartStub {
         call_ext!("ExitProcess", RelocKind::Plt32);
         emit!(asm.ud2());
         emit!(asm.set_label(&mut not_overflow));
+        // Error severity (both top bits) only: warnings and informational
+        // codes (guard pages, debug output) are never fatal.
+        emit!(asm.mov(edx, dword_ptr(rax)));
+        emit!(asm.and(edx, 0xC000_0000u32 as i32));
+        emit!(asm.cmp(edx, 0xC000_0000u32 as i32));
+        emit!(asm.jne(continue_search));
+        // Is ExceptionAddress inside [text start, end of this stub)? The stub
+        // starts `fn_offset` bytes into the object's .text.
+        emit!(asm.mov(rdx, qword_ptr(rax + 0x10)));
+        emit!(asm.lea(r8, qword_ptr(fn_start)));
+        emit!(asm.mov(r9, rdx));
+        emit!(asm.sub(r9, r8));
+        emit!(asm.add(r9, fn_offset as i32));
+        emit!(asm.lea(r10, qword_ptr(stub_end_label)));
+        emit!(asm.sub(r10, r8));
+        emit!(asm.add(r10, fn_offset as i32));
+        emit!(asm.cmp(r9, r10));
+        emit!(asm.jae(continue_search));
+        // Tail call: the filter takes the same EXCEPTION_POINTERS in rcx.
+        emit!(asm.jmp(fn_start));
+        emit!(asm.set_label(&mut continue_search));
         emit!(asm.xor(eax, eax));
         emit!(asm.ret());
 
@@ -1547,14 +1585,15 @@ impl StartStub {
 
         // GetEnvironmentVariableA("QUAZI_TRACE", buf, 8): "1" enables
         // backtraces, "2" also dumps crash registers (as on Linux).
+        // The buffer lies above the callee's 32-byte shadow space.
         lea_rip!(rcx, "__quazi_env_var_name");
-        emit!(asm.lea(rdx, qword_ptr(rsp)));
+        emit!(asm.lea(rdx, qword_ptr(rsp + 32)));
         emit!(asm.mov(r8d, 8i32));
         call_ext!("GetEnvironmentVariableA", RelocKind::Plt32);
         let mut no_env = asm.create_label();
         emit!(asm.cmp(eax, 1i32));
         emit!(asm.jne(no_env));
-        emit!(asm.movzx(ecx, byte_ptr(rsp)));
+        emit!(asm.movzx(ecx, byte_ptr(rsp + 32)));
         emit!(asm.sub(ecx, '1' as i32));
         emit!(asm.cmp(ecx, 1i32));
         emit!(asm.ja(no_env));
@@ -1680,6 +1719,9 @@ impl StartStub {
         // Epilogue (unreachable)
         emit!(asm.add(rsp, 40i32));
         emit!(asm.ret());
+        // Marks the end of this object's Quazi code for the vectored handler.
+        emit!(asm.set_label(&mut stub_end_label));
+        emit!(asm.int3());
 
         // ── Assemble and compute offsets ──
         let mut bytes = asm.assemble(0).expect("assemble");

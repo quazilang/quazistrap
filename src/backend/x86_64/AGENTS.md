@@ -65,12 +65,18 @@ Identical output format on Linux & Windows:
   interrupted `ucontext` general registers (`r8`..`rip`, `eflags`) before the
   backtrace. Windows does the same from the `CONTEXT` record (2026-11-19);
   NetBSD still prints raw addresses.
-- Windows (2026-11-19): the report runs in an unhandled-exception filter, so
-  exceptions caught by structured handlers (in Windows/Wine or foreign code)
-  are not fatal. A vectored handler reacts only to
-  `EXCEPTION_STACK_OVERFLOW` (the stack overflow message, status 134, like
-  the Linux guard-page check). A fault while reporting exits 101 at once
-  (flag at runtime state +88). Every stub routine keeps rsp 16-byte aligned
+- Windows (2026-11-19): a vectored handler reports `EXCEPTION_STACK_OVERFLOW`
+  (the stack overflow message, status 134, like the Linux guard-page check)
+  and error-severity exceptions raised inside this object's Quazi code
+  (`.text` start through the end of the stub): Quazi frames have no unwind
+  tables, so no structured handler can catch those and dispatch could not
+  even reach the unhandled-exception filter from a non-main thread.
+  Exceptions raised elsewhere (Windows/Wine DLLs, foreign code) continue the
+  search, so ones a structured handler catches stay non-fatal; the
+  unhandled-exception filter reports the rest when dispatch reaches it.
+  Runtime state +88 holds the reporting thread's id: its own second fault
+  exits 101, other faulting threads `Sleep(INFINITE)` until the report ends
+  the process. Every stub routine keeps rsp 16-byte aligned
   at Win64 calls: pushes plus `sub rsp` total 8 (mod 16) after a `call`;
   the old stubs called WriteFile/ExitProcess misaligned, which crashed
   inside Wine and re-entered the handler. Access violations print the data
