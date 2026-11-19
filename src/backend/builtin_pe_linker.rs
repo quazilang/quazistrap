@@ -56,6 +56,74 @@ mod tests {
         assert_eq!(parsed.kind(), object::ObjectKind::Executable);
         let _ = std::fs::remove_file(output);
     }
+
+    #[test]
+    fn absolute_relocations_keep_their_implicit_addend() {
+        use object::write::Relocation;
+        use object::{RelocationEncoding, RelocationFlags};
+        let mut object = Object::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
+        let text = object.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        object.append_section_data(text, &[0x31, 0xc0, 0xc3], 16);
+        object.add_symbol(Symbol {
+            name: b"mainCRTStartup".to_vec(),
+            value: 0,
+            size: 3,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Dynamic,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        let rodata = object.add_section(Vec::new(), b".rdata".to_vec(), SectionKind::ReadOnlyData);
+        let names = object.append_section_data(rodata, b"firstsecond", 1);
+        let names_symbol = object.add_symbol(Symbol {
+            name: b"names".to_vec(),
+            value: names,
+            size: 11,
+            kind: SymbolKind::Data,
+            scope: SymbolScope::Compilation,
+            weak: false,
+            section: SymbolSection::Section(rodata),
+            flags: SymbolFlags::None,
+        });
+        let table = object.append_section_data(rodata, &[0; 8], 8);
+        object
+            .add_relocation(
+                rodata,
+                Relocation {
+                    offset: table,
+                    symbol: names_symbol,
+                    addend: 5,
+                    flags: RelocationFlags::Generic {
+                        kind: RelocationKind::Absolute,
+                        encoding: RelocationEncoding::Generic,
+                        size: 64,
+                    },
+                },
+            )
+            .expect("relocation");
+        let bytes = object.write().expect("write COFF");
+        let output =
+            std::env::temp_dir().join(format!("qz_pe_addend_{}.exe", std::process::id()));
+        link_coff_objects(&[&bytes], &output).expect("link PE");
+        let image = std::fs::read(&output).expect("read PE");
+        let _ = std::fs::remove_file(&output);
+        let parsed = object::File::parse(image.as_slice()).expect("parse PE");
+        let section = parsed
+            .sections()
+            .find(|section| {
+                section
+                    .data()
+                    .is_ok_and(|data| data.windows(11).any(|window| window == b"firstsecond"))
+            })
+            .expect("read-only data section");
+        let data = section.data().unwrap();
+        let start = data.windows(11).position(|window| window == b"firstsecond").unwrap();
+        let pointer_at = (start + 11).next_multiple_of(8);
+        let pointer = u64::from_le_bytes(data[pointer_at..pointer_at + 8].try_into().unwrap());
+        let expected = section.address() + start as u64 + 5;
+        assert_eq!(pointer, expected, "the pointer must address \"second\"");
+    }
 }
 
 fn dll_for(symbol: &str) -> Option<&'static str> {
@@ -324,13 +392,23 @@ pub fn link_coff_objects(objects: &[&[u8]], output: &Path) -> Result<(), String>
                         section_data[bucket][at..at + 4]
                             .copy_from_slice(&(value as i32).to_le_bytes());
                     }
+                    // COFF addends are implicit: the section bytes at the
+                    // relocation hold them (the `object` reader reports 0).
                     RelocationKind::ImageOffset => {
-                        let value = target_rva as i64 + relocation.addend();
+                        let implicit = u32::from_le_bytes(
+                            section_data[bucket][at..at + 4].try_into().unwrap(),
+                        ) as i64;
+                        let value = target_rva as i64 + relocation.addend() + implicit;
                         section_data[bucket][at..at + 4]
                             .copy_from_slice(&(value as u32).to_le_bytes());
                     }
                     RelocationKind::Absolute if relocation.size() == 64 => {
-                        let value = IMAGE_BASE + target_rva as u64 + relocation.addend() as u64;
+                        let implicit = u64::from_le_bytes(
+                            section_data[bucket][at..at + 8].try_into().unwrap(),
+                        );
+                        let value = (IMAGE_BASE + target_rva as u64)
+                            .wrapping_add(relocation.addend() as u64)
+                            .wrapping_add(implicit);
                         section_data[bucket][at..at + 8].copy_from_slice(&value.to_le_bytes());
                     }
                     kind => {
