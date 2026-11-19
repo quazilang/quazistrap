@@ -31,5 +31,6 @@ Documented modules:
 - [`std.fs`](fs.md) — owned file handles, text reads, metadata, directory traversal and buffered I/O.
 - [`std.path`](path.md) — lexical path manipulation.
 - [`std.net`](net.md) — IPv4 TCP/UDP and bounded HTTP/1.1 helpers.
+- [`std.tls`](tls.md) — verified TLS client streams and HTTPS (system OpenSSL on Linux).
 - [`std.os`](os.md) — host information and current-process boundaries.
 - [`std.process`](process.md) — shell-free child processes and `Command` (Linux, Windows).

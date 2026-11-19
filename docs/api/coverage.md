@@ -13,6 +13,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.path` | [path](path.md) | Lexical `Path` manipulation (no file-system access). |
 | `std.json` | [json](json.md) | Bounded JSON validation and composition. |
 | `std.net` | [net](net.md) | IPv4 sockets and limited HTTP helpers. |
+| `std.tls` | [tls](tls.md) | Verified TLS client streams and HTTPS over the system TLS library (Linux). |
 | `std.os` | [os](os.md) | Current-process and host-information boundaries. |
 | `std.process` | [process](process.md) | Child processes and `Command` on Linux and Windows (Windows verified under Wine). |
 | `std.thread` | [thread](thread.md) | Experimental native-thread ABI. |

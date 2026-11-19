@@ -91,7 +91,9 @@ trust-store source, protocol policy, backend/version support, and update model.
 Resolved 2026-11-18 (В30А): system TLS libraries and the system trust store,
 with supported versions and dependencies documented per platform. Certificate
 and hostname verification are on by default; the test matrix includes a local
-TLS server, an untrusted certificate and a wrong hostname. Not implemented yet.
+TLS server, an untrusted certificate and a wrong hostname. Implemented on Linux
+(2026-11-19) as [`std.tls`](../api/tls.md) over OpenSSL 3; Windows (Schannel)
+and NetBSD remain open.
 
 ## D-009: time-zone data
 

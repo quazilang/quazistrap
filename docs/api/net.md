@@ -5,7 +5,8 @@ Audience: Quazi application developers.
 `std.net` currently provides IPv4 TCP and UDP sockets plus small HTTP/1.1
 request, response, and one-request server helpers on Linux and Windows. It is
 not a general asynchronous networking framework: sockets are blocking, there
-are no configured timeouts, IPv6, proxy support, TLS, or connection pooling.
+are no configured timeouts, IPv6, proxy support, or connection pooling. TLS
+and HTTPS are in [`std.tls`](tls.md).
 
 ## Errors and text boundary
 
@@ -128,7 +129,9 @@ the URL path as the request target while preserving the request's method, body,
 headers, and response limit. A caller-supplied `Host` header remains an
 intentional virtual-host override; otherwise it adds the URL authority,
 including a non-default HTTP port. It rejects HTTPS with `TlsUnavailable` and
-does not silently downgrade transport security. `parse(raw)` parses an owned
+does not silently downgrade transport security; `std.tls.send_url` sends HTTPS.
+`route(target, host)` returns the request aimed at another target and host, and
+`response_limit()` reports the response limit. `parse(raw)` parses an owned
 request text. `method`, `target`, `host`, `body_text`, `headers`, and `encode`
 use shared receivers; `headers()` returns an owned copy.
 
@@ -157,8 +160,8 @@ connections close through structural field cleanup at scope exit.
 
 ## Security and portability
 
-HTTPS deliberately fails with `TlsUnavailable`; no certificate or hostname
-verification exists in this module. Do not send credentials over HTTP. Linux
+HTTPS through this module fails with `TlsUnavailable`; use [`std.tls`](tls.md),
+which verifies certificates and host names. Do not send credentials over HTTP. Linux
 uses native sockets and Windows uses Winsock; error normalization is best-effort,
 so portable applications must handle `Native` and `Unsupported`. Blocking
 operations may wait indefinitely without external OS-level controls.
