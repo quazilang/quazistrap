@@ -36,11 +36,11 @@ const WINDOWS_CONTEXT_REGISTERS: [i32; 18] = [
 const WINDOWS_CONTEXT_EFLAGS: i32 = 0x44;
 
 impl StartStub {
-    pub fn generate(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
+    pub fn generate(fn_offset: usize, no_crash: bool, main_takes_args: bool, libc: bool) -> Self {
         if no_crash {
-            Self::generate_minimal_linux(fn_offset, main_takes_args)
+            Self::generate_minimal_linux(fn_offset, main_takes_args, libc)
         } else {
-            Self::generate_full_linux(fn_offset, main_takes_args)
+            Self::generate_full_linux(fn_offset, main_takes_args, libc)
         }
     }
 
@@ -155,7 +155,7 @@ impl StartStub {
     /// Linux _start stub with SIGSEGV/SIGABRT/SIGFPE/SIGBUS crash handler,
     /// backtrace printer, and QUAZI_TRACE=1 environment detection.
     /// Rewritten with iced-x86 so every relocation offset is exact.
-    fn generate_full_linux(fn_offset: usize, main_takes_args: bool) -> Self {
+    fn generate_full_linux(fn_offset: usize, main_takes_args: bool, libc: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -789,9 +789,15 @@ impl StartStub {
 
         // exit_group: returning from main ends the whole process, including
         // other threads (and the host `qz` process under `qz run --jit`).
+        // With libc linked, exit(3) does the same after flushing the stdio
+        // buffers C code filled (printf output to a pipe or file).
         emit!(asm.mov(rdi, rax));
-        emit!(asm.mov(rax, 231i64));
-        emit!(asm.syscall());
+        if libc {
+            call_ext!("exit", RelocKind::Plt32);
+        } else {
+            emit!(asm.mov(rax, 231i64));
+            emit!(asm.syscall());
+        }
 
         // ── Assemble and compute offsets ──
         let mut bytes = asm.assemble(0).expect("assemble");
@@ -852,7 +858,7 @@ impl StartStub {
 
     /// Minimal Linux stub without crash-handler registration.
     /// Keeps __quazi_print_backtrace for panic backtraces.
-    fn generate_minimal_linux(fn_offset: usize, main_takes_args: bool) -> Self {
+    fn generate_minimal_linux(fn_offset: usize, main_takes_args: bool, libc: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -1094,9 +1100,15 @@ impl StartStub {
 
         // exit_group: returning from main ends the whole process, including
         // other threads (and the host `qz` process under `qz run --jit`).
+        // With libc linked, exit(3) does the same after flushing the stdio
+        // buffers C code filled (printf output to a pipe or file).
         emit!(asm.mov(rdi, rax));
-        emit!(asm.mov(rax, 231i64));
-        emit!(asm.syscall());
+        if libc {
+            call_ext!("exit", RelocKind::Plt32);
+        } else {
+            emit!(asm.mov(rax, 231i64));
+            emit!(asm.syscall());
+        }
 
         // ── Assemble and compute offsets ──
         let mut bytes = asm.assemble(0).expect("assemble");
@@ -2128,7 +2140,7 @@ mod tests {
     fn linux_argument_entry_owns_header_and_pointer_storage() {
         for no_crash in [false, true] {
             for main_takes_args in [false, true] {
-                let stub = StartStub::generate(0, no_crash, main_takes_args);
+                let stub = StartStub::generate(0, no_crash, main_takes_args, false);
                 assert!(!stub.bytes.is_empty());
                 assert_eq!(
                     stub.relocs

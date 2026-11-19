@@ -2499,7 +2499,9 @@ impl<'a> FnEncoder<'a> {
                             if arg_count > 0 {
                                 emit!(asm.mov(rdi, slot(dst)));
                             }
-                            if is_netbsd {
+                            // With libc linked, exit(3) also flushes stdio buffers
+                            // that C code (printf, puts) filled.
+                            if is_netbsd || self.target.libc {
                                 call_ext!("exit".into(), RelocKind::Plt32);
                             } else {
                                 // exit_group ends every thread, like ExitProcess/exit(3).

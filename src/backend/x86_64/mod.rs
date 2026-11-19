@@ -251,7 +251,7 @@ fn emit_native_object(
         } else if target.os == target::Os::NetBsd {
             StartStub::generate_netbsd(stub_offset, main_takes_args)
         } else {
-            StartStub::generate(stub_offset, no_crash, main_takes_args)
+            StartStub::generate(stub_offset, no_crash, main_takes_args, target.libc)
         };
 
         obj.add_symbol(object::write::Symbol {
