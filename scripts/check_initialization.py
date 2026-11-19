@@ -95,7 +95,7 @@ VALID = {
     "nested_typed": ("enum NestedValue[T]{Some(T),None,}fn nested_typed()i32{var value:NestedValue[i32]=NestedValue.Some(1);ret match value{Some(1)=>7,_=>9,};}", "nested_typed()==7"),
     "generic_payload_binding": ("enum PairValue[T]{Both(i32,T),}fn generic_payload_binding()i32{var value:PairValue[i32]=PairValue.Both(1,7);ret match value{Both(_,second)=>second,};}", "generic_payload_binding()==7"),
     "colliding_variant_names": ("enum OtherChoice{None,Some(i32),}fn colliding_variant_names()i32{var first:NestedValue[i32]=NestedValue.Some(1);var second:OtherChoice=OtherChoice.Some(1);ret (match first{Some(1)=>7,_=>0,})+(match second{Some(1)=>9,_=>0,});}", "colliding_variant_names()==16"),
-    "void_payload_miss": ("enum VoidChoice{Some(i32),None,}fn void_payload_miss()i32{var value:VoidChoice=VoidChoice.Some(2);match value{Some(1)=>ignore(),None=>ignore(),};ret 7;}", "void_payload_miss()==7"),
+    "void_payload_miss": ("enum VoidChoice{Some(i32),None,}fn void_payload_miss()i32{var value:VoidChoice=VoidChoice.Some(2);match value{Some(1)=>ignore(),Some(_)=>ignore(),None=>ignore(),};ret 7;}", "void_payload_miss()==7"),
     "field_target_schedule": ("struct TargetHolder{field:i32,}fn make_target(value:i32)TargetHolder{ret TargetHolder{field:value};}fn field_target_schedule()i32{var value:i32;make_target((value=7)).field=value;ret value;}", "field_target_schedule()==7"),
     "deref_target_schedule": ("unsafe fn target_pointer(value:i32,slot:*i32)*i32{ret slot;}fn deref_target_schedule()i32{var value:i32;var slot=0;unsafe{*target_pointer((value=7),&slot)=value;}ret slot;}", "deref_target_schedule()==7"),
     "range_shadow": ("fn range_shadow()i32{var index=7;for index:index..8{ret index;}ret 0;}", "range_shadow()==7"),
