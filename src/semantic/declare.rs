@@ -1163,6 +1163,19 @@ impl Analyzer {
                 }
                 return;
             }
+            if !original.public
+                && original
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute == "module_const")
+            {
+                self.push_error(
+                    span,
+                    "S04",
+                    format!("'{}' is private and cannot be imported", leaf),
+                );
+                return;
+            }
             if matches!(original.kind, SymbolKind::TypeName) {
                 if !original.public {
                     self.push_error(

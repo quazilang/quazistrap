@@ -65,7 +65,8 @@ fn main() i32 { ret 0; }
 ```
 
 `main` may take no arguments or a single `Array[str]`. It may omit its return
-type, return `i32`, or return `!`. Argument-aware programs receive the
+type (or write `void`), return an integer status (`i32`, `u32`, ...), or
+return `!`. Argument-aware programs receive the
 executable path at `args[0]`.
 
 ## Structs

@@ -11,11 +11,11 @@ From lowest to highest precedence:
 | 1 | `=`, `+=`, `-=`, `*=`, `/=`, `%=` | Right |
 | 2 | `\|\|` | Left |
 | 3 | `&&` | Left |
-| 4 | `\|` | Left |
-| 5 | `^` | Left |
-| 6 | `&` | Left |
-| 7 | `==`, `!=` | Left |
-| 8 | `<`, `<=`, `>`, `>=` | Left |
+| 4 | `==`, `!=` | Left |
+| 5 | `<`, `<=`, `>`, `>=` | Left |
+| 6 | `\|` | Left |
+| 7 | `^` | Left |
+| 8 | `&` | Left |
 | 9 | `<<`, `>>` | Left |
 | 10 | `+`, `-` | Left |
 | 11 | `*`, `/`, `%` | Left |
@@ -380,8 +380,9 @@ consumes it (D-021 В10А). The selected arm's bindings own their payloads and
 are destroyed at the end of the arm unless the arm moves them on; payloads
 matched by `_` are destroyed when the arm is chosen; a guard that fails takes
 nothing. Using the matched value afterwards is S10 (use of a moved value).
-`match &value` only inspects the variant. Matching a field or element place
-does not consume it. `?` consumes an owned operand the same way: the success
+`match &value` only inspects the variant. Matching a field place by value
+consumes that field like any other operand (maintainer answer В10А); write
+`match &value.field` to inspect it without moving it. `?` consumes an owned operand the same way: the success
 payload becomes the result and a failure payload moves into the returned value.
 
 ```quazi

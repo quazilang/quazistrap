@@ -3105,6 +3105,9 @@ impl Analyzer {
         }
         let previous_return = self.current_return_type.replace(expected_return.clone());
         let body_eval = self.type_check_expr_expected(body, reachable, Some(&expected_return));
+        if once {
+            self.reject_borrowed_qo_arguments(body);
+        }
         self.current_return_type = previous_return;
         self.exit_scope_collect();
         self.restore_initialization(&outer_initialization);
@@ -3705,6 +3708,7 @@ impl Analyzer {
                     self.type_check_expr(right, reachable)
                 };
 
+                self.check_binary_signedness(expr.span, op, left, right, &left_eval, &right_eval);
                 let requirement = match op {
                     BinOpKind::Add
                     | BinOpKind::Sub
@@ -6527,6 +6531,36 @@ impl Analyzer {
         result
     }
 
+    /// `qo f(args)` runs `f` on another stack, so its arguments must not
+    /// borrow (expressions.md, "qo"): the qoroutine would borrow its own copy
+    /// of the variable and a write through `&x!` would be lost, or a view
+    /// would outlive its owner. String literals are static and allowed.
+    fn reject_borrowed_qo_arguments(&mut self, body: &Expr) {
+        let ExprKind::Call { args, .. } = &body.node else {
+            return;
+        };
+        for arg in args {
+            if matches!(arg.node, ExprKind::Literal(Literal::String(_))) {
+                continue;
+            }
+            let Some(ty) = self.assignment_operand_type(arg) else {
+                continue;
+            };
+            let borrowed = match self.resolve_type_aliases(&ty) {
+                TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::Str => true,
+                _ => false,
+            };
+            if borrowed {
+                self.push_error(
+                    arg.span,
+                    "S10",
+                    "a `qo` argument cannot be a reference or a string view; pass an owned value"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     fn type_check_try_expr(&mut self, expr: &Expr, inner: &Expr, reachable: bool) -> ExprEval {
         let inner_eval = self.type_check_expr(inner, reachable);
         let operand = inner_eval
@@ -7627,6 +7661,74 @@ impl Analyzer {
             .unwrap_or_else(|| "__program__".to_string());
         self.add_dependency_edge(DependencyKind::Call, &from, &target);
         symbol.ty
+    }
+
+    /// Integers of different signedness do not mix implicitly (types.md,
+    /// "Conversions"): `u64 == i64` or `usize + i32` would otherwise compare
+    /// or compute with one side reinterpreted. An integer literal takes the
+    /// type of the other operand, and a shift count's type is independent.
+    fn check_binary_signedness(
+        &mut self,
+        span: Span,
+        op: &BinOpKind,
+        left: &Expr,
+        right: &Expr,
+        left_eval: &ExprEval,
+        right_eval: &ExprEval,
+    ) {
+        if matches!(op, BinOpKind::Shl | BinOpKind::Shr | BinOpKind::AndAnd | BinOpKind::OrOr | BinOpKind::Pow) {
+            return;
+        }
+        let (Some(left_ty), Some(right_ty)) = (&left_eval.ty, &right_eval.ty) else {
+            return;
+        };
+        let operand = |ty: &TypeKind| match self.resolve_type_aliases(ty) {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                self.resolve_type_aliases(&inner.node)
+            }
+            other => other,
+        };
+        let (left_ty, right_ty) = (operand(left_ty), operand(right_ty));
+        // `&`, `|` and `^` take integer pairs or bool pairs: `6 & true` would
+        // mix a 0/1 bool into integer bits (and `true ^ 3` makes a bool 2).
+        if matches!(op, BinOpKind::BitAnd | BinOpKind::BitOr | BinOpKind::BitXor)
+            && ((matches!(left_ty, TypeKind::Bool) && Self::is_integer(&right_ty))
+                || (Self::is_integer(&left_ty) && matches!(right_ty, TypeKind::Bool)))
+        {
+            let symbol = match op {
+                BinOpKind::BitAnd => "&",
+                BinOpKind::BitOr => "|",
+                _ => "^",
+            };
+            self.push_error(
+                span,
+                "S06",
+                format!("`{symbol}` requires integer pairs or bool pairs, got {left_ty} and {right_ty}"),
+            );
+            return;
+        }
+        if crate::evaluation::is_integer_literal_expression(left)
+            || crate::evaluation::is_integer_literal_expression(right)
+            || !Self::is_integer(&left_ty)
+            || !Self::is_integer(&right_ty)
+        {
+            return;
+        }
+        let unsigned = |ty: &TypeKind| {
+            matches!(
+                ty,
+                TypeKind::Uint8 | TypeKind::Uint16 | TypeKind::Uint32 | TypeKind::Uint64 | TypeKind::Usize
+            )
+        };
+        if unsigned(&left_ty) != unsigned(&right_ty) {
+            self.push_error(
+                span,
+                "S01",
+                format!(
+                    "mixed signedness: {left_ty} and {right_ty}; convert one operand explicitly with `as`"
+                ),
+            );
+        }
     }
 
     pub(super) fn infer_binary_type(

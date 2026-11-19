@@ -7271,6 +7271,59 @@ fn main() void { quiet_vars(1); quiet_all(1); loud(1); }
     }
 
     #[test]
+    fn mixed_signedness_and_int_bool_bitwise_are_rejected() {
+        let report = analyze(
+            r#"
+fn a() i64 { ret -1; }
+fn b() u64 { ret 1; }
+fn n() usize { ret 3; }
+fn i() i32 { ret 2; }
+fn main() void {
+    const eq: bool = b() == a();
+    const sum: usize = n() + i();
+    const fine: usize = n() + 1;
+    const wide: i64 = a() + i();
+    const shift: u64 = b() << i();
+    const mixed: i32 = 6 & true;
+    const flag: bool = true ^ false;
+}
+"#,
+        );
+        let messages: Vec<&str> = report.errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "mixed signedness: u64 and i64; convert one operand explicitly with `as`",
+                "mixed signedness: usize and i32; convert one operand explicitly with `as`",
+                "`&` requires integer pairs or bool pairs, got i32 and bool",
+            ],
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn qo_arguments_cannot_borrow() {
+        let report = analyze(
+            r#"
+fn work(r: &i32!) i32 { *r = 5; ret 0; }
+fn text(t: str) usize { ret t.len(); }
+fn main() void {
+    var x: i32 = 1;
+    const a = qo work(&x!);
+    const b = qo text("literal");
+}
+"#,
+        );
+        let borrowed = report
+            .errors
+            .iter()
+            .filter(|e| e.code == "S10" && e.message.contains("`qo` argument"))
+            .count();
+        assert_eq!(borrowed, 1, "{:?}", report.errors);
+    }
+
+    #[test]
     fn fields_of_const_bindings_are_immutable() {
         let report = analyze(
             r#"

@@ -74,8 +74,8 @@ foreign boundary.
 
 ## Operators
 
-From lower to higher intent: assignment `=`, logical `||`/`&&`, bitwise
-`|`/`^`/`&`, equality `==`/`!=`, ordering `< <= > >=`, shifts `<< >>`,
+From lower to higher intent: assignment `=`, logical `||`/`&&`, equality
+`==`/`!=`, ordering `< <= > >=`, bitwise `|`/`^`/`&`, shifts `<< >>`,
 addition `+ -`, multiplication `* / %`, power `**`, unary `- ! & *`, casts
 with `as`, calls/indexing/fields. Parentheses remove ambiguity.
 
@@ -121,11 +121,11 @@ the move is an error. Replacing a binding destroys its previous environment,
 and the last owner is destroyed at scope exit. Calling a function value only
 borrows it, so it may be called repeatedly.
 
-The current safe closure checkpoint permits immutable captures and closure
-parameters/results only when their runtime value is a plain scalar (`bool`, a
-number, raw pointer, or C function pointer). Owned values, strings, references,
-mutable captures, and `fn` values nested inside arrays or named aggregates are
-rejected until recursive environment and aggregate destruction is available.
+Closures capture plain scalars (`bool`, numbers, raw and C function pointers)
+by copy and owned locals by move (D-023, [closures](language/expressions.md));
+closure parameters/results must be plain scalars. Borrowed references and
+string views, mutable captures, and `fn` values nested inside arrays or named
+aggregates are rejected.
 Callable parameter and return types must match exactly; numeric conversions do
 not adapt a function signature. See [Migrating function values and
 closures](migrations/closures.md).
@@ -245,13 +245,15 @@ unsafe { const byte = read_raw(pointer); }
 
 Shared references currently use a conservative lexical model:
 
-- `&value` accepts only a local variable or parameter (parentheses are fine).
+- `&value` accepts a local variable, a parameter, or a field of one
+  (parentheses are fine).
 - A value never converts into a reference, and reference pointee types are
   invariant: `&i32` is not `&u64`.
-- A shared-reference binding cannot be rebound, returned, stored in an owned
-  aggregate, or captured by a closure. The referenced owner cannot be mutated,
+- A shared-reference binding cannot be rebound, stored in an owned aggregate,
+  or captured by a closure; a reference derived from a reference parameter may
+  be returned. The referenced owner cannot be mutated,
   moved, or passed to a method while that borrow remains in the function.
-- Fields, indexes, dereferences, calls, and temporary expressions are not yet
+- Indexes, dereferences, calls, and temporary expressions are not yet
   valid address-of operands. These need real place-address lowering.
 - Dereferencing a shared reference materializes only scalar/value-like
   pointees. Aggregate pointees require immutable receiver/view semantics; a

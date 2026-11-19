@@ -104,12 +104,14 @@ const first: i32 = items[0];
 `&T` — a shared safe reference. Currently restricted to a conservative lexical
 model:
 
-- `&value` accepts only a local variable or parameter.
-- Reference bindings cannot be rebound, returned, stored in aggregates, or
-  captured by closures.
+- `&value` accepts a local variable, a parameter, or a field of one
+  (`&point.y`).
+- Reference bindings cannot be rebound, stored in aggregates, or captured by
+  closures; a function may return a reference derived from a reference
+  parameter ([safety](safety.md)).
 - The referenced owner cannot be mutated or moved while the borrow exists.
   A method declared with a read-only `self: &T` receiver is permitted.
-- Fields, indexes, dereferences, and temporaries are not valid address-of
+- Indexes, dereferences, and temporaries are not valid address-of
   operands.
 - Pointee types are invariant: `&i32` is not `&u64`.
 - Dereferencing a shared reference works for scalar pointees. Aggregate
@@ -257,8 +259,9 @@ environment. Assigning, passing, or returning one transfers ownership.
 Calling only borrows the environment. Use-after-move is rejected.
 
 Closures capture plain scalars by copy and owned values by move
-([closures](expressions.md)); function values cannot be placed inside arrays,
-structs, enums, or generic type arguments.
+([closures](expressions.md)); function values cannot be stored inside
+arrays, structs, enums or `Option`/`Array` (a generic function may still take
+one as its type argument).
 
 `@repr(C) type Callback = fn(T, U) V` — a non-owning raw C function pointer.
 Only `@export` functions coerce to callback values; invocation is unsafe.

@@ -36,6 +36,13 @@ def main():
         (app / "src/main.qz").write_text("import limits;\nfn main() i32 { ret limits.PRIVATE; }\n")
         private = run([qz, "check"], app, ok=False)
         assert private.returncode != 0 and "private to its module" in private.stdout + private.stderr
+        # Importing a private constant by name is rejected too.
+        for source in ("import limits.PRIVATE;\nfn main() i32 { ret PRIVATE; }\n",
+                       "import limits.{PRIVATE};\nfn main() i32 { ret PRIVATE; }\n"):
+            (app / "src/main.qz").write_text(source)
+            imported = run([qz, "check"], app, ok=False)
+            assert imported.returncode != 0 and "'PRIVATE' is private and cannot be imported" in (
+                imported.stdout + imported.stderr), imported.stdout + imported.stderr
 
         library = root / "constlib"
         (library / "src").mkdir(parents=True)
