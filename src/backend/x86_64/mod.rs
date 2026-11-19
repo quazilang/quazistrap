@@ -167,9 +167,13 @@ fn emit_native_object(
     {
         let scope = if chunk.intrinsic {
             SymbolScope::Compilation
-        } else if is_exported {
+        } else if is_exported && !fn_names[chunk_idx].starts_with("__quazi_") {
             SymbolScope::Dynamic
         } else {
+            // Runtime entry points the prelude and std export for their own
+            // use (`@export("__quazi_...")`, such as thread and qoroutine
+            // entries) link across objects but stay out of a shared
+            // library's export table, which holds the user's `@export`s only.
             SymbolScope::Linkage
         };
         if canonical[chunk_idx] != chunk_idx {
@@ -738,6 +742,39 @@ mod tests {
             .collect();
         assert!(symbols.contains("twice"));
         assert!(symbols.contains("__quazi_export_body_twice"));
+    }
+
+    #[test]
+    fn runtime_exports_stay_out_of_the_dynamic_export_table() {
+        let exported = |name: &str, symbol: &str| {
+            let mut chunk = returning_main();
+            chunk.name = name.to_string();
+            chunk.export = Some(ForeignSymbol {
+                symbol: symbol.to_string(),
+                signature: AbiSignature {
+                    params: Vec::new(),
+                    return_type: AbiType::Void,
+                    variadic: false,
+                },
+            });
+            chunk
+        };
+        let chunks = [
+            exported("user", "quazi_add"),
+            exported("runtime", "__quazi_qo_worker"),
+        ];
+        let target = TargetSpec::x86_64_linux().without_start();
+        let output = ElfBackend.compile(&chunks, &target, None, false).expect("object");
+        let object = object::File::parse(output.bytes.as_slice()).expect("valid object");
+        let scope = |name: &str| {
+            object
+                .symbols()
+                .find(|symbol| symbol.name() == Ok(name))
+                .unwrap_or_else(|| panic!("missing `{name}`"))
+                .scope()
+        };
+        assert_eq!(scope("quazi_add"), object::SymbolScope::Dynamic);
+        assert_eq!(scope("__quazi_qo_worker"), object::SymbolScope::Linkage);
     }
 
     #[test]
