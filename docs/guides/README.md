@@ -21,4 +21,4 @@ Task-oriented guides for common development workflows.
   reference.
 - [Standard-library API](../api/README.md) — every public module documented.
 - [Tutorial](../tutorial/README.md) — progressive introduction for new users.
-- [Examples](../../examples/README.md) — 35 runnable example projects.
+- [Examples](../../examples/README.md) — 38 runnable example projects.

@@ -2,9 +2,8 @@
 
 This chapter puts together everything from the tutorial into a realistic
 program: a command-line byte-position indexer that reads a file and reports
-how many byte positions it indexed. The current `Map` API supports `usize`
-keys and values only, so a word-frequency table requires a future string-keyed
-collection API.
+how many byte positions it indexed with the `usize`-keyed `Map`; a
+word-frequency table would use `HashMap[String, usize]` the same way.
 
 ## The program
 
@@ -146,23 +145,24 @@ platform-resolution limits.
 The current networking surface is blocking IPv4 TCP/UDP plus small HTTP/1.1
 helpers. Start with the documented request and response types in
 [`std.net`](../api/net.md), and set response-size limits before reading
-untrusted peers. HTTPS, TLS certificate validation, IPv6, and socket timeouts
-are not yet available, so applications that need those guarantees must not
-treat the current HTTP helpers as a secure general-purpose client.
+untrusted peers. Socket read/write timeouts are available, and
+[`std.tls`](../api/tls.md) provides verified TLS client streams and HTTPS on
+Linux (system OpenSSL 3); IPv6 and TLS on Windows are not yet available.
 
-`std.thread` is experimental. It exposes a constrained native callback ABI,
-not structured concurrency: there is no cancellation, synchronization,
-result propagation, or automatic join. Read the complete safety contract in
+`std.thread` is experimental: `thread.spawn(|| work())` returns a
+`JoinHandle` whose `join` gives the result or `ThreadError.Panicked`, a
+dropped handle joins its thread, cancellation is cooperative, and the prelude
+`Channel[T]` connects threads. Read the contract in
 [`std.thread`](../api/thread.md) before using it; most applications should keep
-their first projects single-threaded.
+their first projects single-threaded or use `qo` qoroutines.
 
 `std.process` starts programs without a shell. On Linux, `process.Command`
 finds the program in `PATH`, sets arguments, a working directory and
 environment variables, and returns the exit status; together with
 `fs.read_dir` it replaces small shell scripts (see
 [example 38](../../examples/38-shell-scripting/README.md) and
-[`std.process`](../api/process.md)). Windows process creation is not
-implemented yet.
+[`std.process`](../api/process.md)). On Windows the same API starts processes
+through `CreateProcessW`.
 
 ## Debugging failures
 
@@ -181,6 +181,6 @@ Now that you have completed the tutorial, explore these resources:
 - [Standard-library API](../api/README.md) — every public module documented.
 - [Practical guides](../guides/README.md) — projects, testing, FFI, and
   diagnostics.
-- [Examples](../../examples/README.md) — 35 runnable example projects.
+- [Examples](../../examples/README.md) — 38 runnable example projects.
 - [C interoperability](../FFI.md) — calling C code and exporting to C.
 - [Tooling](../tooling/README.md) — LSP, Tree-sitter, and editor setup.

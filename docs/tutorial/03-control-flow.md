@@ -29,7 +29,8 @@ fn main() i32 {
 }
 ```
 
-Conditions are always parenthesized. Braces are required.
+Parentheses around a condition are optional (`if x > 0 { ... }` and
+`if (x > 0) { ... }` are the same). Braces are required.
 
 ### `if` as an expression
 

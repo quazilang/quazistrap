@@ -25,13 +25,15 @@ fn main() i32 {
 
 ### Const fields
 
-Fields marked `const` cannot be modified after construction:
+Fields marked `const` cannot be modified after construction; assigning one
+is error S07, also through `&T!` and in the type's own methods. The other
+fields stay mutable through a `var` binding:
 
 ```quazi
 // tutorial: fragment — requires the surrounding chapter context.
 struct Config {
     const name: str,
-    var retries: i32,
+    retries: i32,
 }
 ```
 
@@ -188,7 +190,7 @@ struct Pair[A, B] {
     second: B,
 }
 
-const p = Pair[str, i32] { first: "age", second: 30 };
+const p: Pair[str, i32] = Pair { first: "age", second: 30 };
 ```
 
 ## Type aliases
@@ -215,8 +217,10 @@ struct User {
 }
 ```
 
-Currently `Serialize` generates JSON output for structs with `bool`, `i64`,
-and `String` fields.
+`Serialize` generates JSON for structs whose fields are integers, floats,
+`bool`, `String`, nested derived structs, `Option` and `Array` (see
+[attributes](../language/attributes.md)); the program must `import
+std.codec`.
 
 ## Next steps
 

@@ -230,12 +230,15 @@ qz build --bin acme_server
 Build stages report progress:
 
 ```
-  ◆ cache lookup    miss
-  ◆ frontend        4 files
-  ◆ bytecode        12 functions (0 cached)
-  ◆ native          x86_64.linux
-  ◆ cache write     saved
+ok  frontend      72 tokens · 1 file · 114ms
+ok  parsing       3 items · 11ms
+ok  analysis      0 warnings · 431ms
+ok  bytecode      144 fns · 6,719 instr · r53 · 0 restored · 123 compiled · 90ms
+ok  native  x86_64·linux  111.8 KB  object · 6ms
+ok  linking       72.2 KB · 0ms
 ```
+
+(The exact stages and figures depend on the project and cache state.)
 
 Control output with `--silent`, `--no-progress`, `--no-color`, or
 `--no-unicode`.

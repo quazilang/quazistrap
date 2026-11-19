@@ -34,7 +34,7 @@ fn main() i32 {
 
 ```quazi
 // tutorial: fragment — requires the surrounding chapter context.
-import std.io.{println, eprintln};
+import std.io.{println, errln};
 ```
 
 ### Aliased import

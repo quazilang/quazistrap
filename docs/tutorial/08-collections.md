@@ -38,7 +38,7 @@ fn main() i32 {
     // Modifying elements
     numbers[0] = 99;
 
-    // Iterate by index; Array does not yet expose an iterator.
+    // Iterate by index (`for v : numbers` also works, but consumes the array).
     for i : 0..numbers.len() {
         io.println("[{}] = {}", i, numbers[i]);
     }
@@ -49,15 +49,18 @@ fn main() i32 {
 
 ### Checked access
 
-`get(index)` returns `Option[T]` instead of panicking:
+`get(index)` and `numbers[index]` panic with `index out of bounds` past the
+end, so check the length first; `get_ref(index)` borrows an element instead of
+copying it:
 
 ```quazi
 // tutorial: fragment — requires the surrounding chapter context.
-const maybe = numbers.get(10);
-match maybe {
-    Some(v) => io.println("Found: {}", v),
-    None => io.println("Index out of bounds"),
-};
+const index: usize = 10;
+if (index < numbers.len()) {
+    io.println("Found: {}", numbers.get(index));
+} else {
+    io.println("Index out of bounds");
+}
 ```
 
 ### Ownership
@@ -68,8 +71,9 @@ early release if needed.
 
 ## Maps
 
-`std.collections` provides an open-addressing hash map with `usize` keys
-and values:
+`std.collections` provides `HashMap[K, V]` for any hashable key (for example
+`HashMap[String, i32]`) and the specialised open-addressing `Map` with `usize`
+keys and values shown here:
 
 ```quazi
 // tutorial: runnable
@@ -118,7 +122,8 @@ scores.insert(4, 77).unwrap();
 
 ## Sets
 
-`std.collections` provides an open-addressing set with `usize` values:
+`std.collections` provides `HashSet[T]` for any hashable element and the
+specialised open-addressing `Set` with `usize` values shown here:
 
 ```quazi
 // tutorial: runnable
@@ -144,15 +149,14 @@ fn main() i32 {
 
 ## Box
 
-`Box[T]` is a heap-allocated single value:
+`Box[T]` is a heap-allocated single value. `get` consumes the box and moves
+the value out; a box that is never unwrapped is freed at scope exit:
 
 ```quazi
 // tutorial: fragment — requires the surrounding chapter context.
-var boxed = Box[i32].new(42);
-io.println("Value: {}", boxed.get());
-boxed.set(100);
-io.println("Updated: {}", boxed.get());
-// Automatically freed at scope exit
+const boxed: Box[i32] = Box.new(42);
+const value: i32 = boxed.get();
+io.println("Value: {}", value);
 ```
 
 ## String as a collection
@@ -178,9 +182,9 @@ if (text.contains("Quazi")) {
     io.println("Found it!");
 }
 
-// Iteration
-for i, ch : text {
-    io.println("[{}] = {}", i, ch);
+// Iteration by scalar index (`str` itself is not iterable)
+for i : 0..text.len() {
+    io.println("[{}] = {}", i, text[i]);
 }
 ```
 

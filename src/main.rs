@@ -2271,6 +2271,18 @@ fn main() {
                         }
                         fail_build();
                     });
+            // Like `qz build -o`, create the output directory if needed.
+            if let Some(parent) = output.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+                    eprintln!(
+                        "\x1b[31;1merror:\x1b[0m cannot create {}: {error}",
+                        parent.display()
+                    );
+                    fail_build();
+                });
+            }
             std::fs::write(&output, generated).unwrap_or_else(|error| {
                 eprintln!(
                     "\x1b[31;1merror:\x1b[0m cannot write '{}': {error}",

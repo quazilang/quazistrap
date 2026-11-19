@@ -17,8 +17,8 @@ error[S04]: function `internal_fn` is private to its module
 ```
 
 The first line is `level[code]: message`; the `-->` line gives
-`file:line:column`, followed by the source line. `--no-color` and
-`--no-unicode` keep the output plain.
+`file:line:column`, followed by the source line. `qz build`, `qz run` and
+`qz test` accept `--no-color` and `--no-unicode` to keep the output plain.
 
 ## Semantic errors (S-codes)
 
@@ -136,15 +136,16 @@ A function or declaration is defined but never referenced.
 
 ```
 error[E00]: lexer error: unterminated string literal
+error[E00]: lexer error: unterminated raw string
 ```
 
-A quoted string is missing its closing `"`, or a raw backtick string is
-missing its closing `` ` ``.
+A quoted string is missing its closing `"` (first form), or a raw backtick
+string is missing its closing `` ` `` (second form).
 
 ### Invalid escape
 
 ```
-error[E00]: lexer error: unknown escape sequence '\\q'
+error[E00]: lexer error: unknown escape sequence '\q'
 ```
 
 A quoted string contains an unrecognized escape. Valid escapes include `\n`,
@@ -210,5 +211,5 @@ There is no build-wide warning suppression. Address warnings individually.
   semantics.
 - [Standard-library API](../api/README.md) — function signatures and error
   types.
-- [Examples](../../examples/README.md) — 35 runnable programs.
+- [Examples](../../examples/README.md) — 38 runnable programs.
 - [Testing guide](testing.md) — writing and running tests.
