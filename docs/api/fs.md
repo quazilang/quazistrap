@@ -157,7 +157,8 @@ writers first.
 
 ## Limits and future work
 
-Paths are manipulated lexically by [`std.path`](path.md). The module has no
-streaming trait integration, large-file limit control, or cross-platform
-symbolic-link and permission model; those remain future design work rather
+Paths are manipulated lexically by [`std.path`](path.md). `File` implements
+`stream.Reader`/`stream.Writer`, and `read_to_string_with_limit` /
+`read_bytes_with_limit` bound whole-file reads. The module has no
+cross-platform symbolic-link and permission model; those remain future design work rather
 than undocumented raw-handle behavior.

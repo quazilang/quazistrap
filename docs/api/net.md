@@ -5,7 +5,7 @@ Audience: Quazi application developers.
 `std.net` currently provides IPv4 TCP and UDP sockets plus small HTTP/1.1
 request, response, and one-request server helpers on Linux and Windows. It is
 not a general asynchronous networking framework: sockets are blocking, there
-are no configured timeouts, IPv6, proxy support, or connection pooling. TLS
+is no IPv6, proxy support, or connection pooling. TLS
 and HTTPS are in [`std.tls`](tls.md).
 
 ## Errors and text boundary

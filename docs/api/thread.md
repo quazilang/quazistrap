@@ -4,15 +4,16 @@ Audience: language users.
 
 Status: experimental. The callback ABI and zero-on-failure low-level contract
 are implemented; safe concurrency is blocked on implementation of
-[D-014](../decisions/whole-program-ownership.md). Typed creation errors, panic
-propagation, cancellation, and structured concurrency are not yet available.
+[D-014](../decisions/whole-program-ownership.md). Creation failures are typed
+(`ThreadError.CreationFailed`) and `spawn` returns a `JoinHandle[T]` whose
+`join` yields the result; panic propagation, cancellation, and structured
+concurrency are not yet available.
 
 ## Callback type
 
-`ThreadCallback` is a target-specific `@repr(C)` function-pointer alias:
-
-- Linux: `fn(*u8) *u8`
-- Windows: `fn(*u8) u32`
+`ThreadCallback` is the `@repr(C)` function-pointer alias `fn(*u8) *u8` on
+every target (Windows uses the low 32 bits of the result as the exit code), so
+a QZI can share the same caller code across targets.
 
 The callback must be a signature-compatible `@export` function. Capturing
 closures and ordinary Quazi function values do not use the operating system's
@@ -70,8 +71,8 @@ an extracted handle remains an unsafe low-level operation.
 
 ## Unsupported behavior
 
-The module does not currently provide cancellation, synchronization primitives,
-result or panic propagation, join timeouts, detached threads, portable thread
+The module does not currently provide cancellation, panic propagation, join
+timeouts, detached threads, portable thread
 identifiers, or automatic joining. Programs requiring those guarantees should
 not treat this API as production-stable.
 

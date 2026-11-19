@@ -6,9 +6,9 @@ fields (`DateTime`), and RFC 3339 formatting and parsing.
 
 Policy: wall-clock values count Unix seconds without leap seconds (a leap second
 cannot be represented, and `:60` is rejected), cover years 0001 through 9999,
-and use the proleptic Gregorian calendar. Named time zones and a time-zone
-database are not provided; RFC 3339 numeric offsets are accepted when parsing
-and normalized to UTC. Days, months and years are not `Duration` units.
+and use the proleptic Gregorian calendar. Named time zones come from the
+system IANA database through `std.timezone` (below); RFC 3339 numeric offsets
+are accepted when parsing and normalized to UTC. Days, months and years are not `Duration` units.
 
 ## `Duration`
 

@@ -5,7 +5,8 @@ Audience: Quazi application developers.
 `Path` holds a path as text and manipulates it lexically; nothing touches the
 file system, so `normalize` does not resolve symbolic links. `/` separates
 components everywhere; Windows builds also accept `\` and treat `C:\...` and
-`\\server\...` as absolute. Indexes count Unicode scalars.
+`\\server\...` as absolute. `join` and `normalize` write `separator()`, so
+on Windows the example below yields `a\c`. Indexes count Unicode scalars.
 
 | API | Semantics |
 | --- | --- |

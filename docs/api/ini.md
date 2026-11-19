@@ -2,8 +2,9 @@
 
 `std.ini` provides a small, deterministic INI reader. It keeps the validated
 source text as an owned `IniDocument` and performs lookups on demand. It does
-not preserve comments or formatting as editable structure, and it does not
-provide writing, interpolation, schema validation, or nested-value syntax.
+not preserve comments or formatting as editable structure (writing goes
+through `encode`, `save`, `save_as` and `IniWriter`, below), and it does not
+provide interpolation, schema validation, or nested-value syntax.
 
 ## Parsing and document ownership
 

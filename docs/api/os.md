@@ -3,8 +3,8 @@
 Audience: Quazi application developers.
 
 std.os is a small current-process and host-information module. Shell-free
-Linux child-process management is available through
-[`std.process`](process.md); its Windows implementation remains pending. See
+Linux and Windows child-process management is available through
+[`std.process`](process.md). See
 the [process runtime decision](../decisions/process-runtime.md) for the
 cross-platform contract.
 
@@ -24,8 +24,7 @@ value means “infinite”, longer waits are issued as finite chunks of at most
 Windows infinite-wait sentinel.
 
 getpid() returns the current process identifier through Linux getpid or Windows
-GetCurrentProcessId. getppid() remains Linux-specific; Windows callers must not
-rely on its current Unix-syscall-based result. This limitation is tracked as
+GetCurrentProcessId. getppid() returns the parent on Linux and NetBSD and `-1` on Windows. This limitation is tracked as
 standard-library portability debt rather than a portable parent-PID contract.
 
 ## Arguments
@@ -59,11 +58,11 @@ readers and writers in other threads are safe; replaced copies stay allocated
 because a reader may still hold one
 ([runtime state](../internals/runtime-state.md)). Windows uses
 `SetEnvironmentVariableA` (ANSI code page: non-ASCII text is not preserved),
-NetBSD libc `setenv`/`unsetenv`; other targets return `Native(38)` (ENOSYS).
+and NetBSD libc `setenv`/`unsetenv`.
 
 | API | Current behavior |
 | --- | --- |
-| name() | "Linux" or "Windows" on supported targets, otherwise "Unknown". |
+| name() | "Linux", "Windows" or "NetBSD" on supported targets, otherwise "Unknown". |
 | version() | Owned display-oriented release text. Linux currently returns "Linux" without a kernel release; Windows derives edition/build text from compiler-provided Windows metadata. It is not a stable machine-readable version API. |
 | cpu_name() | Best-effort owned CPU-brand text, or "unknown" on failure. |
 | shell() / terminal() | Best-effort interactive-environment names. Linux reads SHELL/TERM; Windows uses environment hints and a bounded parent-process scan whose native snapshot handle is released once. They may be "unknown", "Console", or "Windows Console" and must not drive security or compatibility policy. |

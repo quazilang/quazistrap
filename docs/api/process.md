@@ -2,10 +2,11 @@
 
 Audience: Quazi application developers.
 
-Status: Linux implementation available. `Command` adds PATH lookup, working
-directories and environments at the maintainers' request
-([D-021](../decisions/maintainer-answers-2026-11-10.md)); Windows process
-creation and asynchronous extensions remain pending.
+Status: implemented on Linux and Windows (Windows through `CreateProcessW`,
+checked under Wine). `Command` adds PATH lookup, working directories and
+environments at the maintainers' request
+([D-021](../decisions/maintainer-answers-2026-11-10.md)); asynchronous
+extensions remain pending.
 
 ## `Command` (scripting)
 
@@ -36,8 +37,8 @@ fn main() i32 {
 | `spawn()` | Starts the child and returns a `Child`; a failed `execve` (missing program, no permission) is reported before returning. |
 | `status()` | Spawns and waits, returning the `ExitStatus`. |
 
-`Command` is Linux-only for now (fork/execve in the standard library; other
-targets return `SpawnFailed(38)`); standard streams are inherited.
+`Command` uses fork/execve on Linux and `CreateProcessW` with a UTF-16
+command line on Windows; standard streams are inherited.
 
 ## Launching
 
@@ -85,8 +86,8 @@ recommendation to construct a command string or rely on a shell.
 | `handle()` | Exposes the raw platform handle through a shared receiver for narrowly scoped target-specific interoperation. Do not close or wait on it outside `Child`. |
 
 `ExitStatus.Code(i32)` is a normal exit code. Linux also reports
-`ExitStatus.Signal(i32)` for signal termination. Windows will report only
-`Code` when it is implemented.
+`ExitStatus.Signal(i32)` for signal termination. Windows reports only
+`Code`.
 
 ## Errors and limits
 

@@ -3,8 +3,8 @@
 `std.json` is the low-level JSON foundation for Quazi serialization. It is safe
 to use as a bounded syntax gate for untrusted input and to encode individual
 string/boolean/null tokens. Compiler-backed `Serialize` derives compose these
-primitives for a deliberately narrow first field matrix; `Deserialize` is not
-implemented yet. See [D-012](../decisions/serialization.md).
+primitives, and `@derive(Deserialize)` decodes them back
+([codec](codec.md)). See [D-012](../decisions/serialization.md).
 
 ## Validation
 
