@@ -366,7 +366,11 @@ Match supports:
 - Guards: `if condition` after a pattern.
 
 Enum matches must be exhaustive: every variant must be covered, or a `_`
-wildcard must be present.
+wildcard must be present. A variant arm whose payload is refutable covers
+the variant only together with the other arms: `Some(Some(x))` and
+`Some(None)` cover `Some`, while a literal payload (`E.A(1)`) needs another
+arm for the remaining values (S09). Refutable struct sub-patterns are
+checked at run time.
 
 Known scalar value matches also require complete coverage or a catch-all arm.
 If a value match reaches no arm at runtime, it traps; Void matches may fall
