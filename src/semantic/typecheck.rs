@@ -9240,6 +9240,7 @@ impl Analyzer {
                 }
 
                 let payloads = self.match_pattern_payload_types(scrutinee_ty.as_ref(), variant);
+                let mut payload_coverage = super::PayloadCoverage::Full;
                 for (index, sub_pattern) in sub_patterns.iter().enumerate() {
                     if matches!(
                         sub_pattern.node,
@@ -9251,7 +9252,26 @@ impl Analyzer {
                         payloads.as_ref().and_then(|payloads| payloads.get(index))
                     {
                         let payload = self.resolve_type_aliases(payload);
-                        self.validate_match_pattern(sub_pattern, &Some(payload));
+                        let (nested, _) = self.validate_match_pattern(sub_pattern, &Some(payload.clone()));
+                        // Struct sub-patterns keep their run-time check; a
+                        // literal or a second refutable position is partial.
+                        let position_coverage = match (&sub_pattern.node, &payload) {
+                            (PatternKind::Variant { .. }, TypeKind::Named { name, .. }) => {
+                                Some(super::PayloadCoverage::Nested {
+                                    position: index,
+                                    enum_name: name.clone(),
+                                    arm: Box::new(nested),
+                                })
+                            }
+                            (PatternKind::Struct { .. }, _) => None,
+                            _ => Some(super::PayloadCoverage::Refutable),
+                        };
+                        if let Some(coverage) = position_coverage {
+                            payload_coverage = match payload_coverage {
+                                super::PayloadCoverage::Full => coverage,
+                                _ => super::PayloadCoverage::Refutable,
+                            };
+                        }
                     } else {
                         self.push_error(sub_pattern.span, "S14", "nested refutable pattern requires a proven enum payload type; annotate the scrutinee".to_string());
                     }
@@ -9264,6 +9284,7 @@ impl Analyzer {
                         kind: MatchArmKindInfo::Variant {
                             enum_name: enum_name.clone(),
                             variant: variant.clone(),
+                            payload: payload_coverage,
                         },
                         has_guard: false,
                     },

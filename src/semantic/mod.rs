@@ -101,7 +101,25 @@ pub(super) enum MatchArmKindInfo {
     Variant {
         enum_name: Option<String>,
         variant: String,
+        payload: PayloadCoverage,
     },
+}
+
+/// What a variant arm's payload patterns cover, for exhaustiveness.
+#[derive(Debug, Clone)]
+pub(super) enum PayloadCoverage {
+    /// Every payload pattern is irrefutable (binding, `_`, struct).
+    Full,
+    /// One payload position holds a variant pattern of enum `enum_name`; the
+    /// other positions are irrefutable.
+    Nested {
+        position: usize,
+        enum_name: String,
+        arm: Box<MatchArmInfo>,
+    },
+    /// A literal, or refutable patterns in several positions: covers only
+    /// some values.
+    Refutable,
 }
 
 #[derive(Debug, Clone)]
@@ -5117,6 +5135,7 @@ mod tests {
                 kind: MatchArmKindInfo::Variant {
                     enum_name: None,
                     variant: "yes".to_string(),
+                    payload: super::PayloadCoverage::Full,
                 },
                 has_guard: false,
             }],
@@ -7321,6 +7340,33 @@ fn main() void {
             .filter(|e| e.code == "S10" && e.message.contains("`qo` argument"))
             .count();
         assert_eq!(borrowed, 1, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn nested_refutable_payloads_count_toward_exhaustiveness() {
+        let report = analyze(
+            r#"
+enum E { A(i32), B }
+fn get() Option[Option[i32]] { Some(None) }
+fn e() E { E.A(5) }
+fn main() void {
+    const full: i32 = match get() { Some(Some(x)) => x, Some(None) => 1, None => 0 };
+    const gap: i32 = match get() { Some(Some(x)) => x, None => 0 };
+    const literal: i32 = match e() { E.A(1) => 1, E.B => 2 };
+    const covered: i32 = match e() { E.A(1) => 1, E.A(n) => n, E.B => 2 };
+}
+"#,
+        );
+        let messages: Vec<&str> = report.errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "non-exhaustive match for enum 'Option': missing [Option.Some]",
+                "non-exhaustive match for enum 'E': missing [E.A]",
+            ],
+            "{:?}",
+            report.errors
+        );
     }
 
     #[test]

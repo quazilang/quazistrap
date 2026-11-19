@@ -454,6 +454,69 @@ impl Analyzer {
         // No additional aggregate suggestion needed.
     }
 
+    /// Whether partial payload patterns of one variant together cover its
+    /// payload: all are nested variant patterns at the same position whose
+    /// arms exhaust that enum (recursively, to a bounded depth).
+    fn payloads_cover(&self, payloads: &[PayloadCoverage], depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        let mut position = None;
+        let mut enum_name = None;
+        let mut arms = Vec::new();
+        for payload in payloads {
+            let PayloadCoverage::Nested {
+                position: at,
+                enum_name: name,
+                arm,
+            } = payload
+            else {
+                return false;
+            };
+            if position.is_some_and(|p| p != *at) || enum_name.is_some_and(|n: &String| n != name) {
+                return false;
+            }
+            position = Some(*at);
+            enum_name = Some(name);
+            arms.push(arm.as_ref());
+        }
+        let Some(enum_name) = enum_name else {
+            return false;
+        };
+        self.arms_cover_enum(enum_name, &arms, depth + 1)
+    }
+
+    fn arms_cover_enum(&self, enum_name: &str, arms: &[&MatchArmInfo], depth: usize) -> bool {
+        let Some(info) = self.enums.get(enum_name) else {
+            return false;
+        };
+        if arms
+            .iter()
+            .any(|arm| !arm.has_guard && matches!(arm.kind, MatchArmKindInfo::Wildcard))
+        {
+            return true;
+        }
+        info.variants.keys().all(|variant| {
+            let mut partial = Vec::new();
+            for arm in arms {
+                if let MatchArmKindInfo::Variant {
+                    variant: name,
+                    payload,
+                    ..
+                } = &arm.kind
+                    && name == variant
+                    && !arm.has_guard
+                {
+                    if matches!(payload, PayloadCoverage::Full) {
+                        return true;
+                    }
+                    partial.push(payload.clone());
+                }
+            }
+            !partial.is_empty() && self.payloads_cover(&partial, depth)
+        })
+    }
+
     pub(super) fn run_exhaustiveness_pass(
         &mut self,
         checkpoint: &mut impl FnMut() -> Result<(), crate::cancel::Cancelled>,
@@ -478,6 +541,8 @@ impl Analyzer {
 
             let mut wildcard_seen = false;
             let mut covered: BTreeSet<String> = BTreeSet::new();
+            let mut partial: std::collections::BTreeMap<String, Vec<PayloadCoverage>> =
+                std::collections::BTreeMap::new();
 
             for arm in &candidate.arms {
                 checkpoint()?;
@@ -497,7 +562,11 @@ impl Analyzer {
                             wildcard_seen = true;
                         }
                     }
-                    MatchArmKindInfo::Variant { enum_name, variant } => {
+                    MatchArmKindInfo::Variant {
+                        enum_name,
+                        variant,
+                        payload,
+                    } => {
                         let already_covered = wildcard_seen || covered.contains(variant.as_str());
                         if already_covered && !arm.has_guard {
                             self.push_warning(
@@ -535,6 +604,14 @@ impl Analyzer {
                             continue;
                         }
 
+                        // A partial payload pattern covers the variant only
+                        // together with the other arms (checked below).
+                        if !matches!(payload, PayloadCoverage::Full) {
+                            if !arm.has_guard {
+                                partial.entry(variant.clone()).or_default().push(payload.clone());
+                            }
+                            continue;
+                        }
                         if !arm.has_guard && !covered.insert(variant.clone()) {
                             self.push_warning(
                                 arm.span,
@@ -553,7 +630,10 @@ impl Analyzer {
                 let mut missing_variants = Vec::new();
                 for name in enum_info.variants.keys() {
                     checkpoint()?;
-                    if !covered.contains(name) {
+                    let nested_cover = partial
+                        .get(name)
+                        .is_some_and(|payloads| self.payloads_cover(payloads, 0));
+                    if !covered.contains(name) && !nested_cover {
                         missing_variants.push(name.clone());
                     }
                 }
