@@ -5,7 +5,17 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 98.7%. Remaining: 1.3%.**
+**Complete: 98.9%. Remaining: 1.1%.**
+
+On 2026-11-19 safe provenance-tracked dense-element borrowing (D-015) was
+credited (Ownership 13/16, 98.9%): `Array.get_ref` lowers to the checked
+element address for owned, plain, multi-slot and nested elements; a live
+element borrow freezes its root against mutation, replacement and moves;
+returned, temporary-rooted, stored and captured element references are
+rejected, and a container without `@contiguous_elements` cannot obtain the
+operation (`scripts/check_reference_results.py`, native and source-removed
+QZI). The same day QZI dependency certificates started composing into source
+parameter effects; that requirement stays open.
 
 On 2026-11-19 QZI format 17 started carrying a D-014 ownership certificate
 (per-body bytecode parameter effects, recomputed and compared on every read;
@@ -234,7 +244,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Threshold-based auto-inline | 1/1 | 100.0% | 0.0% |
 | Cross-basic-block const folding | 1/1 | 100.0% | 0.0% |
 | Strength reduction | 1/1 | 100.0% | 0.0% |
-| Ownership / RAII bytecode | 10/16 | 62.5% | 37.5% |
+| Ownership / RAII bytecode | 13/16 | 81.3% | 18.8% |
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
@@ -429,7 +439,9 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   consuming receivers, also on only some paths; a runtime drop-guard mask
   destroys exactly the rest; `scripts/check_partial_moves.py`. Since D-025
   generic parameters move unless `T: Copy`; moves repeated by a loop are errors).
-- [ ] Safe provenance-tracked dense-element source borrowing.
+- [x] Safe provenance-tracked dense-element source borrowing (2026-11-19:
+  `Array.get_ref` via `ContiguousElementAddr`, root frozen while the element
+  borrow lives, escapes rejected; `scripts/check_reference_results.py`).
 
 ### Atomic opcodes
 

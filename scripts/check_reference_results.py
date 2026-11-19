@@ -14,6 +14,7 @@ from pathlib import Path
 
 SOURCE = r"""import std.io.println;
 struct Inner { value: i32, label: String }
+struct Wide { a: i64, b: i64, c: i64, name: String }
 struct Point { inner: Inner, y: i32 }
 impl Point {
     fn inner_ref(self: &Point) &Inner { ret &self.inner; }
@@ -80,10 +81,19 @@ fn main() i32 {
     heap_pairs.push([50, 60]);
     println("{} {} {}", array_tail(&stack_pair), array_tail(heap_pairs.get_ref(0)),
         array_tail(heap_pairs.get_ref(1)));
+    // Nested and multi-slot owned elements borrow through the element address.
+    var rows: Array[Array[String]] = Array.new();
+    var row: Array[String] = Array.new();
+    row.push(String.from("deep"));
+    rows.push(row);
+    var wides: Array[Wide] = Array.new();
+    wides.push(Wide { a: 1, b: 2, c: 3, name: String.from("wide") });
+    const wide = wides.get_ref(0);
+    println("{} {} {}", rows.get_ref(0).get_ref(0).len(), wide.c, wide.name.len());
     ret 0;
 }
 """
-EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n30\n20 40 60\n"
+EXPECTED = "2 5 other 2\n5 3\nfirst first\n5\nfirst 7\n9\n4 5\n3 5\n30\n20 40 60\n4 3 4\n"
 
 INVALID = [
     ("struct Table { n: i32 } impl Table { fn pick(self: &Table, key: &i32) &i32 { ret key; } } "
@@ -141,6 +151,29 @@ INVALID = [
     ("fn first[T, S: AsRef[Array[T]]](v: &S, hint: T) &T { ret v.as_ref().get_ref(0); }\n"
      "fn main() i32 { var a: Array[i64] = Array.new(); a.push(4); const r = first(&a, String.from(\"x\")); ret r.len() as i32; }",
      "does not implement `AsRef[Array[String]]`"),
+    # D-015 element borrows freeze their root and cannot escape.
+    ("fn main() i32 { var a: Array[String] = Array.new(); a.push(String.from(\"x\"));\n"
+     "const r = a.get_ref(0); a.set(0, String.from(\"y\")); ret r.len() as i32; }",
+     "cannot mutate `a` while it is shared-borrowed"),
+    ("fn take(a: Array[String]) void { }\nfn main() i32 { var a: Array[String] = Array.new();\n"
+     "a.push(String.from(\"x\")); const r = a.get_ref(0); take(a); ret r.len() as i32; }",
+     "cannot move `a` while it is shared-borrowed"),
+    ("fn leak() &String { var a: Array[String] = Array.new(); a.push(String.from(\"x\")); ret a.get_ref(0); }\n"
+     "fn main() i32 { ret leak().len() as i32; }",
+     "a returned reference must be a reference parameter"),
+    ("fn make() Array[String] { var a: Array[String] = Array.new(); a.push(String.from(\"x\")); ret a; }\n"
+     "fn main() i32 { const r = make().get_ref(0); ret r.len() as i32; }",
+     "must be initialized directly from a local, parameter, or existing reference"),
+    ("struct Holder { r: &String }\nfn main() i32 { var a: Array[String] = Array.new();\n"
+     "a.push(String.from(\"x\")); const h = Holder { r: a.get_ref(0) }; ret 0; }",
+     "cannot store a shared reference"),
+    ("fn main() i32 { var a: Array[String] = Array.new(); a.push(String.from(\"x\"));\n"
+     "const r = a.get_ref(0); const f = || r.len(); ret f() as i32; }",
+     "closure cannot capture `r`"),
+    # A container without @contiguous_elements cannot obtain the element address.
+    ("struct Fake[T] { ptr: *T, len: usize }\nimpl Fake[T] { @contiguous_element_borrow\n"
+     "pub fn get_ref(self: &Fake[T], idx: usize) &T { panic(\"x\"); } }\nfn main() i32 { ret 0; }",
+     "@contiguous_element_borrow requires"),
     # Exclusive access may not be minted through a shared reference.
     ("struct S { y: i32 } fn poke(p: &S) void { const q = &p.y!; *q = 99; }\n"
      "fn main() i32 { const a = S { y: 1 }; poke(&a); ret a.y; }",
