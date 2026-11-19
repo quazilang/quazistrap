@@ -49,6 +49,9 @@ def check(qz, root):
     assert result.returncode == 7, (result.returncode, result.stdout, result.stderr)
     assert result.stdout == "hello from jit\nargc 1\ntotal 499500\n", result.stdout
     assert not (root / "hello").exists(), "--jit must not write an executable"
+    # Arguments after `--` reach the program.
+    result = run([str(qz), "run", "--jit", *common, "hello.qz", "--", "a", "b c"], root)
+    assert result.stdout.startswith("hello from jit\nargc 3\n"), result.stdout
 
     # A non-UTF-8 environment entry reaches the program as raw bytes.
     environment = os.environb.copy()
@@ -80,7 +83,9 @@ def check(qz, root):
     result = run([str(qz), "run", *common, "hello.qz"], root)
     assert result.returncode == 7, (result.returncode, result.stderr)
     assert (root / "hello").exists()
-    print("jit: in-memory run, exit status, raw environment, SIGPIPE, panic status, linker guard pass")
+    result = run([str(qz), "run", *common, "hello.qz", "--", "a"], root)
+    assert result.stdout.startswith("hello from jit\nargc 2\n"), result.stdout
+    print("jit: in-memory run, exit status, `--` arguments, raw environment, SIGPIPE, panic status, linker guard pass")
 
 
 def main():

@@ -152,6 +152,9 @@ pub enum Command {
         /// experimental: link in memory and run inside `qz` without writing a binary (Linux x86-64)
         #[arg(long)]
         jit: bool,
+        /// arguments passed to the program (after `--`)
+        #[arg(last = true, value_name = "ARGS")]
+        program_args: Vec<String>,
     },
     /// Type-check the current project without code generation
     Check {

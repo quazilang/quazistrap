@@ -189,17 +189,23 @@ fn write_or_package_object(
     }
 }
 
+/// Arguments after `--` in `qz run`, passed to the program it runs.
+static PROGRAM_ARGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
 /// The run step of `qz run` / `qz build -r`: execute the image stored by a
 /// `--jit` link in this process, otherwise spawn the written executable.
 /// Exits `qz` with the program's status when it fails.
 fn run_artifact(out: &str) {
+    let program_args = PROGRAM_ARGS.get().map(Vec::as_slice).unwrap_or_default();
     if let Some(image) = jit::take_image() {
-        let program = std::ffi::OsStr::new(out).as_encoded_bytes().to_vec();
-        let Err(error) = jit::execute(&image, &[program]);
+        let mut argv = vec![std::ffi::OsStr::new(out).as_encoded_bytes().to_vec()];
+        argv.extend(program_args.iter().map(|arg| arg.as_bytes().to_vec()));
+        let Err(error) = jit::execute(&image, &argv);
         eprintln!("\x1b[31;1merror:\x1b[0m {error}");
         fail_build();
     }
     let status = std::process::Command::new(abs_path(out))
+        .args(program_args)
         .status()
         .unwrap_or_else(|error| {
             eprintln!("\x1b[31;1merror:\x1b[0m cannot run {out}: {error}");
@@ -1515,10 +1521,12 @@ fn main() {
             no_unicode,
             no_progress,
             jit: run_jit,
+            program_args,
         } => {
             if run_jit {
                 jit::request();
             }
+            let _ = PROGRAM_ARGS.set(program_args);
             CliCmd::Build {
             files,
             output: None,
