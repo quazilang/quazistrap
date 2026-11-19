@@ -70,7 +70,9 @@ QZI format 17 carries a D-014 ownership certificate: one record of bytecode
 parameter effects per function body (reads, writes through references,
 returned and stored slots, unknown uses), closed over direct calls. Readers
 recompute and compare it; format 16 asks for a rebuild. QZC40 invalidates
-older caches. Safety decisions do not consume the certificate yet.
+older caches. Verified records of QZI dependencies give their callables
+source parameter effects that compose into callers (global writes are
+assumed); safety decisions do not consume these effects yet.
 QZI builds compile once for every supported target: one load, one analysis
 and one bytecode pass produce the format-17 artifact directly, without
 per-target builds or a merge ([contract](docs/internals/qzi.md)).

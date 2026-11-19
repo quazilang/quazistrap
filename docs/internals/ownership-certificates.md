@@ -3,8 +3,9 @@
 Audience: compiler developers.
 
 Status: stages 1 and 2 are implemented (QZI format 17, ownership schema 2).
-Stage 3 (consuming verified records at safe ownership boundaries) and the
-remaining D-014 gaps below are open; see
+Stage 3 has started: verified records of QZI dependencies compose into source
+parameter effects ([consumption](#consumption)). Rejection at safe ownership
+boundaries and the remaining D-014 gaps below are open; see
 [D-014](../decisions/whole-program-ownership.md#qzi-only-libraries).
 
 ## Source facts that exist today
@@ -85,8 +86,10 @@ suites, the bytecode summary must be no smaller than `parameter_effects`.
 2. The QZI certificate section and canonical encoding, with serialization
    tests and the major-version/QZC bump. Done: see
    [Encoding (schema 2)](#encoding-schema-2).
-3. Verification on import; a missing, malformed, stale or incomplete record at
-   a safe ownership boundary is rejected with a rebuild diagnostic.
+3. Verification on import (done: every decode recomputes the records) and
+   consumption (started: [consumption](#consumption)); a missing, malformed,
+   stale or incomplete record at a safe ownership boundary is rejected with a
+   rebuild diagnostic once a safety rule depends on these effects.
 4. Migration documentation and fixtures for previous QZI versions, which stay
    rejected wherever verified metadata is required.
 
@@ -125,3 +128,21 @@ Not yet covered by records: source-level consumption/destruction, closure
 captures and escapes beyond `stored`, closed indirect targets and exported
 type move/drop facts (the gap table above). Exported callables are not
 distinguished from private ones; every body has a record.
+
+## Consumption
+
+When a project loads a QZI dependency, `chunk::certified_effects` maps each
+body's verified record by its (aliased) chunk name — the namespaced name the
+consumer calls. Same-named bodies (target copies, or one name provided by
+several dependencies, such as a bundled submodule) are combined by union;
+bodies with different slot counts combine into an unverified record. The map travels through
+`ModuleResolver`, `LoadResult` and `analysis::analyze_program_with_dependencies`
+to the analyzer, which gives bodiless non-generic callables
+[source parameter effects](ownership-call-graph.md#parameter-effects) from it.
+Composition then carries, for example, a QZI function's write through a
+reference into its source callers. A dependency without a certificate
+contributes an unverified record (every slot unknown) for each of its bodies,
+so no verified record of the same name from another dependency can stand in
+for it and its callers stay `callee_unmodeled` (fail closed).
+No safety rule consumes parameter effects yet; until one does, rejection of
+uncertified dependencies has nothing to protect.

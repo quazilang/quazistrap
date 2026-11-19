@@ -699,7 +699,10 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 Current source builds use QZC40 and emit QZI17. The bytecode module layout is
 v14 with ownership schema 2: a certificate of per-body bytecode effects that
 readers recompute and compare (`bytecode::effects`, `ownership_records`).
-Nothing consumes the certificate for safety decisions yet (D-014 stage 3).
+QZI dependency records reach analysis through `ModuleResolver`/`LoadResult`
+`certified_effects` and `analyze_program_with_dependencies`, giving bodiless
+callables source parameter effects; production analysis must use that entry
+point. No safety rule consumes parameter effects yet (D-014 stage 3).
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
 revisions, including QZC30 for the alias-definition prerequisite.

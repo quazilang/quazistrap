@@ -28,7 +28,7 @@ pub mod semantic;
 mod test_runner;
 mod type_resolution;
 
-use analysis::{analyze_program_with_source_files, format_quazi_source};
+use analysis::{analyze_program_with_dependencies, format_quazi_source};
 use backend::linker::{LinkerInvocation, link_object, remove_temp, write_temp_object};
 use backend::{TargetSpec, select_backend};
 use clap::Parser as ClapParser;
@@ -396,13 +396,14 @@ fn check_project_entry(ctx: &ProjectContext, entry: PathBuf, target: &TargetSpec
         backend::target::Os::MacOs => ("macos", "sysv"),
     };
     let program = semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
-    let report = analyze_program_with_source_files(
+    let report = analyze_program_with_dependencies(
         &result.merged_source,
         &program,
         result.library_fn_names,
         result.library_char_ranges,
         result.source_files.clone(),
         namespaced_paths,
+        result.certified_effects.clone(),
     );
     report_diagnostics(&report, &result.merged_source, &result.source_files)
 }
@@ -1193,13 +1194,14 @@ fn build_with_progress(
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    let sema = analyze_program_with_source_files(
+    let sema = analyze_program_with_dependencies(
         &result.merged_source,
         &target_program,
         result.library_fn_names,
         result.library_char_ranges.clone(),
         result.source_files.clone(),
         namespaced_paths,
+        result.certified_effects.clone(),
     );
     let has_errors = !sema.errors.is_empty();
     if has_errors {
@@ -2237,13 +2239,14 @@ fn main() {
             };
             let target_program =
                 semantic::strip_cfg_for(&result.program, target_os, "x86_64", target_abi);
-            let report = analyze_program_with_source_files(
+            let report = analyze_program_with_dependencies(
                 &result.merged_source,
                 &target_program,
                 result.library_fn_names.clone(),
                 result.library_char_ranges.clone(),
                 result.source_files.clone(),
                 namespaced_paths,
+                result.certified_effects.clone(),
             );
             if !report_diagnostics(&report, &result.merged_source, &result.source_files) {
                 fail_build();

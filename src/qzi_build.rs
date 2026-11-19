@@ -21,7 +21,7 @@ macro_rules! eprintln {
     };
 }
 
-use crate::analysis::analyze_program_with_source_files;
+use crate::analysis::analyze_program_with_dependencies;
 use crate::bytecode::chunk::{QZI_VERSION, Qzi, decode_qzi};
 use crate::bytecode::qzi_link::{QziLinkInput, link_qzi};
 use crate::bytecode::{self, Codegen, QziMetadata, QziModuleKind};
@@ -277,13 +277,14 @@ pub fn build(request: QziBuild<'_>, progress: &mut BuildProgress) {
         .collect();
     // Compiler-owned codec impls, as for single-target analysis.
     let program = crate::semantic::expand_serialize_derives(&views.program);
-    let sema = analyze_program_with_source_files(
+    let sema = analyze_program_with_dependencies(
         &loaded.merged_source,
         &program,
         loaded.library_fn_names.clone(),
         views.library_char_ranges.clone(),
         views.source_files.clone(),
         namespaced_paths,
+        loaded.certified_effects.clone(),
     );
     // Copies of one declaration report the same finding once, at its source.
     let render = |code: &'static str, message: &str, span, kind: &str| -> String {

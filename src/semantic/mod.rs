@@ -210,6 +210,8 @@ pub struct Analyzer {
     /// Files whose top-level definitions are mangled with their module name.
     /// Populated from LoadResult; empty when analyzing raw source without a loader.
     pub(super) namespaced_paths: std::collections::HashSet<String>,
+    /// Verified ownership records of QZI dependency callables by name.
+    pub(super) certified_effects: crate::bytecode::CertifiedEffects,
     /// Function names that live in library (dependency) files.
     /// Set once from LoadResult; not reset between analyses.
     pub(super) library_fn_names: std::collections::HashSet<String>,
@@ -2586,6 +2588,7 @@ impl Analyzer {
             display_requirements: Vec::new(),
             display_requirement_bytes: 0,
             namespaced_paths: std::collections::HashSet::new(),
+            certified_effects: Default::default(),
             library_fn_names: std::collections::HashSet::new(),
             library_symbols: Vec::new(),
             explicitly_imported_fns: std::collections::HashMap::new(),
@@ -2771,6 +2774,73 @@ impl Analyzer {
 
     pub fn set_namespaced_paths(&mut self, paths: std::collections::HashSet<String>) {
         self.namespaced_paths = paths;
+    }
+
+    pub fn set_certified_effects(&mut self, effects: crate::bytecode::CertifiedEffects) {
+        self.certified_effects = effects;
+    }
+
+    /// Parameter effects of a bodiless callable whose QZI body carries a
+    /// verified ownership record. Register slots map to source parameters
+    /// through the callable's value layout; any disagreement between the two
+    /// (or a variadic or generic callable) leaves the callable unmodeled.
+    fn certified_parameter_effects(
+        &self,
+        callable: &OwnershipCallable,
+    ) -> Option<OwnershipParameterEffects> {
+        use crate::bytecode::effects::slot_bit;
+        if callable.signature.has_body || !callable.id.type_arguments.is_empty() {
+            return None;
+        }
+        let record = self.certified_effects.get(&callable.id.callable)?;
+        let layout = self.fn_value_layouts.get(&callable.id.callable)?;
+        if layout.variadic_element.is_some() {
+            return None;
+        }
+        let mut slots = Vec::new();
+        if layout.result.layout.slot_count().unwrap_or(1) > 1 {
+            slots.push(None);
+        }
+        for (index, parameter) in layout.params.iter().enumerate() {
+            for _ in 0..parameter.layout.slot_count().unwrap_or(1) {
+                slots.push(Some(index));
+            }
+        }
+        if slots.len() != usize::from(record.param_count) {
+            return None;
+        }
+        let parameters = |set: u64| -> std::collections::BTreeSet<usize> {
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(slot, _)| set & slot_bit(*slot) != 0)
+                .filter_map(|(_, parameter)| *parameter)
+                .collect()
+        };
+        let written = parameters(record.writes_through);
+        let returned = parameters(record.returned);
+        let borrowed_result = matches!(
+            callable.signature.result,
+            OwnershipResult::Value(
+                OwnershipCapability::SharedBorrow | OwnershipCapability::ExclusiveBorrow
+            )
+        );
+        Some(OwnershipParameterEffects {
+            read: parameters(record.reads),
+            written: written.clone(),
+            written_through_reference: written,
+            returned_borrow: if borrowed_result { returned.clone() } else { Default::default() },
+            returned: if borrowed_result { Default::default() } else { returned },
+            // Records describe parameter slots only, so a global write cannot
+            // be ruled out.
+            writes_globals: true,
+            // Stores of parameter-derived values (escapes) and uses by unknown
+            // code have no source-level counterpart yet.
+            unmodeled: usize::from(record.stored != 0) + usize::from(!record.is_complete()),
+            // Moves, borrows and captures are source facts a record does not
+            // carry; the capabilities in the callable's signature govern them.
+            ..Default::default()
+        })
     }
 
     pub(super) fn is_library_span(&self, span: Span) -> bool {
@@ -3001,10 +3071,10 @@ impl Analyzer {
         for callable in &mut ownership_call_graph {
             checkpoint()?;
             callable.control_flow = source_control_flow.get(&callable.id.callable).cloned();
-            callable.parameter_effects = callable
-                .control_flow
-                .as_deref()
-                .map(OwnershipControlFlow::parameter_effects);
+            callable.parameter_effects = match callable.control_flow.as_deref() {
+                Some(control_flow) => Some(control_flow.parameter_effects()),
+                None => self.certified_parameter_effects(callable),
+            };
         }
         self.compose_parameter_effects(&mut ownership_call_graph, &mut checkpoint)?;
         // Source discovery retains binding context that symbolic mono spellings

@@ -45,6 +45,8 @@ pub struct LoadResult {
     pub effective_sources: HashMap<PathBuf, String>,
     /// Function names declared in dependency (library) files.
     pub library_fn_names: HashSet<String>,
+    /// Verified ownership records of QZI dependency callables (from the resolver).
+    pub certified_effects: crate::bytecode::CertifiedEffects,
     /// Paths of files that were loaded from external modules (not user source).
     pub library_file_paths: Vec<PathBuf>,
     /// Character-index ranges within `merged_source` that belong to library files.
@@ -105,6 +107,9 @@ pub struct ModuleSpec {
 #[derive(Debug, Clone, Default)]
 pub struct ModuleResolver {
     pub modules: HashMap<String, ModuleSpec>,
+    /// Verified ownership records of QZI dependency callables, by the
+    /// namespaced name the importing program uses.
+    pub certified_effects: crate::bytecode::CertifiedEffects,
 }
 
 impl ModuleResolver {
@@ -346,6 +351,7 @@ pub fn load_programs_for_targets(
             runtime_string: None,
             runtime_panic: None,
             type_imports: HashMap::new(),
+            certified_effects: Default::default(),
         },
         &mut || Ok(()),
     )
@@ -430,6 +436,7 @@ pub fn load_programs_for_targets(
             source_hashes,
             effective_sources,
             library_fn_names,
+            certified_effects: collection.certified_effects,
             library_file_paths,
             library_char_ranges,
             source_files,
@@ -523,6 +530,9 @@ pub fn load_program_for_all_targets(
         union.source_hashes.extend(view.source_hashes);
         union.effective_sources.extend(view.effective_sources);
         union.library_fn_names.extend(view.library_fn_names);
+        for (name, record) in view.certified_effects {
+            crate::bytecode::merge_certified_effect(&mut union.certified_effects, name, record);
+        }
         union.display_names.extend(view.display_names);
         union.namespaced_paths.extend(view.namespaced_paths);
     }
@@ -549,6 +559,7 @@ struct SourceCollection {
     runtime_string: Option<(PathBuf, String)>,
     runtime_panic: Option<(PathBuf, String)>,
     type_imports: HashMap<PathBuf, Vec<SourceTypeImport>>,
+    certified_effects: crate::bytecode::CertifiedEffects,
 }
 
 fn collect_sources_with_prelude(
@@ -682,6 +693,9 @@ fn collect_sources_with_prelude(
         runtime_string,
         runtime_panic,
         type_imports,
+        certified_effects: resolver
+            .map(|resolver| resolver.certified_effects.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -1133,6 +1147,7 @@ fn finalize_sources(
         runtime_string,
         runtime_panic,
         type_imports,
+        certified_effects,
     } = collection;
 
     // Capture exactly what was read from disk before compatibility filtering
@@ -1266,6 +1281,7 @@ fn finalize_sources(
         source_hashes,
         effective_sources,
         library_fn_names,
+        certified_effects,
         library_file_paths,
         library_char_ranges,
         source_files,

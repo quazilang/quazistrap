@@ -196,13 +196,14 @@ pub fn analyze_loaded_document(
         .iter()
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
-    let report = crate::analysis::analyze_program_with_source_files(
+    let report = crate::analysis::analyze_program_with_dependencies(
         &loaded.merged_source,
         &loaded.program,
         loaded.library_fn_names,
         loaded.library_char_ranges,
         loaded.source_files.clone(),
         namespaced_paths,
+        loaded.certified_effects.clone(),
     );
     Ok(LoadedSnapshot {
         report,
@@ -264,6 +265,7 @@ pub fn analyze_loaded_document_cancellable(
     analyzer.set_library_char_ranges(loaded.library_char_ranges);
     analyzer.set_source_files(loaded.source_files.clone());
     analyzer.set_namespaced_paths(namespaced_paths);
+    analyzer.set_certified_effects(loaded.certified_effects);
     let report = analyzer
         .analyze_program_cancellable(&loaded.program, cancellation)
         .map_err(|_| CancellableAnalysisError::Cancelled)?;

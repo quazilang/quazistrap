@@ -83,6 +83,19 @@ impl QziOwnershipRecord {
         self.unknown == 0
     }
 
+    /// A record for a body whose effects were not verified: every slot may
+    /// reach unknown code.
+    pub fn unverified(param_count: usize) -> Self {
+        Self {
+            param_count: u16::try_from(param_count).unwrap_or(u16::MAX),
+            reads: u64::MAX,
+            writes_through: u64::MAX,
+            returned: u64::MAX,
+            stored: u64::MAX,
+            unknown: u64::MAX,
+        }
+    }
+
     /// The slot sets in their canonical encoding order.
     fn sets(&self) -> [u64; Self::SET_COUNT] {
         [
@@ -93,6 +106,59 @@ impl QziOwnershipRecord {
             self.unknown,
         ]
     }
+}
+
+/// Ownership records of dependency callables by callable name. Bodies sharing
+/// a name (target-specific copies, or the same name provided by several
+/// dependencies) are combined conservatively. A body without a verified record
+/// contributes an unverified record, so every callable of that name stays
+/// unmodeled rather than inheriting another provider's record.
+pub type CertifiedEffects = std::collections::BTreeMap<String, QziOwnershipRecord>;
+
+pub fn certified_effects(module: &QziModule) -> CertifiedEffects {
+    let records = match &module.ownership {
+        QziOwnershipArtifact::Certified { records, .. }
+            if records.len() == module.chunks.len() =>
+        {
+            Some(records)
+        }
+        _ => None,
+    };
+    let mut effects = CertifiedEffects::new();
+    for (index, chunk) in module.chunks.iter().enumerate() {
+        let record = match records {
+            Some(records) => records[index].clone(),
+            None => QziOwnershipRecord::unverified(chunk.param_count),
+        };
+        merge_certified_effect(&mut effects, chunk.name.clone(), record);
+    }
+    effects
+}
+
+/// Add `record` under `name`, combining it with a record already there (a
+/// body of the same name from another target or dependency) so the result
+/// covers both. Bodies with different parameter slot counts give their bits
+/// different meanings, so their combination is unverified.
+pub fn merge_certified_effect(
+    effects: &mut CertifiedEffects,
+    name: String,
+    record: QziOwnershipRecord,
+) {
+    effects
+        .entry(name)
+        .and_modify(|known| {
+            if known.param_count != record.param_count {
+                let param_count = known.param_count.max(record.param_count);
+                *known = QziOwnershipRecord::unverified(param_count.into());
+                return;
+            }
+            known.reads |= record.reads;
+            known.writes_through |= record.writes_through;
+            known.returned |= record.returned;
+            known.stored |= record.stored;
+            known.unknown |= record.unknown;
+        })
+        .or_insert(record);
 }
 
 /// Compute the ownership record of every chunk. A call site resolves through
@@ -1260,6 +1326,61 @@ fn decode_ownership_artifact(
         return Err(invalid());
     }
     Ok(QziOwnershipArtifact::Certified { binding, records })
+}
+
+/// Helpers for tests elsewhere in the crate that need artifacts written by
+/// earlier compilers.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::*;
+
+    /// Serialize `module` as a pre-certificate compiler did: the current
+    /// sectioned layout with the schema 1 (unverified) ownership envelope.
+    pub(crate) fn serialize_uncertified(module: &QziModule) -> Vec<u8> {
+        let current = serialize_qzi_module(module).unwrap();
+        let count = u16::from_le_bytes(current[5..7].try_into().unwrap()) as usize;
+        let mut sections: Vec<(u8, Vec<u8>)> = (0..count)
+            .map(|entry| {
+                let pos = 7 + entry * QZI_SECTION_ENTRY_SIZE;
+                let offset =
+                    u32::from_le_bytes(current[pos + 4..pos + 8].try_into().unwrap()) as usize;
+                let len =
+                    u32::from_le_bytes(current[pos + 8..pos + 12].try_into().unwrap()) as usize;
+                (current[pos], current[offset..offset + len].to_vec())
+            })
+            .collect();
+        let binding = qzi_content_binding(
+            &sections[0].1,
+            &sections[1].1,
+            &sections[2].1,
+            &sections[4].1,
+        );
+        let mut envelope = QZI_OWNERSHIP_SCHEMA_VERSION.to_le_bytes().to_vec();
+        envelope.push(0);
+        for digest in [
+            binding.metadata,
+            binding.interface,
+            binding.relocations,
+            binding.bytecode,
+        ] {
+            envelope.extend_from_slice(&digest);
+        }
+        assert_eq!(sections[3].0, QZI_SECTION_OWNERSHIP);
+        sections[3].1 = envelope;
+        let mut bytes = current[..7].to_vec();
+        let mut offset = 7 + count * QZI_SECTION_ENTRY_SIZE;
+        for (kind, payload) in &sections {
+            bytes.push(*kind);
+            bytes.extend_from_slice(&[0, 0, 0]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            offset += payload.len();
+        }
+        for (_, payload) in sections {
+            bytes.extend_from_slice(&payload);
+        }
+        bytes
+    }
 }
 
 /// Recompute certified records from the decoded bytecode. Any difference
@@ -3413,6 +3534,29 @@ fn main() i32 {
         let error = verify_ownership_certificate(&ownership, &chunks, &[]).unwrap_err();
         assert!(error.contains("more than eight bodies"), "{error}");
         assert!(verify_ownership_certificate(&ownership, &chunks[..0], &[]).is_err());
+    }
+
+    #[test]
+    fn certified_effects_of_same_named_bodies_combine() {
+        let record = |writes_through, param_count| QziOwnershipRecord {
+            param_count,
+            reads: 0,
+            writes_through,
+            returned: 0,
+            stored: 0,
+            unknown: 0,
+        };
+        let mut effects = CertifiedEffects::new();
+        merge_certified_effect(&mut effects, "dep.f".into(), record(0b01, 2));
+        merge_certified_effect(&mut effects, "dep.f".into(), record(0b10, 2));
+        assert_eq!(effects["dep.f"], record(0b11, 2));
+        // Different slot layouts cannot be combined bit by bit.
+        merge_certified_effect(&mut effects, "dep.f".into(), record(0b01, 3));
+        assert!(!effects["dep.f"].is_complete());
+        // A verified record does not hide an unverified body of the same name.
+        merge_certified_effect(&mut effects, "dep.g".into(), record(0, 1));
+        merge_certified_effect(&mut effects, "dep.g".into(), QziOwnershipRecord::unverified(1));
+        assert!(!effects["dep.g"].is_complete());
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::bytecode::CertifiedEffects;
 use crate::parser::ast::Program;
 use crate::semantic::{Analyzer, SemanticReport, SourceFile};
 
@@ -24,18 +25,41 @@ pub fn analyze_program(
 }
 
 pub fn analyze_program_with_source_files(
-    _src: &str,
+    src: &str,
     program: &Program,
     library_fn_names: HashSet<String>,
     library_char_ranges: Vec<std::ops::Range<usize>>,
     source_files: Vec<SourceFile>,
     namespaced_paths: HashSet<String>,
 ) -> SemanticReport {
+    analyze_program_with_dependencies(
+        src,
+        program,
+        library_fn_names,
+        library_char_ranges,
+        source_files,
+        namespaced_paths,
+        CertifiedEffects::new(),
+    )
+}
+
+/// Analyze a loaded program together with the verified ownership records of
+/// its QZI dependencies (`LoadResult::certified_effects`).
+pub fn analyze_program_with_dependencies(
+    _src: &str,
+    program: &Program,
+    library_fn_names: HashSet<String>,
+    library_char_ranges: Vec<std::ops::Range<usize>>,
+    source_files: Vec<SourceFile>,
+    namespaced_paths: HashSet<String>,
+    certified_effects: CertifiedEffects,
+) -> SemanticReport {
     let mut analyzer = Analyzer::new();
     analyzer.set_library_fns(library_fn_names);
     analyzer.set_library_char_ranges(library_char_ranges);
     analyzer.set_source_files(source_files);
     analyzer.set_namespaced_paths(namespaced_paths);
+    analyzer.set_certified_effects(certified_effects);
     analyzer.analyze_program(program)
 }
 

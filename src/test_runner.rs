@@ -279,13 +279,14 @@ fn run_project(
         .iter()
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
-    let report = crate::analysis::analyze_program_with_source_files(
+    let report = crate::analysis::analyze_program_with_dependencies(
         &loaded.merged_source,
         &program,
         loaded.library_fn_names,
         loaded.library_char_ranges,
         loaded.source_files.clone(),
         namespaced_paths,
+        loaded.certified_effects.clone(),
     );
     if !crate::report_diagnostics(&report, &loaded.merged_source, &loaded.source_files) {
         return Ok(false);

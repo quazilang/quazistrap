@@ -80,6 +80,19 @@ a callee returning slot k by value or as a borrow makes the caller return the
 parameter its argument k is rooted at. Captures are not composed. This is source evidence toward the D-014 export summary, not
 an artifact certificate.
 
+A bodiless callable implemented by a QZI dependency takes its effects from the
+dependency's verified [ownership certificate](ownership-certificates.md)
+instead (`Analyzer::certified_parameter_effects`): register slots map to
+source parameters through its value layout, reads and writes through
+references carry over, returned slots become `returned_borrow` for a borrowed
+result and `returned` otherwise, and stored (escaping) or unknown-reaching
+slots count as `unmodeled`. Records say nothing about globals, so such a
+callable `writes_globals`; moves, borrows and captures stay with its signature
+capabilities. A dependency without a certificate yields an unverified record
+(every slot unknown, so `unmodeled`); a layout that disagrees with the record
+and variadic or generic callables stay without a summary. Either way their
+callers remain `callee_unmodeled`.
+
 ## Support boundary
 
 The graph does not drive the lexical temporary-loan shortcut. Its signatures

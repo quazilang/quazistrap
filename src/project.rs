@@ -1227,6 +1227,20 @@ fn collect_modules(
                     }
                     None => module.interface.clone(),
                 };
+                // Records are by chunk name after aliasing, which is the
+                // namespaced name consumers call. A universal QZI contributes
+                // every target's bodies, combined conservatively.
+                let certified = match &qzi {
+                    Some(qzi) => crate::bytecode::certified_effects(&qzi.module),
+                    None => crate::bytecode::certified_effects(&module),
+                };
+                for (name, record) in certified {
+                    crate::bytecode::merge_certified_effect(
+                        &mut resolver.certified_effects,
+                        name,
+                        record,
+                    );
+                }
                 resolver.insert(spec_for_interface(&interface)?)?;
                 qzi_dependencies.push(qzi_path.clone());
                 dep_versions.insert(
@@ -1789,5 +1803,131 @@ numbers = { path = "dep.qzi" }
         assert_eq!(call.ri16().1, symbols["numbers.answer"]);
 
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod certified_dependency_tests {
+    use super::*;
+    use crate::bytecode::interface::{QziInterfaceBundle, QziInterfaceModule};
+    use crate::bytecode::{QziModule, QziModuleKind};
+    use std::fs;
+
+    /// A library QZI named `dep` whose `set` writes through its reference
+    /// parameter, consumed under the alias `numbers` by `relay`.
+    fn analyze_consumer(certify: bool) -> crate::semantic::SemanticReport {
+        let root = std::env::temp_dir().join(format!(
+            "qz_certified_dependency_{}_{certify}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).unwrap();
+        let library = "pub struct Pair { left: i32, right: i32 }\npub fn set(pair: &Pair!) void { pair.left = 1; }\n";
+        let program = crate::parser::Parser::new(crate::lexer::Lexer::new(library).tokenize())
+            .parse()
+            .unwrap();
+        let mut report = crate::semantic::Analyzer::new().analyze_program(&program);
+        report.inline_candidates.clear();
+        let mut chunks = crate::bytecode::codegen::Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+        for chunk in &mut chunks {
+            chunk.name = format!("dep.{}", chunk.name);
+        }
+        let mut module = QziModule::from_chunks(chunks);
+        module.metadata.name = "dep".into();
+        module.metadata.kind = QziModuleKind::Library;
+        module.interface = toml::to_string(&QziInterfaceBundle {
+            heap_fixed_array_refs: true,
+            modules: vec![QziInterfaceModule {
+                name: "dep".into(),
+                exports: vec!["Pair".into(), "set".into()],
+                source: "pub struct Pair { left: i32, right: i32 }\npub fn set(pair: &Pair!) void;\n"
+                    .into(),
+            }],
+        })
+        .unwrap();
+        let mut bytes = crate::bytecode::serialize_qzi_module(&module).unwrap();
+        if !certify {
+            // Downgrade to the schema 1 envelope a pre-certificate compiler wrote.
+            let mut decoded = crate::bytecode::deserialize_qzi_module(&bytes).unwrap();
+            decoded.ownership = crate::bytecode::QziOwnershipArtifact::LegacyAbsent;
+            assert!(
+                crate::bytecode::certified_effects(&decoded)
+                    .values()
+                    .all(|record| !record.is_complete())
+            );
+            bytes = crate::bytecode::chunk::tests_support::serialize_uncertified(&decoded);
+        }
+        fs::write(root.join("dep.qzi"), bytes).unwrap();
+        fs::write(
+            root.join("src/main.qz"),
+            "import numbers.Pair;\nimport numbers.set;\nfn relay(pair: &Pair!) void { set(pair); }\nfn main() i32 { var p = Pair { left: 0, right: 0 }; relay(&p!); ret p.left; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nnumbers = { path = \"dep.qzi\" }\n",
+        )
+        .unwrap();
+        let context = ProjectContext::load(&root).unwrap();
+        let loaded = crate::loader::load_programs_with_resolver(
+            std::slice::from_ref(&context.config.entry),
+            Some(&context.resolver),
+        )
+        .unwrap();
+        let namespaced = loaded
+            .namespaced_paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        let report = crate::analysis::analyze_program_with_dependencies(
+            &loaded.merged_source,
+            &loaded.program,
+            loaded.library_fn_names.clone(),
+            loaded.library_char_ranges.clone(),
+            loaded.source_files.clone(),
+            namespaced,
+            loaded.certified_effects.clone(),
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let _ = fs::remove_dir_all(&root);
+        report
+    }
+
+    fn effects<'a>(
+        report: &'a crate::semantic::SemanticReport,
+        name: &str,
+    ) -> Option<&'a crate::semantic::OwnershipParameterEffects> {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap_or_else(|| panic!("no callable {name}"))
+            .parameter_effects
+            .as_ref()
+    }
+
+    #[test]
+    fn certified_qzi_dependency_effects_compose_into_callers() {
+        let report = analyze_consumer(true);
+        let set = effects(&report, "numbers.set").expect("certified effects for the QZI callable");
+        assert!(set.written_through_reference.contains(&0), "{set:?}");
+        assert_eq!(set.unmodeled, 0);
+        assert!(set.writes_globals, "records cannot rule out global writes");
+        let relay = effects(&report, "relay").unwrap();
+        assert!(relay.written_through_reference.contains(&0), "{relay:?}");
+        assert!(!relay.callee_unmodeled, "{relay:?}");
+    }
+
+    #[test]
+    fn uncertified_qzi_dependency_stays_unmodeled() {
+        let report = analyze_consumer(false);
+        let set = effects(&report, "numbers.set").expect("unverified effects");
+        assert!(set.unmodeled > 0, "{set:?}");
+        let relay = effects(&report, "relay").unwrap();
+        assert!(relay.callee_unmodeled);
+        // Unverified bodies are assumed to touch every parameter.
+        assert!(relay.written_through_reference.contains(&0), "{relay:?}");
     }
 }

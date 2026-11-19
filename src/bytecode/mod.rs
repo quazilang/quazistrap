@@ -14,8 +14,9 @@ pub mod qzi_link;
 pub mod vtable;
 
 pub use chunk::{
-    Chunk, ConstPoolEntry, QziCallRelocation, QziContentBinding, QziMetadata, QziModule,
-    QziModuleKind, QziOwnershipArtifact,
+    CertifiedEffects, Chunk, ConstPoolEntry, QziCallRelocation, QziContentBinding, QziMetadata,
+    QziModule, QziModuleKind, QziOwnershipArtifact, QziOwnershipRecord, certified_effects,
+    merge_certified_effect,
     deserialize_qzi, deserialize_qzi_module, link_qzi_modules, select_qzi_target, serialize_qzi,
     serialize_qzi_module,
 };
