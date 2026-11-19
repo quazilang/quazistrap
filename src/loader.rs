@@ -3731,7 +3731,7 @@ fn hidden() void { std.windows.sleep(1); }
     fn resolves_builtin_std_module_import_without_project() {
         let root = temp_dir("quazi_loader_builtin_std");
         let main_path = root.join("main.qz");
-        fs::write(&main_path, "import std.unix.open; fn main() void { ret; }")
+        fs::write(&main_path, "import std.linux.open; fn main() void { ret; }")
             .expect("write main.qz");
 
         let result = load_programs(&[main_path]).expect("load programs");
@@ -3739,8 +3739,8 @@ fn hidden() void { std.windows.sleep(1); }
             result
                 .library_file_paths
                 .iter()
-                .any(|p| p.ends_with(Path::new("src").join("unix.qz"))),
-            "expected std/src/unix.qz to be loaded, got {:?}",
+                .any(|p| p.ends_with(Path::new("src").join("linux.qz"))),
+            "expected std/src/linux.qz to be loaded, got {:?}",
             result.library_file_paths
         );
 

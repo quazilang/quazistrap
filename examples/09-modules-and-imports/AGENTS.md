@@ -12,7 +12,7 @@ qz build -o mangling
 ## Features shown
 
 - `core.write()` is a qualified raw call; caller-controlled lengths require an `unsafe` block.
-- `unix.write()` is a qualified call into `std.unix`.
+- `linux.write()` is a qualified call into `std.linux`.
 - `@cfg(target_os = "linux")` selects platform-specific branches.
 - Multiple modules can define the same bare function name without collision.
 

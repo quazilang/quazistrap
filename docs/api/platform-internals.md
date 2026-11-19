@@ -2,15 +2,15 @@
 
 Audience: maintainers of `std` platform wrappers—not ordinary application code.
 
-`std.unix`, `std.windows`, and `std.win32_core` are low-level implementation
+`std.linux`, `std.windows`, and `std.win32_core` are low-level implementation
 boundaries. They expose raw kernel/Win32 calls, integer handles, C-style paths,
 and caller-sized buffers. They do not normalize errors, validate memory, or
 provide portable behavior. Application code should use `std.fs`, `std.net`,
 `std.os`, `std.thread`, or `std.dylib` instead.
 
-## `std.unix`
+## `std.linux` (formerly `std.unix`)
 
-`std.unix` maps names directly to Linux x86-64 syscalls. File descriptors are
+`std.linux` maps names directly to Linux x86-64 syscalls. File descriptors are
 `i32`; paths are NUL-terminated `str` values; status results retain the native
 integer convention. Raw I/O, struct buffers, vector I/O, out-pointers,
 directory buffers, and caller-controlled lengths are explicitly `unsafe`.

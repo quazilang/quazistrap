@@ -72,7 +72,7 @@ fn portable_source_path(path: &str) -> String {
     normalized
 }
 
-/// Derive module name from a span's source file (e.g. "unix" from "std/src/unix.qz").
+/// Derive module name from a span's source file (e.g. "linux" from "std/src/linux.qz").
 /// For "mod.qz", uses the parent directory name (e.g. "prelude" from "prelude/mod.qz").
 fn module_name_for_span(span: Span, source_files: &[SourceFile]) -> Option<String> {
     source_files

@@ -1,5 +1,6 @@
 # Migration guides
 
+- [`std.unix` is now `std.linux`](std-unix-to-linux.md)
 - [Per-file type visibility](source-type-visibility.md)
 
 - [Runtime String identity and formatting](runtime-string-abi.md)

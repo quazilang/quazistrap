@@ -28,7 +28,7 @@ prevents the API index from implying that undocumented modules are stable.
 | `std.math` | [math](math.md) | Checked integer combinatorics and `f64` math with measured ULP bounds. |
 | `std.random` | [random](random.md) | CSPRNG values, unbiased ranges, and current generic-collection limits. |
 | `std.dylib` | [dylib](dylib.md) | Owned native-library handles and unsafe raw-symbol boundary. |
-| `std.unix` | [platform internals](platform-internals.md) | Linux-only raw syscall implementation boundary; not a portable API. |
+| `std.linux` | [platform internals](platform-internals.md) | Linux-only raw syscall implementation boundary; not a portable API. |
 | `std.windows` / `std.win32_core` | [platform internals](platform-internals.md) | Raw Win32 implementation boundaries; not portable application APIs. |
 
 All modules exported by the canonical gateway now have a current reference or

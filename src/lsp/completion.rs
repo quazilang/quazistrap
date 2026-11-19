@@ -264,7 +264,7 @@ mod tests {
         let response = complete_at("import std.", Position::new(0, 11)).expect("completion");
         let labels = labels(response);
         assert!(labels.contains(&"core".to_string()));
-        assert!(labels.contains(&"unix".to_string()));
+        assert!(labels.contains(&"linux".to_string()));
         assert!(labels.contains(&"windows".to_string()));
     }
 
