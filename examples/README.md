@@ -43,6 +43,8 @@ qz run
 | 32 | `testing` | `@test`, automatic discovery, filtering, and isolated runners |
 | 33 | `ini-library` | Source-backed INI library with owned text and lookup APIs |
 | 34 | `ini-parser` | Local INI dependency, executable checks, and QZI-compatible API |
+| 35 | `multi-slot-arrays` | `Array[[i32; 3]]`: multi-slot elements pushed, removed and moved |
+| 36 | `freestanding-asm` | Freestanding Quazi plus assembly linked into a bare ELF image |
 | 37 | `qoroutines` | `qo`, `join`, channels, and panics reported by `join` |
 | 38 | `shell-scripting` | `fs.read_dir` iteration and `process.Command` (PATH lookup, working directory, environment) |
 

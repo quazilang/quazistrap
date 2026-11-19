@@ -20,9 +20,9 @@ drawing support:
 # Windows: .\build\quazifetch-demo.exe -a
 ```
 
-Run `qz check` (or `qz build -c`) on NetBSD, Windows, and Linux when validating a
-cross-platform change. The current command targets the host and has no
-cross-target flag.
+When validating a cross-platform change, check every target from one host:
+`qz check --target x86_64-linux`, `--target x86_64-windows` and
+`--target x86_64-netbsd` (or `qz build -c --target ...`).
 
 | Value | Linux | Windows | NetBSD |
 |---|---|---|---|

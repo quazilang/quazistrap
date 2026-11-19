@@ -7,7 +7,7 @@ fn signed_shift(left: i64, right: i64) i64 { ret left >> right; }
 
 @test
 fn high_bit_unsigned_values_keep_unsigned_semantics() void {
-    var high: u64 = -1 as u64;
+    var high: u64 = 18446744073709551615;
     var low: u64 = 1 as u64;
     var two: u64 = 2 as u64;
 
@@ -37,14 +37,16 @@ fn high_bit_unsigned_values_keep_unsigned_semantics() void {
 }
 
 @test
-fn signed_overflow_and_shift_match_constant_folding() void {
+fn signed_division_and_shift_match_constant_folding() void {
+    // Checked arithmetic (D-022): `MIN / -1` and `MIN % -1` panic, so the
+    // edge cases next to them are checked instead.
     var minimum: i64 = -9223372036854775807 - 1;
     var minus_one: i64 = -1;
-    if (signed_div(minimum, minus_one) != minimum) {
-        panic("signed division overflow did not wrap");
+    if (signed_div(minimum + 1, minus_one) != 9223372036854775807) {
+        panic("signed division next to the overflow edge was wrong");
     }
-    if (signed_mod(minimum, minus_one) != 0) {
-        panic("signed remainder overflow did not wrap to zero");
+    if (signed_mod(minimum, 2) != 0 || signed_mod(minimum + 1, minus_one) != 0) {
+        panic("signed remainder next to the overflow edge was wrong");
     }
     if (signed_shift(-8, 1) != -4) {
         panic("signed right shift was not arithmetic");

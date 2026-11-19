@@ -5,7 +5,7 @@ fn fixed_read(index: i64) i64 {
 
 fn fixed_write(index: i64, value: i64) i64 {
     var values = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-    values[index] = value;
+    values[index] = value as i32;
     values[index] += 1;
     ret values[index];
 }

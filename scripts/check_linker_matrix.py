@@ -20,7 +20,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Deterministic examples that need neither input, network nor files.
+# Deterministic examples that need no input or files. 28 fetches its Git
+# dependency unless the dependency cache already holds it.
 EXAMPLES = [
     "01-hello-world", "02-struct-methods", "03-enum-pattern-matching", "04-closures",
     "05-generics", "08-dynamic-arrays", "09-modules-and-imports", "10-bitwise-operations",

@@ -146,8 +146,9 @@ GNU property notes (`.note.gnu.property`) and `.eh_frame` unwind metadata are
 also omitted: Quazi's freestanding output has neither a dynamic loader nor an
 unwinder. Other allocated section types remain rejected.
 Objects that depend on other allocated section types, TLS, COMDAT/group
-selection, symbol versioning, linker scripts, dynamic relocations, or archive
-member extraction are outside the current contract.
+selection, symbol versioning, linker scripts, or dynamic relocations are
+outside the current contract. ELF `.a` archives are supported: only the
+members that resolve a needed symbol are linked.
 
 ## Output contract
 
@@ -225,9 +226,11 @@ linker.
 
 ## Validation matrix
 
-`scripts/check_linker_matrix.py` links 20 deterministic examples and four
-focused programs (arguments with non-ASCII text, exit status, a panic with
-status 101, heap traffic, OS threads) three ways: the built-in ELF linker and
+`scripts/check_linker_matrix.py` links 20 examples (one of them,
+`28-git-library-dependency`, fetches its dependency unless a cached copy
+exists) and six focused programs (arguments with non-ASCII text and exit
+status, a panic with status 101, heap traffic, buffered I/O, a sparse large
+file, OS threads) three ways: the built-in ELF linker and
 GNU `ld` (when installed), both run natively, and the built-in PE32+ linker
 run under Wine when `--wine` names its executable (for example from
 `nix build nixpkgs#wine64`). Standard output and exit status must agree:
@@ -237,7 +240,7 @@ WINEPREFIX=/tmp/quazi-wine WINEDEBUG=-all \
   python3 scripts/check_linker_matrix.py --qz target/debug/qz --wine /path/to/wine
 ```
 
-On 2026-11-10 all 24 programs agreed across the three columns with Wine 11.0.
+On 2026-11-19 all 26 programs agreed across the three columns with Wine 11.0.
 Wine runs the PE images on the host CPU but implements the Windows API
 itself, so execution on Windows proper is still outstanding.
 
@@ -246,7 +249,8 @@ rejected because Quazi passes linker flags and provides its own entry point.
 
 ## Current limitations
 
-- x86-64 Linux static executables only;
+- x86-64 only: static Linux ELF, dynamic NetBSD ELF (against the system
+  libc) and Windows PE32+ executables;
 - no Mach-O linker;
 - no shared-library handling inside the built-in linker, and no Windows `.lib`
   archives (ELF `.a` archives are supported);
