@@ -142,8 +142,41 @@ fn main() i32 {
 
 The isolation, drop and cancellation behavior is checked by
 `std/scripts/check_thread_isolation.py` (clone runtime, pthreads, `--jit`,
-concurrent panics); Windows and NetBSD build but are not run here. Channels between threads and qoroutines are planned on the
-same built-in `Channel[T]`.
+concurrent panics, channels); Windows and NetBSD build but are not run here.
+
+### Communication
+
+The prelude's `Channel[T]` ([reference](../reference/prelude/qoroutine.md#channel))
+is the communication surface between threads, as between qoroutines: create
+it with `Channel.new(capacity)`, give each thread its own `clone()` (moved
+into the closure, which borrows it as `&Channel[T]` because a closure may run
+more than once), `send` owned values and `receive` until `None` after
+`close()`. A blocked `send`/`receive` on an OS thread yields its time slice.
+The channel is freed when the last clone is dropped.
+
+```quazi
+import std.thread;
+
+fn produce(out: &Channel[i64]) i64 {
+    for i : 0..100 { out.send(i as i64); }
+    100
+}
+
+fn main() i32 {
+    const channel: Channel[i64] = Channel.new(8);
+    const sender = channel.clone();
+    const worker = thread.spawn(|| produce(&sender)).unwrap();
+    var received: i64 = 0;
+    for (received < 100) {
+        channel.receive().unwrap();
+        received = received + 1;
+    }
+    ret worker.join().unwrap() as i32 - 100;
+}
+```
+
+Values still inside a channel or captured by a thread that panicked are
+leaked, not destroyed (no unwinding).
 
 ## Synchronization (D-019)
 
