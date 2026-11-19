@@ -2,8 +2,10 @@
 
 Audience: Quazi application developers.
 
-Status: implemented on Linux and Windows (Windows through `CreateProcessW`,
-checked under Wine). `Command` adds PATH lookup, working directories and
+Status: implemented on Linux, NetBSD and Windows (Windows through
+`CreateProcessW`, checked under Wine; NetBSD shares the Linux fork/execve
+implementation through `std.posix` and libc and is build-checked only, by
+`std/scripts/check_process_targets.py`). `Command` adds PATH lookup, working directories and
 environments at the maintainers' request
 ([D-021](../decisions/maintainer-answers-2026-11-10.md)); asynchronous
 extensions remain pending.

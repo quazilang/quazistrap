@@ -97,7 +97,7 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 | `exists(path)` | Returns whether a native existence query succeeds. It conflates absence, permission failures, and other errors. |
 | `readable(path)` / `writable(path)` | Best-effort access probes, not a guarantee that a later open or write will succeed. Windows `writable` currently reports existence rather than testing write access. |
 | `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path, depth first, directories before their contents. Symbolic links are listed but not followed, so link cycles cannot recur. |
-| `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD returns `Unsupported`. |
+| `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD uses libc `stat`/`lstat`. |
 | `remove(path)` | Removes a file, not a directory. |
 | `mkdir(path)` | Creates one directory. On Linux it requests `0o755` before `umask`; Windows ignores POSIX mode bits. Parent directories are not created. |
 | `mkdir_mode(path, mode)` | Linux-specific requested mode; Windows creates a directory but does not apply the mode. |
@@ -119,7 +119,7 @@ then assume a subsequent path operation affects the same object.
 | `FileType` | `File`, `Directory`, `Symlink` or `Other`; also `Metadata.file_type()`. |
 | `is_dir(path)` / `is_file(path)` / `is_symlink(path)` | `false` when the path cannot be examined. |
 | `create_dir_all(path)` | Creates missing parents; an existing directory is accepted. |
-| `canonicalize(path)` | `Result[Path, FsError]`: the absolute path with links, `.` and `..` resolved (Linux); Windows returns the full path name. The path must exist. |
+| `canonicalize(path)` | `Result[Path, FsError]`: the absolute path with links, `.` and `..` resolved (Linux, NetBSD `realpath`); Windows returns the full path name. The path must exist. |
 | `write(path, contents)` | Creates or truncates the file and writes `contents`. |
 
 `fs` re-exports `Path` and its `PathBuf` alias from [`std.path`](path.md) and
