@@ -2441,6 +2441,19 @@ impl Analyzer {
                         return;
                     }
                 }
+                // A destructor may move `self`'s fields out, once: record the
+                // move so a later use or second move of the field is rejected.
+                if consumed
+                    && self.unit_variant_type(object, name).is_none()
+                    && self.bc_receiver_is_move_type(expr)
+                    && env.allows_destructor_projection_move(expr)
+                    && let Some((root, path)) = &place
+                {
+                    if let Some(var) = env.lookup_mut(root) {
+                        var.moved_fields.push((path.clone(), expr.span));
+                    }
+                    return;
+                }
                 // `Enum.Variant` constructs a value; it is not a field place.
                 if consumed
                     && self.unit_variant_type(object, name).is_none()

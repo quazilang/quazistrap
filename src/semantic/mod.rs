@@ -7637,6 +7637,33 @@ fn main() void { var value = Outer { inner: Inner { value: 1 } }; value.free(); 
     }
 
     #[test]
+    fn destructor_field_moves_are_tracked() {
+        let report = analyze(
+            r#"
+struct Res { id: i32, }
+impl Res { fn free(self: Res) void {} }
+fn take(r: Res) void {}
+struct P { r: Res, q: Res, }
+impl P {
+    fn free(self: P) void {
+        take(self.r);
+        const id: i32 = self.r.id;
+        self.q.free();
+        take(self.q);
+    }
+}
+fn main() void {}
+"#,
+        );
+        let moved = report
+            .errors
+            .iter()
+            .filter(|error| error.code == "S10" && error.message.starts_with("use of moved field `self."))
+            .count();
+        assert_eq!(moved, 2, "{:?}", report.errors);
+    }
+
+    #[test]
     fn lexical_reference_loans_end_with_their_scope() {
         for source in [
             r#"

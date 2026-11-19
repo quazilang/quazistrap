@@ -166,8 +166,9 @@ fn main() i32 {
 """
 
 
-# Inside a `free` hook, a field consumed and then assigned again must not
-# have its (already destroyed) old value destroyed by the assignment.
+# Inside a `free` hook, a field consumed and then used or assigned again is
+# rejected (S10) like in any other method: it used to compile and read or
+# destroy freed memory.
 HOOK = r"""import std.io;
 
 struct Res { id: i32 }
@@ -233,8 +234,9 @@ def check(qz, root):
     # 200000 leaked arrays would add thousands of pages.
     assert field_after - field_before < 200, output
     (case / "src/main.qz").write_text(HOOK)
-    output = invoke([str(qz), "run", "--no-incremental", "--no-color", "--silent"], case)
-    assert output == "end\ntook 1\ndrop 1\nr 2 s newvalue other XXXXXXXX\ndrop 2\n", output
+    rejected = subprocess.run([str(qz), "check", "--no-color"], cwd=case, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    assert rejected.returncode != 0 and "use of moved field `self.r`" in rejected.stdout, rejected.stdout
     print(f"PASS struct shells: 40000 structs ({before} -> {after} pages), "
           f"40000 generic structs incl. String fields ({generic_before} -> {generic_after}), "
           f"100000 enum values ({enum_before} -> {enum_after}), replaced owned fields destroyed "
