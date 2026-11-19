@@ -6757,15 +6757,6 @@ impl<'a> FnCompiler<'a> {
         self.mark_consumed_binding(expr, value);
     }
 
-    /// A field moved out of a struct local (analysis allows it only in the
-    /// local's own straight-line region): the local's cleanup now destroys
-    /// the remaining fields and the storage shell, not the moved field.
-    /// A place-level move clears the field's ownership in the local's drop
-    /// guard: bit 0 means the value is live and bit `i + 1` that the i-th
-    /// field of the local's structural plan (numbered depth first, so nested
-    /// fields such as `p.inner.name` have their own bits) has moved out.
-    /// Being a runtime mask, it is exact when the move happens on only some
-    /// paths (inside an `if` or `match` arm).
     /// The destruction a field assignment owes the field's previous value:
     /// for a field chain rooted at a binding (`w.a`, `self.slots`) whose type
     /// owns resources. Places reached through a dereference are left alone.
@@ -6786,10 +6777,26 @@ impl<'a> FnCompiler<'a> {
                 _ => return None,
             }
         }
+        // Inside a type's own `free` hook, moves out of `self`'s fields are
+        // not tracked (the hook may consume a field and then assign it
+        // again), so the old value may already be gone: leave it alone.
+        if matches!(&root.node, ExprKind::Ident(name) if name == "self")
+            && self.compiling_destructor_hook()
+        {
+            return None;
+        }
         let ty = self
             .type_of_expr(target)
             .or_else(|| self.declared_field_type(object, field))?;
         self.drop_action_for_type(&ty)
+    }
+
+    /// Whether this chunk is a type's consuming `free` hook (`T.free`,
+    /// including specializations `T.free<...>`).
+    fn compiling_destructor_hook(&self) -> bool {
+        let name = self.chunk.name.as_str();
+        let base = name.split('<').next().unwrap_or(name);
+        base.ends_with(".free")
     }
 
     /// The declared type of `object.field`, from the object's struct type
@@ -6821,6 +6828,15 @@ impl<'a> FnCompiler<'a> {
         )))
     }
 
+    /// A field moved out of a struct local (analysis allows it only in the
+    /// local's own straight-line region): the local's cleanup now destroys
+    /// the remaining fields and the storage shell, not the moved field.
+    /// A place-level move clears the field's ownership in the local's drop
+    /// guard: bit 0 means the value is live and bit `i + 1` that the i-th
+    /// field of the local's structural plan (numbered depth first, so nested
+    /// fields such as `p.inner.name` have their own bits) has moved out.
+    /// Being a runtime mask, it is exact when the move happens on only some
+    /// paths (inside an `if` or `match` arm).
     fn move_field_out_of_local(&mut self, root: &str, path: &[u16]) {
         let Some(local) = self.drop_local(root).cloned() else {
             return;

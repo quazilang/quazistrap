@@ -166,6 +166,33 @@ fn main() i32 {
 """
 
 
+# Inside a `free` hook, a field consumed and then assigned again must not
+# have its (already destroyed) old value destroyed by the assignment.
+HOOK = r"""import std.io;
+
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { io.println("drop {self.id}"); } }
+fn take(r: Res) void { io.println("took {r.id}"); }
+struct P { r: Res, s: String }
+impl P {
+    fn free(self: P) void {
+        take(self.r);
+        self.r = Res { id: 2 };
+        self.s.free();
+        self.s = String.from("newvalue");
+        const other: String = String.from("XXXXXXXX");
+        io.println("r {} s {} other {}", self.r.id, self.s, other);
+        const keep: Res = self.r;
+    }
+}
+fn main() i32 {
+    var p = P { r: Res { id: 1 }, s: String.from("oldvalue") };
+    io.println("end");
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -205,6 +232,9 @@ def check(qz, root):
     field_before, field_after = (int(value) for value in match.groups())
     # 200000 leaked arrays would add thousands of pages.
     assert field_after - field_before < 200, output
+    (case / "src/main.qz").write_text(HOOK)
+    output = invoke([str(qz), "run", "--no-incremental", "--no-color", "--silent"], case)
+    assert output == "end\ntook 1\ndrop 1\nr 2 s newvalue other XXXXXXXX\ndrop 2\n", output
     print(f"PASS struct shells: 40000 structs ({before} -> {after} pages), "
           f"40000 generic structs incl. String fields ({generic_before} -> {generic_after}), "
           f"100000 enum values ({enum_before} -> {enum_after}), replaced owned fields destroyed "
