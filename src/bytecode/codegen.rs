@@ -690,6 +690,161 @@ impl<'a> Codegen<'a> {
         )
     }
 
+    /// Add to `reachable` (closed over calls) every destructor whose type
+    /// reachable code can hold, until no more are added. A destructor runs
+    /// from generated cleanup, which has no call edge, so its type decides:
+    /// see [`Self::live_type_names`]. A top-level `free` stays a root.
+    fn extend_with_live_destructors(
+        &self,
+        program: &Program,
+        destructor_roots: &HashSet<String>,
+        reachable: &mut HashSet<String>,
+    ) {
+        loop {
+            let live = self.live_type_names(program, reachable);
+            let mut queue = Vec::new();
+            for root in destructor_roots {
+                let needed = match root.rsplit_once('.') {
+                    Some((owner, _)) => live.contains(last_path_segment(owner)),
+                    None => true,
+                };
+                if needed && reachable.insert(root.clone()) {
+                    queue.push(root.clone());
+                }
+            }
+            if queue.is_empty() {
+                return;
+            }
+            while let Some(fn_name) = queue.pop() {
+                if let Some(targets) = self.report.dependency_graph.calls_from.get(&fn_name) {
+                    for target in targets {
+                        if reachable.insert(target.clone()) {
+                            queue.push(target.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Last path segments of every type a value of which `reachable` code
+    /// may hold: the types of expressions inside reachable callables and
+    /// outside every callable (global initializers), the parameter and result
+    /// types of reachable callables, the type arguments of reachable
+    /// specializations, and, transitively, the field, payload
+    /// and alias types of those types. Names are compared by their last
+    /// segment, which can only over-approximate.
+    fn live_type_names(&self, program: &Program, reachable: &HashSet<String>) -> HashSet<String> {
+        let reachable_bases: HashSet<&str> = reachable
+            .iter()
+            .map(|name| name.split('<').next().unwrap_or(name))
+            .collect();
+        let mut live = HashSet::new();
+        let mut live_spans = Vec::new();
+        let mut callable_spans = Vec::new();
+        let mut visit_fn = |name: String, item: &Item| {
+            let ItemKind::Fn {
+                params, return_ty, ..
+            } = &item.node
+            else {
+                return;
+            };
+            callable_spans.push(item.span);
+            if reachable_bases.contains(name.as_str()) {
+                live_spans.push(item.span);
+                for param in params {
+                    collect_type_name_segments(&param.ty.node, &mut live);
+                }
+                collect_type_name_segments(&return_ty.node, &mut live);
+            }
+        };
+        let mut aggregates: HashMap<&str, Vec<&TypeKind>> = HashMap::new();
+        for item in &program.items {
+            match &item.node {
+                ItemKind::Fn {
+                    name, attributes, ..
+                } => {
+                    let index_name = if attributes.iter().any(|a| a.name == "panic_handler") {
+                        "__quazi_panic_handler".to_string()
+                    } else {
+                        self.resolve_item_name(item.span, name, attributes)
+                    };
+                    // Handlers are compiled under their slot name but keep
+                    // their declared name in call edges.
+                    let declared = self.analysis_fn_name(item.span, name);
+                    if reachable_bases.contains(declared.as_str()) {
+                        visit_fn(declared, item);
+                    } else {
+                        visit_fn(index_name, item);
+                    }
+                }
+                ItemKind::Impl {
+                    for_ty, methods, ..
+                } => {
+                    let type_name = type_kind_base_name(&for_ty.node);
+                    for method in methods {
+                        if let ItemKind::Fn { name, .. } = &method.node {
+                            visit_fn(format!("{}.{}", type_name, name), method);
+                        }
+                    }
+                }
+                ItemKind::Struct { name, fields, .. } => {
+                    aggregates
+                        .entry(last_path_segment(name))
+                        .or_default()
+                        .extend(fields.iter().map(|field| &field.ty.node));
+                }
+                ItemKind::Enum { name, variants, .. } => {
+                    aggregates.entry(last_path_segment(name)).or_default().extend(
+                        variants
+                            .iter()
+                            .flat_map(|variant| variant.payload_types.iter().map(|ty| &ty.node)),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let within = |spans: &[Span], span: Span| {
+            spans
+                .iter()
+                .any(|outer| outer.start <= span.start && span.end <= outer.end)
+        };
+        for annotation in &self.report.annotated_exprs {
+            let Some(ty) = &annotation.ty else { continue };
+            if within(&live_spans, annotation.span) || !within(&callable_spans, annotation.span) {
+                collect_type_name_segments(ty, &mut live);
+            }
+        }
+        // A specialization's body is annotated with its type parameters, so
+        // its concrete type arguments count on their own (`mk[Handle](p)` may
+        // read a `Handle` out of raw memory and drop it).
+        for mono in &self.report.monomorphizations {
+            if reachable.contains(&mono.mangled_name) {
+                for argument in &mono.type_args {
+                    collect_type_name_segments(argument, &mut live);
+                }
+            }
+        }
+        let mut pending: Vec<String> = live.iter().cloned().collect();
+        while let Some(name) = pending.pop() {
+            let mut nested = HashSet::new();
+            for field in aggregates.get(name.as_str()).into_iter().flatten() {
+                collect_type_name_segments(field, &mut nested);
+            }
+            for (alias, (_, body)) in &self.report.type_aliases {
+                if last_path_segment(alias) == name {
+                    collect_type_name_segments(body, &mut nested);
+                }
+            }
+            for found in nested {
+                if live.insert(found.clone()) {
+                    pending.push(found);
+                }
+            }
+        }
+        live
+    }
+
     pub fn compile_program(
         &mut self,
         program: &Program,
@@ -937,9 +1092,6 @@ impl<'a> Codegen<'a> {
                 }
             }
             set.extend(dynamic_roots.iter().cloned());
-            for root in &destructor_roots {
-                set.insert(root.clone());
-            }
             let mut queue = set.iter().cloned().collect::<Vec<_>>();
             while let Some(fn_name) = queue.pop() {
                 if let Some(body) = export_bodies.get(&fn_name)
@@ -972,6 +1124,9 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+            // Generated cleanup calls destructors without call edges, so a
+            // destructor is a root once reachable code can hold its type.
+            self.extend_with_live_destructors(program, &destructor_roots, &mut set);
             Some(set)
         } else if let Some(excluded_paths) = &self.library_export_exclusions {
             let is_project_item = |span: Span| {
@@ -5432,11 +5587,15 @@ impl<'a> FnCompiler<'a> {
                 return Some(base);
             }
         }
-        if type_args.is_empty()
-            && self.consuming_receiver_methods.contains(&base)
-            && self.fn_index.contains_key(&base)
-        {
-            return Some(base);
+        if type_args.is_empty() && self.consuming_receiver_methods.contains(&base) {
+            if self.fn_index.contains_key(&base) {
+                return Some(base);
+            }
+            // Destructor roots follow live types (`live_type_names`); a miss
+            // must not silently skip the hook.
+            self.resolution_errors.borrow_mut().push(format!(
+                "internal codegen error: destructor `{base}` is needed but was not compiled"
+            ));
         }
         None
     }
@@ -9891,9 +10050,12 @@ impl<'a> FnCompiler<'a> {
                 // local value register.
                 let resolved_module_call = self.resolved_fn_for_span(expr.span);
                 let module_base = self.module_import_base(object).or_else(|| {
-                    let (base, _) = extract_field_chain(object)?;
+                    // Only a bare module name qualifies: `Color.Red.name()`
+                    // calls `Color.name` on the unit variant `Color.Red`.
+                    let (base, path) = extract_field_chain(object)?;
                     let expected = format!("{}.{}", base, method);
-                    (resolved_module_call.as_deref() == Some(expected.as_str())).then_some(base)
+                    (path.is_empty() && resolved_module_call.as_deref() == Some(expected.as_str()))
+                        .then_some(base)
                 });
                 if let Some(module_base) = module_base {
                     let dst = self.alloc_reg();
@@ -11626,6 +11788,35 @@ fn export_adapter_name(function_name: &str) -> String {
     )
 }
 
+fn last_path_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Insert the last path segment of every named type `ty` mentions.
+fn collect_type_name_segments(ty: &TypeKind, names: &mut HashSet<String>) {
+    match ty {
+        TypeKind::Named { name, type_args } => {
+            names.insert(last_path_segment(name).to_string());
+            for argument in type_args {
+                collect_type_name_segments(&argument.node, names);
+            }
+        }
+        TypeKind::Array { elem_ty: inner, .. }
+        | TypeKind::FlexibleArray { elem_ty: inner }
+        | TypeKind::Slice { elem_ty: inner }
+        | TypeKind::Ref { inner }
+        | TypeKind::MutRef { inner }
+        | TypeKind::RawPtr { inner } => collect_type_name_segments(&inner.node, names),
+        TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
+            for param in params {
+                collect_type_name_segments(&param.node, names);
+            }
+            collect_type_name_segments(&return_ty.node, names);
+        }
+        _ => {}
+    }
+}
+
 fn collect_destructor_roots(program: &Program) -> HashSet<String> {
     let mut roots = HashSet::new();
     for item in &program.items {
@@ -12247,6 +12438,49 @@ fn main() i32 { unsafe { bump(0); } ret 0; }
         Codegen::new(&report)
             .compile_program(&program, &source_files)
             .expect("code generation should succeed")
+    }
+
+    const FOREIGN_DESTRUCTOR: &str = "@api(\"release_handle\") unsafe fn release_handle(handle: usize) void; struct Handle { raw: usize } impl Handle { fn free(self: Handle) void { unsafe { release_handle(self.raw); } } } struct Owner { inner: Handle } fn make() Owner { ret Owner { inner: Handle { raw: 1 } }; }";
+
+    #[test]
+    fn destructors_of_types_no_reachable_code_holds_are_not_compiled() {
+        // An unused library type's destructor must not drag its foreign
+        // symbols into every program.
+        let chunks = compile(&format!("{FOREIGN_DESTRUCTOR} fn main() i32 {{ ret 0; }}"));
+        assert!(!chunks.iter().any(|chunk| chunk.name == "Handle.free"));
+    }
+
+    #[test]
+    fn destructors_of_specialization_type_arguments_are_compiled() {
+        // The generic body only mentions `T`; the call site's value is void.
+        let chunks = compile(&format!(
+            "{FOREIGN_DESTRUCTOR} unsafe fn take[T](p: *u8) void {{ const q: *T = p as *T; const v: T = *q; }} @api(\"raw_source\") unsafe fn raw_source() *u8; fn main() i32 {{ unsafe {{ take[Handle](raw_source()); }} ret 0; }}"
+        ));
+        assert!(chunks.iter().any(|chunk| chunk.name == "Handle.free"));
+    }
+
+    #[test]
+    fn destructors_of_fields_of_held_types_are_compiled() {
+        let chunks = compile(&format!(
+            "{FOREIGN_DESTRUCTOR} fn main() i32 {{ const owner: Owner = make(); ret 0; }}"
+        ));
+        assert!(chunks.iter().any(|chunk| chunk.name == "Handle.free"));
+    }
+
+    #[test]
+    fn method_call_on_unit_variant_passes_the_variant_as_receiver() {
+        // `Color.Red.name()` once lowered as a module call `Color.name()`
+        // without its receiver and panicked while emitting arguments.
+        let chunks = compile(
+            "enum Color { Red, Green(i32) } impl Color { fn name(self: Color) i32 { ret match self { Color.Red => 1, Color.Green(_) => 2 }; } } fn main() i32 { ret Color.Red.name(); }",
+        );
+        let main = chunks.iter().find(|chunk| chunk.name == "main").unwrap();
+        assert!(
+            main.code
+                .iter()
+                .any(|instruction| instruction.opcode == Opcode::CallArg as u8),
+            "the receiver must be passed"
+        );
     }
 
     #[test]
