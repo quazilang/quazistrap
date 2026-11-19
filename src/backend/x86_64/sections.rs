@@ -47,6 +47,9 @@ fn safe_label(name: &str) -> String {
 /// the stack (`crash_handler = true`).
 pub(crate) const STACK_OVERFLOW_MESSAGE: &[u8] =
     b"\nthread 'main' has overflowed its stack\nfatal runtime error: stack overflow (unbounded recursion or a too large local value)\n";
+/// The same for any other thread (qoroutine workers, std.thread threads).
+pub(crate) const THREAD_STACK_OVERFLOW_MESSAGE: &[u8] =
+    b"\nthread '<unnamed>' has overflowed its stack\nfatal runtime error: stack overflow (unbounded recursion or a too large local value)\n";
 
 
 pub struct SectionAccumulator {
@@ -140,6 +143,15 @@ impl SectionAccumulator {
             "__quazi_proc_self_environ",
             proc_offset,
             19,
+        );
+        let thread_overflow_offset =
+            obj.append_section_data(self.rodata_id, THREAD_STACK_OVERFLOW_MESSAGE, 1);
+        sym_table.define_data(
+            obj,
+            self.rodata_id,
+            "__quazi_thread_stack_overflow",
+            thread_overflow_offset,
+            THREAD_STACK_OVERFLOW_MESSAGE.len() as u64,
         );
         let overflow_offset = obj.append_section_data(self.rodata_id, STACK_OVERFLOW_MESSAGE, 1);
         sym_table.define_data(

@@ -121,11 +121,11 @@ def main():
         for qzi, wine in variants:
             overflow = build(qz, root, RECURSION, qzi, wine=wine)
             assert overflow.returncode == 134, (overflow.returncode, overflow.stderr)
-            assert "has overflowed its stack" in overflow.stderr, overflow.stderr
+            assert "thread 'main' has overflowed its stack" in overflow.stderr, overflow.stderr
             for source in (THREAD_RECURSION,) if wine else (QO_RECURSION, THREAD_RECURSION):
                 worker = build(qz, root, source, qzi, wine=wine)
                 assert worker.returncode == 134, (worker.returncode, worker.stderr)
-                assert "has overflowed its stack" in worker.stderr, worker.stderr
+                assert "thread '<unnamed>' has overflowed its stack" in worker.stderr, worker.stderr
             fault = build(qz, root, NULL_READ, qzi, wine=wine)
             assert fault.returncode == 101, (fault.returncode, fault.stderr)
             assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr

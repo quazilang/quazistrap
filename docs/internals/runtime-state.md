@@ -10,7 +10,8 @@ whose address `quazi.runtime.state()` returns. Owners of each range:
 | 72 | 8 | prelude `qoroutine.qz` | isolated-thread registry spin lock (0 free, 1 held) |
 | 80 | 8 | prelude `qoroutine.qz` | isolated-thread registry head: innermost `__qo_isolate` record first, found by `quazi.thread.current` |
 | 88 | 4 | Windows crash report | thread id of the reporting thread (`lock cmpxchg` from 0); its own second fault exits 101, other faulting threads wait |
-| 92–103 | 12 | — | reserved |
+| 92 | 4 | Windows startup | id of the main thread (`mainCRTStartup`), for the stack-overflow message |
+| 96–103 | 8 | — | reserved |
 | 104 | 8 | std `os.qz` | environment writer spin lock (0 free, 1 held) |
 | 112 | 8 | runtime / std `os.qz` | Linux `envp`: pointer to a null-terminated array of `NAME=VALUE` C strings |
 | 120 | 8 | — | reserved |

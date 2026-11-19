@@ -224,13 +224,28 @@ impl StartStub {
         emit!(asm.sub(rax, rcx));
         emit!(asm.cmp(rax, 0x11000i32));
         emit!(asm.jae(not_overflow));
-        emit!(asm.mov(rax, 1i64));
-        emit!(asm.mov(rdi, 2i64));
+        // The main thread's id equals the process id.
+        emit!(asm.mov(eax, 186i32)); // gettid
+        emit!(asm.syscall());
+        emit!(asm.mov(rbx, rax));
+        emit!(asm.mov(eax, 39i32)); // getpid
+        emit!(asm.syscall());
         lea_rip!(rsi, "__quazi_stack_overflow");
         emit!(asm.mov(
             rdx,
             crate::backend::x86_64::sections::STACK_OVERFLOW_MESSAGE.len() as i64
         ));
+        let mut overflow_named = asm.create_label();
+        emit!(asm.cmp(rax, rbx));
+        emit!(asm.je(overflow_named));
+        lea_rip!(rsi, "__quazi_thread_stack_overflow");
+        emit!(asm.mov(
+            rdx,
+            crate::backend::x86_64::sections::THREAD_STACK_OVERFLOW_MESSAGE.len() as i64
+        ));
+        emit!(asm.set_label(&mut overflow_named));
+        emit!(asm.mov(rax, 1i64));
+        emit!(asm.mov(rdi, 2i64));
         emit!(asm.syscall());
         emit!(asm.mov(rdi, 134i64));
         emit!(asm.mov(rax, 231i64)); // exit_group
@@ -1460,11 +1475,23 @@ impl StartStub {
         emit!(asm.mov(ecx, -12i32));
         call_ext!("GetStdHandle", RelocKind::Plt32);
         emit!(asm.mov(rcx, rax));
+        // mainCRTStartup stored the main thread's id at runtime state +92.
+        lea_rip!(rax, "__quazi_runtime_state");
+        emit!(asm.mov(eax, dword_ptr(rax + 92i32)));
         lea_rip!(rdx, "__quazi_stack_overflow");
         emit!(asm.mov(
             r8d,
             crate::backend::x86_64::sections::STACK_OVERFLOW_MESSAGE.len() as i32
         ));
+        let mut overflow_named = asm.create_label();
+        emit!(asm.cmp(eax, dword_ptr(0x48).gs()));
+        emit!(asm.je(overflow_named));
+        lea_rip!(rdx, "__quazi_thread_stack_overflow");
+        emit!(asm.mov(
+            r8d,
+            crate::backend::x86_64::sections::THREAD_STACK_OVERFLOW_MESSAGE.len() as i32
+        ));
+        emit!(asm.set_label(&mut overflow_named));
         emit!(asm.xor(r9d, r9d));
         emit!(asm.mov(qword_ptr(rsp + 32), 0i32));
         call_ext!("WriteFile", RelocKind::Plt32);
@@ -1570,6 +1597,11 @@ impl StartStub {
         let startup_idx = asm.instructions().len();
 
         emit!(asm.sub(rsp, 40i32));
+
+        // The main thread's id, for the stack-overflow message.
+        emit!(asm.mov(eax, dword_ptr(0x48).gs()));
+        lea_rip!(rcx, "__quazi_runtime_state");
+        emit!(asm.mov(dword_ptr(rcx + 92i32), eax));
 
         // Stack overflow: a vectored handler with a reserved stack
         // guarantee. Every other fatal exception: the unhandled-exception
