@@ -7407,7 +7407,11 @@ impl<'a> FnCompiler<'a> {
                         }
                     }
                     ForLoop::Each { vars, iter, .. } => match iter {
-                        ForIter::Range { start, end } => {
+                        ForIter::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => {
                             let loop_var = vars.first().map(|s| s.as_str()).unwrap_or("_");
                             let r_start = self.compile_value(start);
                             let r_end = self.compile_value(end);
@@ -7417,7 +7421,8 @@ impl<'a> FnCompiler<'a> {
                             }
                             let loop_top = self.chunk.len() as u16;
                             self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
-                            let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
+                            let exit_opcode = if *inclusive { Opcode::Jg } else { Opcode::Jge };
+                            let jump_exit = self.chunk.emit(ri16(exit_opcode, 0, 0));
                             self.loop_stack
                                 .push(LoopFrame::new(self.drop_scopes.len()));
                             self.compile_block(body);
@@ -7426,10 +7431,19 @@ impl<'a> FnCompiler<'a> {
                             for jmp in &frame.continue_jumps {
                                 self.chunk.patch_jump(*jmp, continue_pos);
                             }
+                            // `..=` stops after the last value instead of
+                            // incrementing past it (which overflows at MAX).
+                            let jump_last = inclusive.then(|| {
+                                self.chunk.emit(rrr(Opcode::Cmp, 0, r_i, r_end));
+                                self.chunk.emit(ri16(Opcode::Je, 0, 0))
+                            });
                             self.chunk.emit(rrr(Opcode::Inc, r_i, r_i, 0));
                             self.chunk.emit(ri16(Opcode::Jmp, 0, loop_top));
                             let exit_pos = self.chunk.len() as u16;
                             self.chunk.patch_jump(jump_exit, exit_pos);
+                            if let Some(jump_last) = jump_last {
+                                self.chunk.patch_jump(jump_last, exit_pos);
+                            }
                             for jmp in &frame.break_jumps {
                                 self.chunk.patch_jump(*jmp, exit_pos);
                             }

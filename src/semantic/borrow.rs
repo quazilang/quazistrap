@@ -1683,7 +1683,7 @@ impl Analyzer {
                 // Rust's `for x in collection` semantics).
                 if let ForLoop::Each { iter, .. } = kind {
                     match iter {
-                        ForIter::Range { start, end } => {
+                        ForIter::Range { start, end, .. } => {
                             self.bc_expr(start, env, false);
                             self.bc_expr(end, env, false);
                         }
@@ -3946,7 +3946,7 @@ fn collect_stmt_identifiers(stmt: &Stmt, names: &mut Vec<String>) {
                 ForLoop::Each { vars, iter, .. } => {
                     names.extend(vars.iter().cloned());
                     match iter {
-                        ForIter::Range { start, end } => {
+                        ForIter::Range { start, end, .. } => {
                             expr(start, names);
                             expr(end, names);
                         }
@@ -4112,7 +4112,7 @@ fn collect_stmt_sinks(
                 ForLoop::Each { vars, iter, .. } => {
                     names.extend(vars.iter().cloned());
                     match iter {
-                        ForIter::Range { start, end } => {
+                        ForIter::Range { start, end, .. } => {
                             expr_sinks(start, names, receiver_may_store);
                             expr_sinks(end, names, receiver_may_store);
                         }

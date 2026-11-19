@@ -232,7 +232,7 @@ pub fn walk_stmt<V: MutVisitor + ?Sized>(visitor: &mut V, stmt: &mut Stmt) {
                         visitor.visit_span(span);
                     }
                     match iter {
-                        ForIter::Range { start, end } => {
+                        ForIter::Range { start, end, .. } => {
                             visitor.visit_expr(start);
                             visitor.visit_expr(end);
                         }

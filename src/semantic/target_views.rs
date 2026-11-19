@@ -1233,7 +1233,7 @@ impl MutVisitor for Rewrite<'_, '_> {
                 body,
             } => {
                 match iter {
-                    ForIter::Range { start, end } => {
+                    ForIter::Range { start, end, .. } => {
                         self.visit_expr(start);
                         self.visit_expr(end);
                     }

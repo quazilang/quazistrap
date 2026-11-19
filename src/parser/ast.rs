@@ -437,8 +437,12 @@ pub struct Attribute {
 
 #[derive(Debug, Clone)]
 pub enum ForIter {
-    /// `start .. end`  (exclusive upper bound)
-    Range { start: Box<Expr>, end: Box<Expr> },
+    /// `start .. end` (exclusive upper bound) or `start ..= end` (inclusive).
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
     /// any other expression: array, map, iterator call, etc.
     Iter(Box<Expr>),
 }

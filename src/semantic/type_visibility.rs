@@ -206,7 +206,7 @@ impl Visibility<'_> {
                 match kind {
                     ForLoop::Each { vars, iter, .. } => {
                         match iter {
-                            ForIter::Range { start, end } => {
+                            ForIter::Range { start, end, .. } => {
                                 self.check_expr(start, scope);
                                 self.check_expr(end, scope);
                             }

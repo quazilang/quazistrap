@@ -544,7 +544,7 @@ impl Places<'_> {
                         match kind {
                             ForLoop::Each { iter, .. } => match iter {
                                 ForIter::Iter(expr) => pending.push(Visit::Expression(expr)),
-                                ForIter::Range { start, end } => {
+                                ForIter::Range { start, end, .. } => {
                                     pending.push(Visit::Expression(end));
                                     pending.push(Visit::Expression(start));
                                 }

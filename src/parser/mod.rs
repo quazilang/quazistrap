@@ -680,12 +680,14 @@ impl Parser {
                 // Each form: `for var i : 0..10` or `for var e : collection`
                 self.advance(); // consume `:`
                 let lhs = self.parse_logical_or()?;
-                let iter = if self.at(TokenKind::DotDot) {
+                let iter = if self.at(TokenKind::DotDot) || self.at(TokenKind::DotDotEq) {
+                    let inclusive = self.at(TokenKind::DotDotEq);
                     self.advance();
                     let rhs = self.parse_expr()?;
                     ForIter::Range {
                         start: Box::new(lhs),
                         end: Box::new(rhs),
+                        inclusive,
                     }
                 } else {
                     ForIter::Iter(Box::new(lhs))
@@ -780,12 +782,14 @@ impl Parser {
             }
             self.advance(); // consume `:`
             let lhs = self.parse_logical_or()?;
-            let iter = if self.at(TokenKind::DotDot) {
+            let iter = if self.at(TokenKind::DotDot) || self.at(TokenKind::DotDotEq) {
+                let inclusive = self.at(TokenKind::DotDotEq);
                 self.advance();
                 let rhs = self.parse_expr()?;
                 ForIter::Range {
                     start: Box::new(lhs),
                     end: Box::new(rhs),
+                    inclusive,
                 }
             } else {
                 ForIter::Iter(Box::new(lhs))

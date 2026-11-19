@@ -716,7 +716,7 @@ impl<F: FnMut() -> Result<(), Cancelled>> Evaluation<'_, '_, F> {
                 let element = match kind {
                     ForLoop::Each { iter, .. } => match iter {
                         ForIter::Iter(expr) => self.projection_value(expr, env, 0)?,
-                        ForIter::Range { start, end } => {
+                        ForIter::Range { start, end, .. } => {
                             let mut value = self.expression(start, env, 0)?;
                             value.extend(self.expression(end, env, 0)?);
                             value

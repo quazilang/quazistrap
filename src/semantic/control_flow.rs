@@ -2775,7 +2775,7 @@ where
                             )?;
                             let expressions = match iter {
                                 ForIter::Iter(expression) => vec![expression.as_ref()],
-                                ForIter::Range { start, end } => vec![start.as_ref(), end.as_ref()],
+                                ForIter::Range { start, end, .. } => vec![start.as_ref(), end.as_ref()],
                             };
                             self.evaluate(
                                 entry,

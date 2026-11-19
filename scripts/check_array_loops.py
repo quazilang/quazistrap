@@ -3,7 +3,8 @@
 `for index, value : array` (index first), copyable elements read in place,
 owning elements (String) moved out one by one with `continue`, `break` and
 moves into another array, borrowed arrays through a reference parameter,
-and `for index, value` over a has_next/next iterator. Peak memory must not
+`for index, value` over a has_next/next iterator, and inclusive `a..=b`
+ranges (including one ending at the type's maximum). Peak memory must not
 grow with the iteration count (no leak, no double free). Native and QZI."""
 
 import argparse
@@ -46,6 +47,15 @@ fn main() i32 {
     const fixed = [7, 8];
     for index, value : fixed { println("{} {}", index, value); }
     for index, value : Countdown { left: 2 } { println("{} {}", index, value); }
+    // Inclusive ranges stop at their last value, even at the type's maximum.
+    var through: i32 = 0;
+    for i : 1..=5 { through = through + i; }
+    var top: i32 = 0;
+    for b : (125 as i8)..=(127 as i8) { top = top + 1; }
+    var odd: i32 = 0;
+    for k : 0..=10 { if k % 2 == 0 { continue; } if k > 7 { break; } odd = odd + k; }
+    for e : 5..=4 { odd = odd + 100; }
+    println("{} {} {}", through, top, odd);
     var n: usize = 0;
     var checksum: usize = 0;
     for (n < ROUNDS) { checksum = checksum + round(n); n++; }
@@ -53,7 +63,7 @@ fn main() i32 {
     0
 }
 """
-EXPECTED = "30\n0 10\n1 20\n0 7\n1 8\n0 1\n1 0\n"
+EXPECTED = "30\n0 10\n1 20\n0 7\n1 8\n0 1\n1 0\n15 3 16\n"
 
 
 def run(command, root):

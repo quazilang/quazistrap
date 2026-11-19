@@ -2470,7 +2470,7 @@ impl Analyzer {
                         iter,
                     } => {
                         let loop_var_ty = match iter {
-                            ForIter::Range { start, end } => {
+                            ForIter::Range { start, end, .. } => {
                                 let start_eval = self.type_check_expr(start, true);
                                 let end_eval = self.type_check_expr(end, true);
                                 if let Some(t) = &start_eval.ty
