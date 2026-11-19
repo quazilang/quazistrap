@@ -8,8 +8,9 @@
 // result is a `Qoroutine[T]` whose `join()` waits and returns `T`.
 //
 // M:N scheduler: qoroutines run on four OS worker threads started on first
-// use. Each qoroutine owns a 256 KiB stack slot and a context entered with
-// `quazi.context.switch`. Quazi has no global variables, so the scheduler
+// use. Each qoroutine owns a 256 KiB stack slot (on Linux its second page is
+// an inaccessible guard, so an overflow is reported instead of overwriting
+// the slot below) and a context entered with `quazi.context.switch`. Quazi has no global variables, so the scheduler
 // lives in the `quazi.runtime.state` block:
 //   +0 queue lock, +8 queue head, +16 queue tail,
 //   +24 init state (0 none, 1 initializing, 2 ready), +32 stack arena,
@@ -119,6 +120,78 @@ unsafe fn __qo_timer_settime(timer: i64, flags: i64, value: *u8, old: *u8) i64;
 @syscall(14)
 unsafe fn __qo_sigprocmask(how: i64, set: *u8, old: *u8, size: usize) i64;
 
+@cfg(target_os = "linux")
+@syscall(10)
+unsafe fn __qo_mprotect(address: *u8, length: usize, protection: i64) i64;
+
+@cfg(target_os = "linux")
+@syscall(131)
+unsafe fn __qo_sigaltstack(stack: *u8, old: *u8) i64;
+
+// Make the second page of every stack slot inaccessible. A slot's first
+// word is its task and stacks grow down from the slot's top, so a qoroutine
+// that overflows faults on this guard page instead of overwriting the task
+// word and the stack of the slot below. The crash handler (on the worker's
+// alternate signal stack) reports the overflow.
+@cfg(target_os = "linux")
+unsafe fn __qo_guard_stacks(arena: *u8, slots: usize) void {
+    for i : 0..slots {
+        __qo_mprotect(arena + i * __qo_stack_size() + 4096, 4096, 0);
+    }
+}
+
+@cfg(target_os = "windows")
+unsafe fn __qo_guard_stacks(_arena: *u8, _slots: usize) void {}
+
+@cfg(target_os = "netbsd")
+unsafe fn __qo_guard_stacks(_arena: *u8, _slots: usize) void {}
+
+// Give this OS thread an alternate signal stack if it has none, so the
+// crash handler (installed with SA_ONSTACK) can report a stack overflow;
+// returns the stack to pass to `__qo_drop_altstack`, or 0. Linux only.
+// stack_t: +0 ss_sp, +8 ss_flags (SS_DISABLE = 2), +16 ss_size.
+@cfg(target_os = "linux")
+unsafe fn __qo_use_altstack() *u8 {
+    const record: *u8 = __qo_malloc(24);
+    if (record == 0) { ret 0; }
+    var installed: *u8 = 0;
+    if (__qo_sigaltstack(0, record) == 0 && (*((record + 8) as *i32) & 2) != 0) {
+        const stack: *u8 = __qo_malloc(65536);
+        if (stack != 0) {
+            *(record as **u8) = stack;
+            *((record + 8) as *i64) = 0;
+            *((record + 16) as *usize) = 65536;
+            if (__qo_sigaltstack(record, 0) == 0) { installed = stack; } else { __qo_free(stack); }
+        }
+    }
+    __qo_free(record);
+    installed
+}
+
+@cfg(target_os = "windows")
+unsafe fn __qo_use_altstack() *u8 { 0 }
+
+@cfg(target_os = "netbsd")
+unsafe fn __qo_use_altstack() *u8 { 0 }
+
+// Undo `__qo_use_altstack` before the thread's stack memory goes away.
+@cfg(target_os = "linux")
+unsafe fn __qo_drop_altstack(stack: *u8) void {
+    if (stack == 0) { ret; }
+    const record: *u8 = __qo_malloc(24);
+    if (record == 0) { ret; }
+    __qo_memset(record, 0, 24);
+    *((record + 8) as *i64) = 2;
+    if (__qo_sigaltstack(record, 0) == 0) { __qo_free(stack); }
+    __qo_free(record);
+}
+
+@cfg(target_os = "windows")
+unsafe fn __qo_drop_altstack(_stack: *u8) void {}
+
+@cfg(target_os = "netbsd")
+unsafe fn __qo_drop_altstack(_stack: *u8) void {}
+
 fn __qo_preempt_signal() i32 { 23 }
 
 // Send this worker thread SIGURG every 10 ms (Linux), if preemption is on.
@@ -220,6 +293,7 @@ unsafe fn __qo_dequeue() *u8 {
 
 // One scheduling loop per worker thread; never returns.
 unsafe fn __qo_worker_loop() void {
+    __qo_use_altstack();
     const context: *u8 = __qo_malloc(280);
     const preempt_set: *u8 = context + 272;
     *(preempt_set as *i64) = 4194304; // 1 << (SIGURG - 1)
@@ -285,9 +359,15 @@ unsafe fn __qo_init() void {
     const state = __qo_state();
     if (__qo_atomic_cas((state + 24) as *i64, 0, 1) == 0) {
         const slots = __qo_slot_count();
-        const arena: *u8 = __qo_malloc(slots * __qo_stack_size());
+        // Page-aligned slots, so each one's guard page is a whole page.
+        const raw: *u8 = __qo_malloc(slots * __qo_stack_size() + 4096);
         const free: *u8 = __qo_malloc(slots * 8);
-        if (arena == 0 || free == 0) { panic("qoroutine stack arena allocation failed"); }
+        if (raw == 0 || free == 0) { panic("qoroutine stack arena allocation failed"); }
+        const null: *u8 = 0;
+        const misalignment: usize = (__qo_offset_from(raw, null) as usize) % 4096;
+        var arena: *u8 = raw;
+        if (misalignment != 0) { arena = raw + (4096 - misalignment); }
+        __qo_guard_stacks(arena, slots);
         for i : 0..slots { *((free + i * 8) as *i64) = i as i64; }
         *((state + 32) as **u8) = arena;
         *((state + 40) as **u8) = free;
@@ -469,6 +549,8 @@ unsafe fn __qo_leave_isolation(record: *u8) void {
 // `__qo_isolation_arg`.
 pub unsafe fn __qo_isolate(entry: __QoTaskEntry, arg: *u8, tag: u64) bool {
     const state = __qo_state();
+    // A stack overflow in the body is reported from the alternate stack.
+    const altstack: *u8 = __qo_use_altstack();
     const record: *u8 = __qo_malloc(616);
     if (record == 0) { panic("thread isolation allocation failed"); }
     __qo_memset(record, 0, 616);
@@ -500,6 +582,7 @@ pub unsafe fn __qo_isolate(entry: __QoTaskEntry, arg: *u8, tag: u64) bool {
     __qo_unlock(state + 72);
     const panicked: bool = *((record + 24) as *i64) != 0;
     __qo_free(record);
+    __qo_drop_altstack(altstack);
     panicked
 }
 

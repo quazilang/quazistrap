@@ -44,6 +44,16 @@ NULL_READ = """fn main() i32 {
     unsafe { ret (*p) as i32; }
 }
 """
+# Overflow on a qoroutine stack hits the slot's guard page and on a
+# std.thread thread its stack guard; both report from the thread's
+# alternate signal stack. (Windows qoroutine slots have no guard page yet.)
+QO_RECURSION = """fn deep(n: i64) i64 { ret deep(n + 1) + 1; }
+fn main() i32 { ret (qo deep(0)).join().unwrap() as i32; }
+"""
+THREAD_RECURSION = """import std.thread;
+fn deep(n: i64) i64 { ret deep(n + 1) + 1; }
+fn main() i32 { ret thread.spawn(|| deep(0)).unwrap().join().unwrap() as i32; }
+"""
 # A fault off the main thread (a qoroutine worker, a std.thread thread) gets
 # the same report; on Windows the vectored handler must catch it because
 # dispatch cannot walk Quazi frames (no unwind tables).
@@ -111,6 +121,10 @@ def main():
             overflow = build(qz, root, RECURSION, qzi, wine=wine)
             assert overflow.returncode == 134, (overflow.returncode, overflow.stderr)
             assert "has overflowed its stack" in overflow.stderr, overflow.stderr
+            for source in (THREAD_RECURSION,) if wine else (QO_RECURSION, THREAD_RECURSION):
+                worker = build(qz, root, source, qzi, wine=wine)
+                assert worker.returncode == 134, (worker.returncode, worker.stderr)
+                assert "has overflowed its stack" in worker.stderr, worker.stderr
             fault = build(qz, root, NULL_READ, qzi, wine=wine)
             assert fault.returncode == 101, (fault.returncode, fault.stderr)
             assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr
@@ -143,7 +157,7 @@ def main():
             assert "qoroutine panicked at 'task failed 5'" in lifecycle.stderr, lifecycle.stderr
             assert lifecycle.stderr.count("handled: ") == 1, lifecycle.stderr
             assert "handled: main failed at src/main.qz:19" in lifecycle.stderr, lifecycle.stderr
-    print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101) "
+    print("PASS stack overflow: recursion reports overflow (134, also in a qoroutine and a thread), null read keeps crash report (101) "
           "with named frames and QUAZI_TRACE=2 registers (also from qoroutine and thread "
           "faults), panic in panic handler aborts (101), "
           "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
