@@ -207,20 +207,16 @@ def check(qz, directory, before):
     assert coff.read_bytes()[:2] == b"\x64\x86"
     print(f"PASS initialization: {len(VALID)} checks, native/source-removed QZI/Windows COFF")
 
+    # A literal payload arm does not cover its variant: the value Some(2)
+    # would match no arm, so the match is rejected at compile time (it used
+    # to trap at run time).
     root = directory / "unmatched-value"
     project(root, "enum Value{Some(i32),None,}fn main()i32{var value:Value=Value.Some(2);ret match value{Some(1)=>7,None=>0,};}")
-    binary = root / "native"
-    invoke([str(qz), "build", *common, "-o", str(binary)], root)
-    result = subprocess.run([str(binary)], cwd=root, capture_output=True, timeout=60)
-    assert result.returncode == -4, f"unmatched value must trap: {result.returncode}"
-    artifact = root / "program.qzi"
-    invoke([str(qz), "build", *common, "-i", "-o", str(artifact)], root)
-    (root / "main.qz").unlink()
-    binary = emission / "unmatched"
-    invoke([str(qz), "build", str(artifact), *common, "-o", str(binary)], emission)
-    result = subprocess.run([str(binary)], cwd=emission, capture_output=True, timeout=60)
-    assert result.returncode == -4, f"QZI unmatched value must trap: {result.returncode}"
-    print("PASS initialization: unmatched value traps in native/source-removed QZI; Void preserves fallthrough")
+    result = subprocess.run([str(qz), "build", *common, "-o", str(root / "native")], cwd=root,
+                            text=True, capture_output=True, timeout=600)
+    assert result.returncode != 0 and "non-exhaustive match for enum 'Value'" in result.stdout + result.stderr, (
+        result.returncode, result.stdout + result.stderr)
+    print("PASS initialization: a match no arm covers is rejected; Void preserves fallthrough")
 
 
 def main():
