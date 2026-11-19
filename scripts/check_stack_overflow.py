@@ -2,7 +2,8 @@
 """Check that unbounded recursion reports a stack overflow (Linux crash
 handler on an alternate signal stack, exit status 134) instead of dying
 with a bare SIGSEGV, and that other faults keep the generic crash report
-(exit status 101). Native and QZI."""
+(exit status 101). A custom panic handler runs once, for fatal panics only.
+Native and QZI."""
 
 import argparse
 import os
@@ -16,6 +17,27 @@ fn main() i32 { ret deep(0) as i32; }
 NESTED_PANIC = """@panic_handler
 fn handler(info: PanicInfo) ! { panic("inner failure"); }
 fn main() i32 { panic("outer failure"); }
+"""
+HANDLER_LIFECYCLE = """import std.core;
+import std.io;
+
+@panic_handler
+fn handler(info: PanicInfo) ! {
+    io.errln("handled: {} at {}:{}", info.message(), info.file(), info.line());
+    core.exit(42);
+}
+
+fn work(n: i64) i64 {
+    if (n > 1) { panic("task failed {}", n); }
+    ret n;
+}
+
+fn main() i32 {
+    const task = qo work(5);
+    if (task.join().is_ok()) { ret 1; }
+    io.println("task panic reached join");
+    panic("main failed");
+}
 """
 NULL_READ = """fn main() i32 {
     var p: *i64 = 0;
@@ -77,8 +99,17 @@ def main():
             nested = build(qz, root, NESTED_PANIC, qzi)
             assert nested.returncode == 101, (nested.returncode, nested.stderr)
             assert "panicked while processing a panic: 'inner failure'" in nested.stderr, nested.stderr
+            # A custom handler runs once, for the fatal panic only: a
+            # qoroutine panic still reaches its join (D-019, В28).
+            lifecycle = build(qz, root, HANDLER_LIFECYCLE, qzi)
+            assert lifecycle.returncode == 42, (lifecycle.returncode, lifecycle.stderr)
+            assert lifecycle.stdout == "task panic reached join\n", lifecycle.stdout
+            assert "qoroutine panicked at 'task failed 5'" in lifecycle.stderr, lifecycle.stderr
+            assert lifecycle.stderr.count("handled: ") == 1, lifecycle.stderr
+            assert "handled: main failed at src/main.qz:19" in lifecycle.stderr, lifecycle.stderr
     print("PASS stack overflow: recursion reports overflow (134), null read keeps crash report (101) "
-          "with named frames and QUAZI_TRACE=2 registers, panic in panic handler aborts (101); "
+          "with named frames and QUAZI_TRACE=2 registers, panic in panic handler aborts (101), "
+          "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
           "native and QZI")
 
 

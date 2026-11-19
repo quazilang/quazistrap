@@ -293,8 +293,9 @@ Windows, NetBSD and programs that link libc are scheduled cooperatively (a
 qoroutine runs until it finishes or waits in `join`, `send` or `receive`).
 
 A panic inside a qoroutine prints `qoroutine panicked at '...'`, ends only that
-qoroutine and makes its `join()` return `Err(QoroutineError.Panicked)`; values
-still owned by the abandoned qoroutine are not cleaned up. A panic outside
+qoroutine and makes its `join()` return `Err(QoroutineError.Panicked)`, also
+when the program has a custom `@panic_handler` (which runs only for fatal
+panics); values still owned by the abandoned qoroutine are not cleaned up. A panic outside
 qoroutines ends the program with status 101 as before.
 
 ### Channels

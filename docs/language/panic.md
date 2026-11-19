@@ -32,11 +32,27 @@ one `PanicInfo` value using Quazi's ordinary value ABI. A handler that returns
 could resume into a panic path with no valid continuation, so it is a
 compile-time error.
 
+## Lifecycle
+
+This is the fatal-panic contract of [D-006](../decisions/README.md#d-006-panic-model)
+(maintainer answer В28):
+
+- The handler runs at most once per process, for a fatal panic: a panic in
+  `main` or in code it calls outside qoroutines. It receives the panic's
+  `PanicInfo` and must end the process (its result type is `!`).
+- The stack is not unwound and local destructors are not guaranteed to run.
+- Without a custom handler the default prints the report and a backtrace and
+  exits with status 101.
+- A panic inside a qoroutine is not fatal and never reaches the handler: the
+  default report (`qoroutine panicked at '...'`) is printed, only that
+  qoroutine ends, and its `join()` returns `Err(QoroutineError.Panicked)`
+  ([D-019](../decisions/qoroutines.md)), with or without a custom handler.
+
 Handlers are intended for terminal diagnostics. A panic raised while a panic
 is being handled (for example by the handler itself) does not call the handler
 again: the program prints `panicked while processing a panic: '<message>'`
 with its location and exits with status 101 (maintainer answer В16А). Inside a
 qoroutine this applies per qoroutine. Allocation failure while reporting,
-concurrent panics in several OS threads, and cleanup ordering do not yet have
-a stronger public guarantee. A custom handler is not a recovery hook and
+concurrent panics in several OS threads (D-007), and cleanup ordering do not
+yet have a stronger public guarantee. A custom handler is not a recovery hook and
 must not be used to establish application control flow.

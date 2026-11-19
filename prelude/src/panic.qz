@@ -56,7 +56,8 @@ impl PanicInfo {
     }
 }
 
-pub fn __quazi_panic_handler(info: PanicInfo) ! {
+// Writes the default panic report (message, location, backtrace) to stderr.
+fn __quazi_report_panic(info: &PanicInfo) void {
     if (__qo_running()) {
         __panic_write(2, "qoroutine panicked at '", 23);
     } else {
@@ -71,8 +72,10 @@ pub fn __quazi_panic_handler(info: PanicInfo) ! {
     __panic_write(2, "\n", 1);
     __quazi_print_backtrace();
     __panic_write(2, "\n", 1);
-    // A panicking qoroutine ends alone; its `join` reports the panic.
-    __qo_abandon_on_panic();
+}
+
+pub fn __quazi_panic_handler(info: PanicInfo) ! {
+    __quazi_report_panic(&info);
     __panic_exit(101);
 }
 
@@ -93,5 +96,13 @@ pub fn panic(msg: str, file: str, line: usize, ...args: Display) ! {
         __panic_write(2, "\n", 1);
         __panic_exit(101);
     }
-    __quazi_panic_handler(PanicInfo { message: msg, file: file, line: line });
+    const info: PanicInfo = PanicInfo { message: msg, file: file, line: line };
+    // A qoroutine panic is not fatal (D-019, В28): it ends only that
+    // qoroutine and its `join` reports it. The panic handler, default or
+    // custom, runs for fatal panics only.
+    if (__qo_running()) {
+        __quazi_report_panic(&info);
+        __qo_abandon_on_panic();
+    }
+    __quazi_panic_handler(info);
 }
