@@ -306,8 +306,11 @@ impl Parser {
 
         while !self.at(TokenKind::RBrace) {
             if self.at(TokenKind::Eof) {
-                return Err(self
-                    .err_here_with_code("E04", "unexpected EOF while parsing block".to_string()));
+                // An earlier error (such as an unterminated string that ran
+                // to the end of input) explains the EOF better.
+                return Err(first_err.unwrap_or_else(|| {
+                    self.err_here_with_code("E04", "unexpected EOF while parsing block".to_string())
+                }));
             }
 
             // Skip empty statements (extra semicolons).
@@ -329,7 +332,10 @@ impl Parser {
             }
         }
 
-        let rbrace = self.expect(TokenKind::RBrace)?.span;
+        let rbrace = match self.expect(TokenKind::RBrace) {
+            Ok(token) => token.span,
+            Err(error) => return Err(first_err.unwrap_or(error)),
+        };
 
         if let Some(err) = first_err {
             return Err(err);

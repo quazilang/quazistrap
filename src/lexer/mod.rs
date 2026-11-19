@@ -90,6 +90,9 @@ impl Lexer {
                     Ok(Some(mapped)) => s.push(mapped),
                     Ok(None) => {}
                     Err(message) => {
+                        // Skip the rest of the literal so its closing quote
+                        // does not open a new string running to end of file.
+                        self.skip_string_rest();
                         let span = self.make_span(start, self.pos, line, col);
                         return Token::new(TokenKind::Error(message), span);
                     }
@@ -98,9 +101,28 @@ impl Lexer {
             }
         }
 
-        // Unterminated string: still emit StringLit so parser can continue.
+        // Unterminated string: report it at its opening quote instead of the
+        // parser's later "unexpected EOF".
         let span = self.make_span(start, self.pos, line, col);
-        Token::new(TokenKind::StringLit(s), span)
+        Token::new(
+            TokenKind::Error("unterminated string literal".to_string()),
+            span,
+        )
+    }
+
+    /// Consume through the closing `"` of a string literal, with the same
+    /// extent `read_string` gives it: newlines belong to the literal and an
+    /// escape skips its next character.
+    fn skip_string_rest(&mut self) {
+        while let Some(ch) = self.advance() {
+            match ch {
+                '"' => return,
+                '\\' => {
+                    self.advance();
+                }
+                _ => {}
+            }
+        }
     }
 
     fn read_escape(&mut self) -> Result<Option<char>, String> {
@@ -869,6 +891,27 @@ mod string_tests {
     #[test]
     fn raw_strings_can_span_lines() {
         assert_eq!(string_value("`first\nsecond`"), "first\nsecond");
+    }
+
+    #[test]
+    fn unterminated_string_is_a_lexer_error() {
+        let tokens = Lexer::new("f(\"abc);\n").tokenize();
+        assert!(matches!(&tokens[2].kind, TokenKind::Error(message) if message == "unterminated string literal"));
+    }
+
+    #[test]
+    fn invalid_escape_ends_its_literal() {
+        // The closing quote must not open a new string to the end of input.
+        let tokens = Lexer::new("f(\"a\\q\"); g();").tokenize();
+        assert!(matches!(&tokens[2].kind, TokenKind::Error(message) if message.contains("'\\q'")));
+        assert!(matches!(tokens[3].kind, TokenKind::RParen));
+        assert!(tokens.iter().any(|token| matches!(&token.kind, TokenKind::Ident(name) if name == "g")));
+    }
+
+    #[test]
+    fn invalid_escape_skips_a_multiline_literal() {
+        let tokens = Lexer::new("f(\"a\\q\nb\"); g();").tokenize();
+        assert!(matches!(tokens[3].kind, TokenKind::RParen));
     }
 
     #[test]
