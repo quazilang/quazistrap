@@ -83,6 +83,19 @@ Direction chosen 2026-11-18 (В29А): cooperative cancellation; a consumed
 error from `join()` after guaranteed cleanup. Implementation stays blocked on
 D-014; qoroutine rules from D-019 are unchanged.
 
+Implemented 2026-11-19 for `std.thread.spawn` ([`std.thread`](../api/thread.md)):
+the parts of В29А that do not widen what crosses a thread boundary. A panic
+on a spawned thread returns `Err(ThreadError.Panicked)` from `join()`; the
+thread's block, closure and stack are released, while destructors in the
+abandoned frames do not run (no unwinding, as for qoroutines). A dropped
+`JoinHandle` joins; `JoinHandle.cancel` / `thread.cancel_requested()` are the
+cooperative cancellation surface. Mechanism: the prelude's `__qo_isolate`
+runs the thread body on the same OS stack through `quazi.context.switch` and
+registers it by OS thread id (`quazi.thread.current`); `panic` returns there
+instead of calling the handler. Moving owned values into threads and
+cross-thread channels remain blocked on D-014 (closure captures and results
+keep the current rules).
+
 ## D-008: TLS and trust policy
 
 Select a maintained TLS backend and define certificate/hostname verification,

@@ -47,12 +47,18 @@ This is the fatal-panic contract of [D-006](../decisions/README.md#d-006-panic-m
   default report (`qoroutine panicked at '...'`) is printed, only that
   qoroutine ends, and its `join()` returns `Err(QoroutineError.Panicked)`
   ([D-019](../decisions/qoroutines.md)), with or without a custom handler.
+- A panic on an OS thread started by `std.thread.spawn` is handled the same
+  way (maintainer answer В29А): the report starts `thread panicked at '...'`,
+  only that thread ends, and its `join()` returns `Err(ThreadError.Panicked)`
+  ([std.thread](../api/thread.md)). Threads started with the raw
+  `thread_spawn` callbacks are not isolated; their panics are fatal.
 
 Handlers are intended for terminal diagnostics. A panic raised while a panic
 is being handled (for example by the handler itself) does not call the handler
 again: the program prints `panicked while processing a panic: '<message>'`
 with its location and exits with status 101 (maintainer answer В16А). Inside a
-qoroutine this applies per qoroutine. Allocation failure while reporting,
-concurrent panics in several OS threads (D-007), and cleanup ordering do not
-yet have a stronger public guarantee. A custom handler is not a recovery hook and
+qoroutine or an isolated thread this applies per qoroutine or thread.
+Reports of concurrent panics in several threads may interleave on stderr.
+Allocation failure while reporting and cleanup ordering do not yet have a
+stronger public guarantee. A custom handler is not a recovery hook and
 must not be used to establish application control flow.

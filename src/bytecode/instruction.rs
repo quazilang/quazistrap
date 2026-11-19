@@ -447,6 +447,7 @@ impl Instruction {
                     66 => "quazi.int.wrapping_add",
                     67 => "quazi.int.wrapping_sub",
                     68 => "quazi.int.wrapping_mul",
+                    69 => "quazi.thread.current",
                     _ => "?",
                 };
                 format!(

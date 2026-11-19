@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Check atomics under real OS-thread contention and argument-carrying thread spawn on
-Linux, with pthreads (`libc = true`) and with the embedded libc-free clone runtime."""
+Linux, with pthreads (`libc = true`) and with the embedded libc-free clone runtime,
+and that a panic on a `thread.spawn` thread is isolated (`quazi.thread.current`
+registry in the prelude, D-007/В29А; std/scripts/check_thread_isolation.py
+covers the full lifecycle)."""
 
 import argparse
 import subprocess
@@ -155,6 +158,18 @@ fn main() i32 {
 """
 
 
+ISOLATION_PROGRAM = r"""import std.io;
+import std.thread;
+
+fn fail(n: i32) i32 { if (n > 0) { panic("isolated {}", n); } n }
+
+fn main() i32 {
+    const worker = thread.spawn(|| fail(3)).unwrap();
+    io.println("isolated {}", worker.join().is_err());
+    0
+}
+"""
+
 FORMAT_PROGRAM = r"""import std.io;
 import std.thread;
 
@@ -245,7 +260,15 @@ def check(qz, root):
     invoke([str(qz), "build", *common, "-o", str(binary)], case)
     output = invoke([str(binary)], case)
     assert output.startswith("churn 2000"), output
-    print("PASS libc-free threads: std Mutex/AtomicI64 native and --jit, 2000 spawn/join without leaking stacks, main exit ends running threads")
+    case = root / "isolation"
+    (case / "src").mkdir(parents=True)
+    (case / "quazi.toml").write_text('[package]\nname="isolation"\n[build]\nentry="src/main.qz"\n')
+    (case / "src/main.qz").write_text(ISOLATION_PROGRAM)
+    binary = case / "native"
+    invoke([str(qz), "build", *common, "-o", str(binary)], case)
+    output = invoke([str(binary)], case)
+    assert "thread panicked at 'isolated 3'" in output and output.endswith("isolated true\n"), output
+    print("PASS libc-free threads: std Mutex/AtomicI64 native and --jit, 2000 spawn/join without leaking stacks, main exit ends running threads, isolated thread panic")
     case = root / "formatting"
     (case / "src").mkdir(parents=True)
     (case / "quazi.toml").write_text('[package]\nname="formatting"\n[build]\nentry="src/main.qz"\n')

@@ -201,3 +201,10 @@ Linux executables without `-lc` lower `quazi.thread.spawn`/`spawn_arg`/`join`
 to the embedded `__quazi_thread_spawn`/`__quazi_thread_join` routines
 (`runtime.rs`: clone + futex, 8 MiB region per thread); `-lc` executables and
 entry-less objects/libraries keep pthreads (`TargetSpec::linking`).
+
+## Thread identity intrinsic (2026-11-19)
+
+`@intrinsic("quazi.thread.current") unsafe fn() u64` (id 69) returns a nonzero
+id of the calling OS thread: Linux `gettid` (syscall 186, also with libc),
+Windows `gs:[0x48]` (TEB `ClientId.UniqueThread`), NetBSD `_lwp_self()`.
+The prelude's isolated-thread registry (`__qo_isolate`) is keyed by it.

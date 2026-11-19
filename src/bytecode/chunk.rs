@@ -1053,7 +1053,7 @@ pub(crate) fn validate_qzi_chunks(chunks: &[Chunk]) -> Result<(), String> {
             }
             if opcode == Opcode::Intrinsic {
                 let id = instruction.ri16().1;
-                if !matches!(id, 0..=68) {
+                if !matches!(id, 0..=69) {
                     return fail("unknown intrinsic id");
                 }
             }

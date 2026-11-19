@@ -4284,6 +4284,21 @@ impl<'a> FnEncoder<'a> {
                         // quazi.f64.from_bits(bits: u64) -> f64: registers hold
                         // the IEEE-754 bits either way, so the value stays.
                     }
+                    69 => {
+                        // quazi.thread.current() -> u64: a nonzero id of the
+                        // calling OS thread, unique among live threads.
+                        if is_win64 {
+                            // TEB ClientId.UniqueThread.
+                            emit!(asm.mov(rax, qword_ptr(0x48).gs()));
+                        } else if is_netbsd {
+                            call_ext!("_lwp_self".into(), RelocKind::Plt32);
+                            emit!(asm.mov(eax, eax));
+                        } else {
+                            emit!(asm.mov(eax, 186i32)); // gettid
+                            emit!(asm.syscall());
+                        }
+                        emit!(asm.mov(slot(dst), rax));
+                    }
                     45 => {
                         // quazi.stack.pointer() -> *u8: the current machine stack
                         // pointer (lets runtime code find the stack it runs on).

@@ -7,7 +7,9 @@ whose address `quazi.runtime.state()` returns. Owners of each range:
 | Offset | Size | Owner | Meaning |
 | --- | --- | --- | --- |
 | 0–71 | 72 | prelude `qoroutine.qz` | scheduler queue lock/head/tail, init state, stack arena, free slots, preemption flag, outside panic count |
-| 72–103 | 32 | — | reserved |
+| 72 | 8 | prelude `qoroutine.qz` | isolated-thread registry spin lock (0 free, 1 held) |
+| 80 | 8 | prelude `qoroutine.qz` | isolated-thread registry head: innermost `__qo_isolate` record first, found by `quazi.thread.current` |
+| 88–103 | 16 | — | reserved |
 | 104 | 8 | std `os.qz` | environment writer spin lock (0 free, 1 held) |
 | 112 | 8 | runtime / std `os.qz` | Linux `envp`: pointer to a null-terminated array of `NAME=VALUE` C strings |
 | 120 | 8 | — | reserved |

@@ -11724,6 +11724,7 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.int.wrapping_add", 66);
         m.insert("quazi.int.wrapping_sub", 67);
         m.insert("quazi.int.wrapping_mul", 68);
+        m.insert("quazi.thread.current", 69);
         m
     });
     let name = attr

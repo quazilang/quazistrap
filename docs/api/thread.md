@@ -3,11 +3,12 @@
 Audience: language users.
 
 Status: experimental. The callback ABI and zero-on-failure low-level contract
-are implemented; safe concurrency is blocked on implementation of
-[D-014](../decisions/whole-program-ownership.md). Creation failures are typed
-(`ThreadError.CreationFailed`) and `spawn` returns a `JoinHandle[T]` whose
-`join` yields the result; panic propagation, cancellation, and structured
-concurrency are not yet available.
+are implemented. `spawn` returns a `JoinHandle[T]` that follows the D-007
+contract chosen in maintainer answer В29А: `join` yields the result or
+`ThreadError.Panicked`, a dropped handle waits for its thread, and
+cancellation is cooperative. Moving owned values into threads and channels
+between threads still depend on
+[D-014](../decisions/whole-program-ownership.md).
 
 ## Callback type
 
@@ -71,9 +72,8 @@ an extracted handle remains an unsafe low-level operation.
 
 ## Unsupported behavior
 
-The module does not currently provide cancellation, panic propagation, join
-timeouts, detached threads, portable thread
-identifiers, or automatic joining. Programs requiring those guarantees should
+The module does not currently provide join timeouts, detached threads,
+forced (non-cooperative) cancellation, or portable thread identifiers. Programs requiring those guarantees should
 not treat this API as production-stable.
 
 ## `spawn` and `JoinHandle[T]` (D-019)
@@ -97,9 +97,52 @@ fn main() i32 {
 ```
 
 The closure follows the ordinary capture rules (plain scalar captures and a
-plain scalar result). A panic on the thread ends the program. On Linux without
-libc the thread is a `clone` thread; this works with the built-in linker and
-`qz run --jit`. Channels between threads and qoroutines are planned on the
+plain scalar result). On Linux without libc the thread is a `clone` thread;
+this works with the built-in linker and `qz run --jit`.
+
+### Panics
+
+A panic on a `spawn`ed thread is reported (`thread panicked at '...'` and the
+location) and ends only that thread; `join()` then returns
+`Err(ThreadError.Panicked)`. The thread's block, closure and native stack are
+still released by `join`. Quazi does not unwind: destructors pending in the
+frames the panic abandoned do not run, so values they owned leak. A custom
+`@panic_handler` is not called for such a panic; it runs only for fatal
+panics (main thread, raw `thread_spawn` callbacks, qoroutine workers), which
+still end the process ([panic](../language/panic.md)). A panic raised while a
+thread reports its own panic is fatal.
+
+### Dropping a handle
+
+A `JoinHandle` that goes out of scope without `join()` waits for its thread
+(`JoinHandle.free`); the result of a finished thread is dropped. There are no
+detached threads.
+
+### Cooperative cancellation
+
+`handle.cancel()` sets a flag that code running on that thread reads with
+`thread.cancel_requested()`; the thread chooses where to check and how to
+finish, and `join` still waits for it. `cancel_requested()` is false on any
+thread not started by `spawn`.
+
+```quazi
+import std.thread;
+
+fn poll() i32 {
+    for (!thread.cancel_requested()) { thread.yield_now(); }
+    0
+}
+
+fn main() i32 {
+    const worker = thread.spawn(|| poll()).unwrap();
+    worker.cancel();
+    ret worker.join().unwrap();
+}
+```
+
+The isolation, drop and cancellation behavior is checked by
+`std/scripts/check_thread_isolation.py` (clone runtime, pthreads, `--jit`,
+concurrent panics); Windows and NetBSD build but are not run here. Channels between threads and qoroutines are planned on the
 same built-in `Channel[T]`.
 
 ## Synchronization (D-019)

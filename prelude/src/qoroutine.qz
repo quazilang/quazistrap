@@ -376,21 +376,131 @@ pub fn __qo_enter_panic() bool {
     unsafe {
         const task = __qo_current();
         if (task != 0) { ret __qo_atomic_cas((task + 352) as *i64, 0, 1) != 0; }
+        const record = __qo_isolation();
+        if (record != 0) { ret __qo_atomic_cas((record + 16) as *i64, 0, 1) != 0; }
         ret __qo_atomic_add((__qo_state() + 64) as *i64, 1) != 0;
     }
 }
 
 // Called by the panic handler after the message is printed: inside a
-// qoroutine, mark it panicked and leave its stack for good; elsewhere return.
+// qoroutine, mark it panicked and leave its stack for good; on an isolated OS
+// thread (`__qo_isolate`), return to the isolation point; elsewhere return.
 pub fn __qo_abandon_on_panic() void {
     unsafe {
         const task = __qo_current();
-        if (task == 0) { ret; }
+        if (task == 0) {
+            const record = __qo_isolation();
+            if (record == 0) { ret; }
+            *((record + 24) as *i64) = 1;
+            __qo_leave_isolation(record);
+        }
         __qo_hold();
         *((task + 336) as *i64) = 1;
         *((task + 56) as *i64) = 1;
         __qo_switch(task + 64, *((task + 40) as **u8));
     }
+}
+
+// True when a panic here ends only the current qoroutine or isolated thread.
+pub fn __qo_panic_is_isolated() bool {
+    unsafe { ret __qo_current() != 0 || __qo_isolation() != 0; }
+}
+
+// ── Isolated OS threads (D-007, maintainer answer В29А) ─────────────────────
+//
+// `__qo_isolate(entry, arg)` runs `entry(arg)` so that a panic on the calling
+// OS thread returns to it (result true) instead of ending the process. The
+// body runs on the same thread stack just below the caller's frame, so the
+// thread keeps its guard page; there is no unwinding, so destructors pending
+// in the abandoned frames do not run. Records are found by OS thread id
+// (`quazi.thread.current`) in a list under the runtime state:
+//   +72 list lock, +80 list head (innermost record of a thread first).
+// Record (616 bytes): +0 thread id, +8 next, +16 panicking flag, +24 panicked
+// flag, +32 entry, +40 argument, +48 isolation-point context (280 bytes),
+// +328 body context (280 bytes), +608 caller tag.
+
+@intrinsic("quazi.thread.current")
+unsafe fn __qo_thread_current() u64;
+
+// The innermost isolation record of the calling OS thread, or 0.
+unsafe fn __qo_isolation() *u8 {
+    const state = __qo_state();
+    if (__qo_atomic_add((state + 80) as *i64, 0) == 0) { ret 0; }
+    const thread: u64 = __qo_thread_current();
+    __qo_lock(state + 72);
+    var record: *u8 = *((state + 80) as **u8);
+    for (record != 0) {
+        if (*(record as *u64) == thread) { break; }
+        record = *((record + 8) as **u8);
+    }
+    __qo_unlock(state + 72);
+    record
+}
+
+// The argument of the innermost isolation of this OS thread when that
+// isolation was started with `tag`, otherwise 0.
+pub unsafe fn __qo_isolation_arg(tag: u64) *u8 {
+    const record = __qo_isolation();
+    if (record == 0 || *((record + 608) as *u64) != tag) { ret 0; }
+    *((record + 40) as **u8)
+}
+
+// First code of an isolated body; never returns.
+@export("__quazi_isolated_entry")
+pub unsafe fn __qo_isolated_entry(record: *u8) void {
+    const entry: __QoTaskEntry = *((record + 32) as *__QoTaskEntry);
+    entry(*((record + 40) as **u8));
+    __qo_leave_isolation(record);
+}
+
+// Switch from an isolated body back to its isolation point. The body shares
+// the thread's stack, so the isolation point resumes with the stack bounds
+// the body leaves (on Windows the TIB limit drops as the stack grows; the
+// value saved before the body would be stale).
+unsafe fn __qo_leave_isolation(record: *u8) void {
+    __qo_switch(record + 328, record + 328);
+    *((record + 48 + 88) as *u64) = *((record + 328 + 88) as *u64);
+    *((record + 48 + 96) as *u64) = *((record + 328 + 96) as *u64);
+    __qo_switch(record + 328, record + 48);
+}
+
+// Run `entry(arg)` on this OS thread; true when it panicked (the panic was
+// reported and its frames abandoned). `tag` identifies the caller for
+// `__qo_isolation_arg`.
+pub unsafe fn __qo_isolate(entry: __QoTaskEntry, arg: *u8, tag: u64) bool {
+    const state = __qo_state();
+    const record: *u8 = __qo_malloc(616);
+    if (record == 0) { panic("thread isolation allocation failed"); }
+    __qo_memset(record, 0, 616);
+    *((record + 608) as *u64) = tag;
+    *(record as *u64) = __qo_thread_current();
+    *((record + 32) as *__QoTaskEntry) = entry;
+    *((record + 40) as **u8) = arg;
+    // Capture this thread's machine state (on Windows also its TIB stack
+    // bounds) as the body's template, then aim it at the entry on the stack
+    // below this frame, entered like a call (rsp = 16-aligned top - 72).
+    __qo_switch(record + 328, record + 328);
+    const null: *u8 = 0;
+    const below: isize = __qo_offset_from(__qo_stack_pointer(), null) - 512;
+    const top: *u8 = null + ((below / 16) * 16) as usize;
+    const isolated: __QoTaskEntry = __qo_isolated_entry;
+    *((record + 328 + 48) as *__QoTaskEntry) = isolated;
+    *((record + 328 + 56) as **u8) = top - 72;
+    *((record + 328 + 72) as **u8) = record;
+    __qo_lock(state + 72);
+    *((record + 8) as **u8) = *((state + 80) as **u8);
+    *((state + 80) as **u8) = record;
+    __qo_unlock(state + 72);
+    __qo_switch(record + 48, record + 328);
+    // Back from the body, normally or through `__qo_abandon_on_panic`.
+    __qo_lock(state + 72);
+    var link: *u8 = state + 80;
+    for (*(link as **u8) != record) { link = *(link as **u8) + 8; }
+    *(link as **u8) = *((record + 8) as **u8);
+    __qo_unlock(state + 72);
+    const panicked: bool = *((record + 24) as *i64) != 0;
+    __qo_free(record);
+    panicked
 }
 
 // Why `join` could not return the qoroutine's result.

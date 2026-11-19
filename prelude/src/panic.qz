@@ -30,6 +30,7 @@ fn __quazi_print_backtrace() void;
 import qoroutine.__qo_abandon_on_panic;
 import qoroutine.__qo_enter_panic;
 import qoroutine.__qo_running;
+import qoroutine.__qo_panic_is_isolated;
 
 // What a panic handler receives: the message and the source location of
 // the `panic`.
@@ -60,6 +61,8 @@ impl PanicInfo {
 fn __quazi_report_panic(info: &PanicInfo) void {
     if (__qo_running()) {
         __panic_write(2, "qoroutine panicked at '", 23);
+    } else if (__qo_panic_is_isolated()) {
+        __panic_write(2, "thread panicked at '", 20);
     } else {
         __panic_write(2, "thread 'main' panicked at '", 27);
     }
@@ -97,10 +100,11 @@ pub fn panic(msg: str, file: str, line: usize, ...args: Display) ! {
         __panic_exit(101);
     }
     const info: PanicInfo = PanicInfo { message: msg, file: file, line: line };
-    // A qoroutine panic is not fatal (D-019, В28): it ends only that
-    // qoroutine and its `join` reports it. The panic handler, default or
+    // A qoroutine panic is not fatal (D-019, В28), nor is a panic on an
+    // isolated OS thread (`std.thread.spawn`, В29А): it ends only that
+    // qoroutine or thread and its `join` reports it. The panic handler, default or
     // custom, runs for fatal panics only.
-    if (__qo_running()) {
+    if (__qo_panic_is_isolated()) {
         __quazi_report_panic(&info);
         __qo_abandon_on_panic();
     }

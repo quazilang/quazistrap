@@ -23,5 +23,7 @@ pub import ./fmt.format;
 pub import ./panic.panic;
 pub import ./qoroutine.Qoroutine;
 pub import ./qoroutine.__qo_spawn;
+pub import ./qoroutine.__qo_isolate;
+pub import ./qoroutine.__qo_isolation_arg;
 pub import ./qoroutine.Channel;
 pub import ./qoroutine.QoroutineError;

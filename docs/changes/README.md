@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-11-19: Isolated thread panics, joining on drop, cooperative cancellation](2026-11-19-isolated-thread-panics.md)
 - [2026-11-19: Destructors follow live types; methods on unit variants](2026-11-19-destructor-reachability.md)
 - [2026-11-17: Derived codecs cover numbers, nested structs, `Option` and `Array`](2026-11-17-derived-codec-matrix.md)
 
