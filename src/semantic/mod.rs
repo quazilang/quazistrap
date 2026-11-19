@@ -2709,7 +2709,19 @@ impl Analyzer {
                         let OwnershipPlaceStorage::Parameter(own) = place.root.storage else {
                             continue;
                         };
-                        if callee_effects.written_through_reference.contains(&slot) {
+                        // Only an argument that is itself a reference into the
+                        // caller's memory carries the callee's write back: a
+                        // borrow of a by-value parameter changes the callee's
+                        // own copy.
+                        let through_reference = matches!(
+                            place.root.ty,
+                            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                        ) || place.projections.iter().any(|projection| {
+                            matches!(projection, OwnershipProjection::Deref { .. })
+                        });
+                        if through_reference
+                            && callee_effects.written_through_reference.contains(&slot)
+                        {
                             inherited.push(own);
                         }
                         // `ret callee(p)` hands out what the callee returns.

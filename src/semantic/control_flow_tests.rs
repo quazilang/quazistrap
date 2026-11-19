@@ -2379,3 +2379,37 @@ fn main() void {}
     assert!(outer.returned_borrow.contains(&1), "{outer:?}");
     assert!(!outer.returned_borrow.contains(&0), "{outer:?}");
 }
+
+#[test]
+fn borrowing_an_owned_parameter_does_not_write_through_to_the_caller() {
+    let source = r#"
+struct Store { len: i32, cap: i32 }
+impl Store {
+    fn clear(self: &Store!) void { self.len = 0; }
+    fn free(self: Store) void { self.clear(); }
+}
+fn reset(store: &Store!) void { store.clear(); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    assert!(
+        effects("Store.clear")
+            .written_through_reference
+            .contains(&0)
+    );
+    // `free` owns `self`: clearing it changes only its own copy.
+    assert!(effects("Store.free").written_through_reference.is_empty());
+    // `reset` passes a reference it received: the caller sees the write.
+    assert!(effects("reset").written_through_reference.contains(&0));
+}

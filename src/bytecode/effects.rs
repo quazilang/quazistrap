@@ -379,6 +379,95 @@ fn main() i32 {
         assert!(compared >= 3, "{compared}");
     }
 
+    /// Compare bytecode and source effects for every callable of a loaded
+    /// program; returns how many callables had source effects to cover.
+    fn covered_callables(report: &SemanticReport, chunks: &[Chunk]) -> usize {
+        let mut effects: Vec<ChunkEffects> = chunks.iter().map(chunk_effects).collect();
+        compose_writes_through(&mut effects);
+        let mut compared = 0;
+        for callable in &report.ownership_call_graph {
+            let Some(source_effects) = &callable.parameter_effects else {
+                continue;
+            };
+            let name = &callable.id.callable;
+            let Some(index) = chunks.iter().position(|chunk| &chunk.name == name) else {
+                continue;
+            };
+            if !report.fn_value_layouts.contains_key(name) {
+                continue;
+            }
+            let written = parameters(report, name, effects[index].writes_through);
+            let returned = parameters(report, name, effects[index].returned);
+            assert!(
+                source_effects.written_through_reference.is_subset(&written),
+                "{name}: source writes {:?}, bytecode {written:?}",
+                source_effects.written_through_reference
+            );
+            assert!(
+                source_effects.returned_borrow.is_subset(&returned),
+                "{name}: source returns {:?}, bytecode {returned:?}",
+                source_effects.returned_borrow
+            );
+            compared += usize::from(
+                !source_effects.written_through_reference.is_empty()
+                    || !source_effects.returned_borrow.is_empty(),
+            );
+        }
+        compared
+    }
+
+    #[test]
+    fn tutorial_programs_with_std_keep_source_effects_covered() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/tutorial/fixtures");
+        let mut fixtures: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "qz"))
+            .collect();
+        fixtures.sort();
+        assert!(!fixtures.is_empty());
+        let mut compared = 0;
+        for fixture in fixtures {
+            let loaded = crate::loader::load_programs_configured(
+                std::slice::from_ref(&fixture),
+                None,
+                true,
+                &[],
+            )
+            .unwrap();
+            assert!(loaded.parse_error.is_none(), "{}", fixture.display());
+            let program = crate::semantic::strip_cfg(&loaded.program);
+            let namespaced = loaded
+                .namespaced_paths
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            let mut report = crate::analysis::analyze_program_with_source_files(
+                &loaded.merged_source,
+                &program,
+                loaded.library_fn_names,
+                loaded.library_char_ranges,
+                loaded.source_files.clone(),
+                namespaced,
+            );
+            assert!(
+                report.errors.is_empty(),
+                "{}: {:?}",
+                fixture.display(),
+                report.errors
+            );
+            report.inline_candidates.clear();
+            let chunks = Codegen::new(&report)
+                .compile_program(&program, &loaded.source_files)
+                .unwrap();
+            compared += covered_callables(&report, &chunks);
+        }
+        assert!(
+            compared > 0,
+            "the tutorial programs have source effects to compare"
+        );
+    }
+
     #[test]
     fn call_indices_name_their_callee_chunks() {
         let (_, chunks) = build(

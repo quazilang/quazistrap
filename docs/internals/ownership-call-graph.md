@@ -70,7 +70,10 @@ effect of the body is modeled.
 
 Callee effects compose to a fixed point over resolved calls: an argument
 rooted at a caller parameter inherits the callee's write through a reference
-for that slot, and a callee with unmodeled effects or without a source
+for that slot when the argument itself refers into the caller's memory (a
+reference-typed root or a dereference projection); borrowing a by-value
+parameter only changes the callee's own copy. `bytecode::effects` checks this
+differentially, including on the tutorial programs with std, and a callee with unmodeled effects or without a source
 summary marks its callers `callee_unmodeled`. A call whose result a `ret`
 hands out directly (`ret callee(p)`) also passes on what the callee returns:
 a callee returning slot k by value or as a borrow makes the caller return the
