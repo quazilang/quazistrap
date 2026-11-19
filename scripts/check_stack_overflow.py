@@ -46,7 +46,8 @@ NULL_READ = """fn main() i32 {
 """
 # Overflow on a qoroutine stack hits the slot's guard page and on a
 # std.thread thread its stack guard; both report from the thread's
-# alternate signal stack. (Windows qoroutine slots have no guard page yet.)
+# alternate signal stack. (Windows qoroutine slots have a guard page too, but
+# without an alternate stack the overflow is not reported there.)
 QO_RECURSION = """fn deep(n: i64) i64 { ret deep(n + 1) + 1; }
 fn main() i32 { ret (qo deep(0)).join().unwrap() as i32; }
 """

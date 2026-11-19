@@ -6,9 +6,10 @@ prelude.qoroutine — built-in qoroutines (D-019).
 result is a `Qoroutine[T]` whose `join()` waits and returns `T`.
 
 M:N scheduler: qoroutines run on four OS worker threads started on first
-use. Each qoroutine owns a 256 KiB stack slot (on Linux its second page is
-an inaccessible guard, so an overflow is reported instead of overwriting
-the slot below) and a context entered with `quazi.context.switch`. Quazi has no global variables, so the scheduler
+use. Each qoroutine owns a 256 KiB stack slot (its second page is an
+inaccessible guard, so an overflow ends the process instead of
+overwriting the slot below; Linux reports it as a stack overflow) and a
+context entered with `quazi.context.switch`. Quazi has no global variables, so the scheduler
 lives in the `quazi.runtime.state` block:
   +0 queue lock, +8 queue head, +16 queue tail,
   +24 init state (0 none, 1 initializing, 2 ready), +32 stack arena,
