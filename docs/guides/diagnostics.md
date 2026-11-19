@@ -17,8 +17,9 @@ error[S04]: function `internal_fn` is private to its module
 ```
 
 The first line is `level[code]: message`; the `-->` line gives
-`file:line:column`, followed by the source line. `qz build`, `qz run` and
-`qz test` accept `--no-color` and `--no-unicode` to keep the output plain.
+`file:line:column`, followed by the source line. `--no-color` (accepted by
+`qz check`, `qz build`, `qz run` and `qz test`) removes the ANSI colors;
+output to a pipe or with `NO_COLOR` set is always plain.
 
 ## Semantic errors (S-codes)
 

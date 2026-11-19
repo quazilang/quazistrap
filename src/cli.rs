@@ -164,6 +164,9 @@ pub enum Command {
         lib: bool,
         #[arg(long, value_enum)]
         target: Option<TargetTriple>,
+        /// disable ANSI colors
+        #[arg(long)]
+        no_color: bool,
     },
     /// Compile and run functions annotated with @test
     Test {

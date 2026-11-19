@@ -1501,6 +1501,7 @@ fn main() {
         CliCmd::Build { no_color: true, .. }
             | CliCmd::Run { no_color: true, .. }
             | CliCmd::Test { no_color: true, .. }
+            | CliCmd::Check { no_color: true, .. }
     );
     NO_COLOR_OUTPUT.store(no_color_output, Ordering::Relaxed);
 
@@ -2296,7 +2297,9 @@ fn main() {
             );
         }
 
-        CliCmd::Check { bin, lib, target } => {
+        CliCmd::Check {
+            bin, lib, target, ..
+        } => {
             let mut ctx = load_project_context();
             let target = match target {
                 Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
