@@ -631,6 +631,40 @@ fn emit_float_to_string(
 
     asm.set_label(&mut finite)?;
     asm.movq(xmm1, rax)?;
+    if trim_zeroes {
+        // The default form shows tiny magnitudes (0 < |x| < 1e-4) with a
+        // negative exponent instead of rounding them to 0: scale into
+        // [1, 10) and count the exponent below zero.
+        let mut not_tiny = asm.create_label();
+        let mut tiny_loop = asm.create_label();
+        asm.test(rax, rax)?;
+        asm.je(not_tiny)?;
+        asm.mov(r8, 1.0e-4f64.to_bits())?;
+        asm.movq(xmm2, r8)?;
+        asm.ucomisd(xmm1, xmm2)?;
+        asm.jae(not_tiny)?;
+        asm.mov(r8, 10.0f64.to_bits())?;
+        asm.movq(xmm2, r8)?;
+        asm.mov(r8, 1.0f64.to_bits())?;
+        asm.movq(xmm4, r8)?;
+        asm.set_label(&mut tiny_loop)?;
+        asm.mulsd(xmm1, xmm2)?;
+        asm.dec(qword_ptr(rsp))?;
+        asm.ucomisd(xmm1, xmm4)?;
+        asm.jb(tiny_loop)?;
+        // A mantissa that rounds to 10 at six digits (accumulated scaling
+        // error, e.g. 1e-300) becomes 1 with the next exponent.
+        let mut mantissa_ready = asm.create_label();
+        asm.mov(r8, 9.999_999_5f64.to_bits())?;
+        asm.movq(xmm2, r8)?;
+        asm.ucomisd(xmm1, xmm2)?;
+        asm.jb(mantissa_ready)?;
+        asm.movapd(xmm1, xmm4)?;
+        asm.inc(qword_ptr(rsp))?;
+        asm.set_label(&mut mantissa_ready)?;
+        asm.nop()?;
+        asm.set_label(&mut not_tiny)?;
+    }
     asm.mov(r8, 1.0e18f64.to_bits())?;
     asm.movq(xmm2, r8)?;
     asm.ucomisd(xmm1, xmm2)?;
@@ -731,6 +765,12 @@ fn emit_float_to_string(
     asm.set_label(&mut exponent_end)?;
     asm.mov(byte_ptr(r10), 'e' as i32)?;
     asm.mov(byte_ptr(r10 + 1i32), '+' as i32)?;
+    let mut exponent_positive = asm.create_label();
+    asm.test(rcx, rcx)?;
+    asm.jns(exponent_positive)?;
+    asm.mov(byte_ptr(r10 + 1i32), '-' as i32)?;
+    asm.neg(rcx)?;
+    asm.set_label(&mut exponent_positive)?;
     asm.lea(r11, qword_ptr(r10 + 2i32))?;
     asm.mov(rax, rcx)?;
     emit_integer_to_string(asm, 10, false, false)?;

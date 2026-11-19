@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check f64 formatting of values beyond the i64 range and exponent/hex literals,
+"""Check f64 formatting of values beyond the i64 range, of tiny values (a
+negative exponent instead of 0) and exponent/hex literals,
 and that `parse_f64` returns the nearest f64 (randomized against Python)."""
 
 import argparse
@@ -14,10 +15,13 @@ PROGRAM = """import std.io;
 fn main() i32 {
     io.println("{} {} {} {}", 1.0e300, -2.5e20, 1.0e18, 123456789012.5);
     io.println("{:.2} {} {} {}", 6.022e23, 1.7976931348623157e308, 0.5, 0xFF);
+    io.println("{} {} {} {} {}", 2.5e-7, 1e-300, -3.25e-9, 0.000123, 5e-324);
+    io.println("{:.3} {}", 2.5e-7, 0.0);
     0
 }
 """
-EXPECTED = "1e+300 -2.5e+20 1e+18 123456789012.5\n6.02e+23 1.797693e+308 0.5 255\n"
+EXPECTED = ("1e+300 -2.5e+20 1e+18 123456789012.5\n6.02e+23 1.797693e+308 0.5 255\n"
+            "2.5e-7 1e-300 -3.25e-9 0.000123 4.940656e-324\n0.000 0\n")
 
 
 def parse_program():
@@ -72,7 +76,7 @@ def main():
         (parse / "src/main.qz").write_text(parse_program())
         run([str(qz), "build", *common, "-o", str(parse / "native")], parse)
         assert run([str(parse / "native")], parse) == "wrong 0\n"
-    print("PASS float format: parse_f64 is nearest for 400 values; values >= 1e18 use scientific notation; hex/exponent literals; native and QZI")
+    print("PASS float format: parse_f64 is nearest for 400 values; values >= 1e18 and nonzero values < 1e-4 use scientific notation; hex/exponent literals; native and QZI")
 
 
 if __name__ == "__main__":

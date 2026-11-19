@@ -125,6 +125,10 @@ implicitly; `libc = true` in `quazi.toml` is an explicit opt-in.
 - `f64` math functions in `std.math` are lightweight approximations, not
   correctly rounded scientific implementations.
 - ASCII-only case conversion until Unicode tables are shipped.
+- `{}` formats an `f64` with at most six fractional digits, trailing zeros
+  removed; magnitudes of at least `1e18` use `e+N` and nonzero magnitudes
+  below `1e-4` use `e-N` with a six-digit mantissa (`2.5e-7`, never `0`).
+  `{:.N}` always prints fixed notation with `N` fractional digits.
 
 ## Experimental and incomplete features
 
