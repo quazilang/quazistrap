@@ -103,7 +103,10 @@ offset, not a time zone. `SystemTime.to_offset(&offset)` returns the wall-clock
 such as `2000-02-29T07:04:56-05:30` (`Z` for a zero offset); both return `None`
 when the local fields leave years 0001-9999. `UtcOffset.from_seconds(seconds)`
 accepts any offset under one day either way, such as the local mean time
-offsets of historical time zone data.
+offsets of historical time zone data. RFC 3339 offsets have whole minutes,
+so `format_rfc3339_at` (and `TimeZone.format_rfc3339`) drop an offset's
+seconds toward zero and show the wall time at that offset: the text always
+names the same instant.
 
 ## Time zones (`std.timezone`)
 

@@ -14,7 +14,7 @@ whose address `quazi.runtime.state()` returns. Owners of each range:
 | 96 | 8 | NetBSD startup / std `os.qz` | NetBSD `ps_strings` pointer (argv at +0, argc at +8, envp at +16), for `std.os.args` |
 | 104 | 8 | std `os.qz` | environment writer spin lock (0 free, 1 held) |
 | 112 | 8 | runtime / std `os.qz` | Linux and NetBSD `envp`: pointer to a null-terminated array of `NAME=VALUE` C strings |
-| 120 | 8 | — | reserved |
+| 120 | 8 | std `io.qz` | stdin: a CR ended the last line, so a following LF is skipped (CRLF is one break) |
 
 `__quazi_envp` is a symbol at offset 112. The Linux `_start` stores the
 kernel-provided `envp` there; `quazi.getenv` and the process-spawn runtime read

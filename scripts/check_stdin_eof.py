@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check std.io end-of-input: readln distinguishes an empty line (Ok("")) from
-closed stdin (Err(ReadError.EndOfInput)), and a final line without a newline
-is still returned."""
+closed stdin (Err(ReadError.EndOfInput)), a final line without a newline is
+still returned, and CR / CRLF line breaks are normalized."""
 
 import argparse
 import subprocess
@@ -33,10 +33,19 @@ def check(qz, root):
     build = subprocess.run([str(qz), "build", "--no-incremental", "--no-color", "--silent", "-o", str(binary)],
                            cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
     assert build.returncode == 0, build.stdout
-    for stdin, expected in [("a\n\nb", "[a]\n[]\n[b]\nlines 3\n"), ("", "lines 0\n"), ("x\n", "[x]\nlines 1\n")]:
-        result = subprocess.run([str(binary)], input=stdin, text=True, stdout=subprocess.PIPE, timeout=30)
-        assert result.stdout == expected, (stdin, result.stdout)
-    print("PASS stdin EOF: empty lines, final unterminated line, EndOfInput")
+    cases = [
+        (b"a\n\nb", "[a]\n[]\n[b]\nlines 3\n"),
+        (b"", "lines 0\n"),
+        (b"x\n", "[x]\nlines 1\n"),
+        # CRLF is one line break, a lone CR ends a line too (also across
+        # reads: the LF after a CR that ended the previous line is skipped).
+        (b"a\rb\r\nc\n", "[a]\n[b]\n[c]\nlines 3\n"),
+        (b"x\r\n\r\ny", "[x]\n[]\n[y]\nlines 3\n"),
+    ]
+    for stdin, expected in cases:
+        result = subprocess.run([str(binary)], input=stdin, stdout=subprocess.PIPE, timeout=30)
+        assert result.stdout.decode() == expected, (stdin, result.stdout)
+    print("PASS stdin EOF: empty lines, final unterminated line, EndOfInput, CR and CRLF breaks")
 
 
 def main():

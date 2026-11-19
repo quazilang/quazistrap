@@ -69,11 +69,11 @@ struct User {
 }
 
 fn main() i32 {
-    var doc = codec.Document.parse("{{\"id\": 7, \"name\": \"Ada\", \"user_age\": 36, \"lvl\": 3}}");
+    var doc = codec.Document.parse("{{\"id\": 7, \"name\": \"Ada\", \"user_age\": 36, \"lvl\": 3, \"pts\": 9}}");
     var user: User = doc.decode[User]().unwrap();
     user.age = user.age + 1;
     doc.encode(user).unwrap();
-    // doc.text() is {"id":7,"name":"Ada","user_age":37,"lvl":3}
+    // doc.text() is {"id":7,"name":"Ada","user_age":37,"lvl":3,"pts":9}
     ret 0;
 }
 ```

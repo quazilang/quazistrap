@@ -27,7 +27,7 @@ import std.ini.IniDocument;
 
 fn main() i32 {
     var config = IniDocument.new();
-    config.parse_string("[server]\\nport = 8080\\nenabled = true\\n").unwrap();
+    config.parse_string("[server]\nport = 8080\nenabled = true\n").unwrap();
 
     const port: i32 = config.require_i32("server", "port").unwrap();
     const enabled: bool = config.require_bool("server", "enabled").unwrap();
