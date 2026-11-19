@@ -2988,7 +2988,7 @@ impl Analyzer {
             if type_args.is_empty()
                 && self.current_generic_params.iter().any(|scope| scope.contains(name)));
         if !template_element && self.bc_is_move_type(&element) {
-            self.push_error(expr.span, "S10", "cannot read an owned contiguous-container element by value before borrowed-element access is implemented".to_string());
+            self.push_error(expr.span, "S10", "cannot read an owned contiguous-container element by value: borrow it with the element accessor (`get_ref`) or move it out with `remove`".to_string());
         } else if self
             .current_generic_params
             .last()
@@ -3046,7 +3046,7 @@ impl Analyzer {
                     {
                         diagnostics.push(SemanticError {
                             span: *span, code: "S10",
-                            message: format!("specialization `{}` cannot read an owned contiguous-container element by value before borrowed-element access is implemented", mono.mangled_name),
+                            message: format!("specialization `{}` cannot read an owned contiguous-container element by value: borrow it with the element accessor (`get_ref`) or move it out with `remove`", mono.mangled_name),
                         });
                     }
                     Err(error) => diagnostics.push(SemanticError {
