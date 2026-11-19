@@ -6036,6 +6036,12 @@ impl Analyzer {
                     {
                         self.variant_pattern_binding_types(&arm.pattern, scrutinee, &mut binding_types);
                     }
+                    // `name => ...` binds the whole scrutinee value.
+                    if let PatternKind::Bind(name) = &arm.pattern.node
+                        && let Some(scrutinee) = match_scrutinee_ty.as_ref()
+                    {
+                        binding_types.insert(name.clone(), scrutinee.clone());
+                    }
                     for binding in bindings {
                         let ty = binding_types
                             .get(&binding)

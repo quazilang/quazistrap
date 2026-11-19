@@ -7370,6 +7370,21 @@ fn main() void {
     }
 
     #[test]
+    fn binding_patterns_take_the_scrutinee_type() {
+        let report = analyze(
+            r#"
+fn get() i32 { ret 12; }
+fn main() void {
+    const a: i32 = match get() { x if x > 10 => x, _ => 0 };
+    const text: String = String.from("abc");
+    const n: usize = match text { t => t.len() };
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn fields_of_const_bindings_are_immutable() {
         let report = analyze(
             r#"
