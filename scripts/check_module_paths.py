@@ -2,7 +2,8 @@
 """Check module-qualified spellings of imported types: `lib.Type.function()`
 calls infer generic impl parameters, enum variants work after a symbol import
 (`import lib.Shape;` then `Shape.Circle`), and `lib.Shape.Circle` is rejected
-with a diagnostic naming that remedy instead of a misleading export error."""
+with a diagnostic naming that remedy instead of a misleading export error.
+A private function cannot be called through a module path from another file."""
 
 import argparse
 import subprocess
@@ -17,6 +18,8 @@ impl Cell[T] {
     pub fn with(value: T) Cell[T] { ret Cell { value: value }; }
     pub fn get(self: &Cell[T]) &T { ret &self.value; }
 }
+fn hidden() i32 { ret 7; }
+pub fn shown() i32 { ret lib.hidden() - 7; }
 """
 
 VALID = """import lib;
@@ -26,7 +29,7 @@ fn main() i32 {
     const circle: Shape = Shape.Circle(4);
     const cell = lib.Cell.new(30);
     const seen: i32 = match &empty { Shape.Empty => 1, Shape.Circle(_) => 0 };
-    ret lib.area(circle) + lib.area(empty) + *cell.get() + seen;
+    ret lib.area(circle) + lib.area(empty) + *cell.get() + seen + lib.shown();
 }
 """
 
@@ -37,6 +40,9 @@ INVALID = [
      "add `import lib.Shape;` and write `Shape.Circle`"),
     ("import lib;\nfn main() i32 { ret lib.missing(); }\n",
      "'missing' is not exported by 'lib'"),
+    # A private function stays private through a module path.
+    ("import lib;\nfn main() i32 { ret lib.hidden(); }\n",
+     "function `hidden` is private to its module"),
 ]
 
 

@@ -4325,6 +4325,7 @@ impl Analyzer {
                     );
                     if let Some(resolved) = &module_method {
                         if let Some(sym) = self.resolve_symbol(resolved) {
+                            self.check_module_function_visibility(&sym, method, expr.span);
                             if !matches!(sym.kind, SymbolKind::Function) {
                                 let msg = if let Some(ref path) = sym.import_path {
                                     let module_path = path
@@ -5631,6 +5632,7 @@ impl Analyzer {
                             return eval;
                         }
                         if let Some(sym) = self.resolve_for_read(&resolved) {
+                            self.check_module_function_visibility(&sym, name, expr.span);
                             if matches!(sym.kind, SymbolKind::Function) {
                                 let return_ty = sym.ty.clone().unwrap_or(TypeKind::Void);
                                 let param_types: Vec<Type> = sym
@@ -6741,6 +6743,21 @@ impl Analyzer {
     /// resolved as `<module_file>.<method>` where `<module_file>` is the last
     /// segment of the chain or the last segment of the import path (i.e. the
     /// actual source file module).
+    /// A function without `pub` is private to its file, also when reached
+    /// through a module path (`store.hidden()`), as for imports.
+    fn check_module_function_visibility(&mut self, sym: &Symbol, name: &str, span: Span) {
+        if matches!(sym.kind, SymbolKind::Function)
+            && !sym.public
+            && !self.same_source_file(sym.span, span)
+        {
+            self.push_error(
+                span,
+                "S04",
+                format!("function `{name}` is private to its module"),
+            );
+        }
+    }
+
     pub(super) fn resolve_module_method(&self, object: &Expr, method: &str) -> Option<String> {
         let (base, path) = Self::extract_field_chain(object)?;
         if self.is_local_binding(&base) {
