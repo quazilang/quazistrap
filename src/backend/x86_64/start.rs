@@ -84,6 +84,9 @@ impl StartStub {
             pending.push((index, 3, RelocKind::Pc32, "__quazi_envp".into(), -4));
         }
         asm.mov(qword_ptr(rcx), rax).expect("store envp");
+        // `ps_strings` itself at runtime state +96 (envp - 16): std.os.args
+        // reads argv/argc from it.
+        asm.mov(qword_ptr(rcx - 16), r12).expect("store ps_strings");
 
         if main_takes_args {
             asm.mov(r13, qword_ptr(r12)).expect("argv");
