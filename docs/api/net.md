@@ -158,6 +158,15 @@ exclusive connection access; `accept` and `close` require exclusive server
 access. Use mutable locals. `serve_once` and server `free` remain consuming;
 connections close through structural field cleanup at scope exit.
 
+## Concurrency
+
+Each socket has one owner and all I/O takes an exclusive receiver. Move a
+socket into the qoroutine that uses it (`qo serve(stream)`) and communicate
+through `Channel[T]`; the qoroutine closes it when it ends. A socket borrowed
+into `qo` stays borrowed for the rest of the spawning scope. There are no
+cloned handles or split read/write halves; OS threads can only receive the raw
+`handle()` in unsafe code ([D-014](../decisions/whole-program-ownership.md)).
+
 ## Security and portability
 
 HTTPS through this module fails with `TlsUnavailable`; use [`std.tls`](tls.md),
