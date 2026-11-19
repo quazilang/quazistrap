@@ -3,8 +3,10 @@
 Audience: Quazi maintainers.
 
 Status: accepted implementation contract, 2026-09-16. This refines the
-generic-layout direction in D-001 and the provenance requirements in D-014;
-it does not claim that the compiler support is implemented.
+generic-layout direction in D-001 and the provenance requirements in D-014.
+Implemented for `Array.get_ref` (checked `ContiguousElementAddr`, QZI 17);
+the source evidence is `scripts/check_reference_results.py` (2026-11-19).
+Windows runs of replacement, removal and destruction need Wine or Windows.
 
 ## Decision
 
