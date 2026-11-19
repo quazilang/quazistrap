@@ -1771,7 +1771,7 @@ numbers = { path = "dep.qzi" }
         assert_eq!(aliased_dependency.ownership_abi_version, 9);
         assert!(matches!(
             aliased_dependency.ownership,
-            crate::bytecode::QziOwnershipArtifact::Unverified { .. }
+            crate::bytecode::QziOwnershipArtifact::Certified { .. }
         ));
         let linked = crate::bytecode::link_qzi_modules(&[generated, aliased_dependency])
             .expect("link QZI dependency");

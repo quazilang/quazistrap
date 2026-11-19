@@ -87,7 +87,7 @@ source → Loader → Lexer → Parser → Analyzer → Codegen → Backend (ice
 ```
 
 QZI (`-i`, `--qzi`): Loader (all targets) → target views → Analyzer → Codegen →
-v16 assembly, once for every target; no backend. See
+v17 assembly, once for every target; no backend. See
 [the QZI contract](docs/internals/qzi.md): copies of
 target-specific declarations are `name@t<mask>` with `@__targets(mask)`, live in
 replica images of their file (`SpanLayout`), and lose the marker at assembly.
@@ -696,8 +696,10 @@ and [remaining findings](docs/audits/2026-10-23-string-followups.md).
 
 ## Source type context: required follow-up (2026-10-24)
 
-Current source builds use QZC39 and emit QZI16. The bytecode module layout is
-v14, and ownership remains Unverified.
+Current source builds use QZC40 and emit QZI17. The bytecode module layout is
+v14 with ownership schema 2: a certificate of per-body bytecode effects that
+readers recompute and compare (`bytecode::effects`, `ownership_records`).
+Nothing consumes the certificate for safety decisions yet (D-014 stage 3).
 Verify constants in source and the installed binary separately before reporting
 artifact compatibility. Earlier dated cache/ABI checkpoints describe their own
 revisions, including QZC30 for the alias-definition prerequisite.

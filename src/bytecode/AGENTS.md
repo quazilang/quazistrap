@@ -55,8 +55,9 @@ matching artifact ownership boundary.
 ### QZI File Layout
 
 - Magic: `\x00QZI`
-- The current QZI version is `0x10` (v16). It stores one module with per-body
-  target masks and optional interface overrides. See
+- The current QZI version is `0x11` (v17). It stores one module with per-body
+  target masks and optional interface overrides; the module's ownership
+  section is a schema 2 certificate verified on every read. See
   [the QZI contract](../../docs/internals/qzi.md).
 - The embedded module layout is `0x0E` (v14). Readers retain compatible v2-v13 bytecode without
   legacy Pow; pre-v14 Pow requires a source rebuild. Decoding

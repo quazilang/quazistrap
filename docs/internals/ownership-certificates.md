@@ -2,9 +2,10 @@
 
 Audience: compiler developers.
 
-Status: design for the remaining D-014 artifact requirement. Nothing here is
-implemented yet; current QZI keeps the unverified ownership envelope described
-in [D-014](../decisions/whole-program-ownership.md#qzi-only-libraries).
+Status: stages 1 and 2 are implemented (QZI format 17, ownership schema 2).
+Stage 3 (consuming verified records at safe ownership boundaries) and the
+remaining D-014 gaps below are open; see
+[D-014](../decisions/whole-program-ownership.md#qzi-only-libraries).
 
 ## Source facts that exist today
 
@@ -81,8 +82,9 @@ suites, the bytecode summary must be no smaller than `parameter_effects`.
    map register slots to source parameters through `fn_value_layouts`, and
    require the bytecode writes and returned slots to cover the source
    `written_through_reference` and `returned_borrow` sets.
-2. The QZI certificate section and canonical encoding for exported callables,
-   with serialization tests and the major-version/QZC bump.
+2. The QZI certificate section and canonical encoding, with serialization
+   tests and the major-version/QZC bump. Done: see
+   [Encoding (schema 2)](#encoding-schema-2).
 3. Verification on import; a missing, malformed, stale or incomplete record at
    a safe ownership boundary is rejected with a rebuild diagnostic.
 4. Migration documentation and fixtures for previous QZI versions, which stay
@@ -90,3 +92,36 @@ suites, the bytecode summary must be no smaller than `parameter_effects`.
 
 Public generics stay source dependencies (D-014) until templates gain an
 equally complete specialization/effect contract.
+
+## Encoding (schema 2)
+
+QZI format 17 requires the embedded module's ownership section in schema 2:
+
+- `u16` schema 2, `u8` state 1, the four content-binding digests of schema 1
+  (metadata, interface, relocations, bytecode);
+- `u32` record count, equal to the number of function bodies, then one record
+  per body in bytecode order: `u16` parameter register count and five `u64`
+  slot sets — `reads`, `writes_through`, `returned`, `stored`, `unknown`.
+
+Slot sets index parameter *register* slots (a multi-slot parameter or a
+hidden sret pointer occupies several), with slots past 63 sharing bit 63.
+A record is complete when `unknown` is empty.
+
+Records come from `chunk::ownership_records`: `bytecode::effects` per chunk,
+then `effects::compose` over direct calls. A call resolves through its
+relocation symbol to *every* body of that name, so target-specific bodies of
+a universal QZI are combined conservatively; a symbol without a body is an
+unknown target. Composition carries a callee's reads, writes through, stores
+and unknown uses of a slot to the slots of the matching caller argument.
+
+The certificate is a deterministic function of the bytecode and relocations.
+Serialization therefore regenerates it from the final payloads (namespace
+aliasing or target projection re-certify instead of rebinding a proof), and
+decoding recomputes it and rejects any difference as stale or forged. Schema 1
+modules (QZI module versions 10–14 outside a format-17 container) still decode
+as `Unverified`; format 16 containers are rejected with a rebuild request.
+
+Not yet covered by records: source-level consumption/destruction, closure
+captures and escapes beyond `stored`, closed indirect targets and exported
+type move/drop facts (the gap table above). Exported callables are not
+distinguished from private ones; every body has a record.

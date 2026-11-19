@@ -40,9 +40,9 @@ pub struct QziContentBinding {
     pub bytecode: [u8; 32],
 }
 
-/// Ownership-artifact state carried by a QZI module. The current compiler can
-/// validate a content-bound envelope, but does not yet emit a verified effect
-/// certificate. Consumers must continue to treat `Unverified` as opaque.
+/// Ownership-artifact state carried by a QZI module. The current compiler
+/// emits `Certified` (schema 2); `Unverified` (schema 1) modules still decode
+/// but carry no effects, so consumers must treat them as opaque.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QziOwnershipArtifact {
     /// QZI v2-v9 predate ownership artifacts entirely.
@@ -52,6 +52,98 @@ pub enum QziOwnershipArtifact {
         schema_version: u16,
         binding: QziContentBinding,
     },
+    /// Ownership schema 2 (QZI format 17): the envelope plus one effect
+    /// record per function body. Decoding recomputes every record from the
+    /// retained bytecode and accepts the artifact only when they match.
+    Certified {
+        binding: QziContentBinding,
+        records: Vec<QziOwnershipRecord>,
+    },
+}
+
+/// Verified parameter effects of one function body, as computed by
+/// `bytecode::effects` and closed over the module's direct calls. Slot sets
+/// are bit sets over parameter register slots (slots past 63 share bit 63).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QziOwnershipRecord {
+    pub param_count: u16,
+    pub reads: u64,
+    pub writes_through: u64,
+    pub returned: u64,
+    pub stored: u64,
+    /// Slots that reach code the analysis cannot see (indirect, foreign,
+    /// intrinsic, or unresolved calls). Empty means the record is complete.
+    pub unknown: u64,
+}
+
+impl QziOwnershipRecord {
+    const SET_COUNT: usize = 5;
+
+    pub fn is_complete(&self) -> bool {
+        self.unknown == 0
+    }
+
+    /// The slot sets in their canonical encoding order.
+    fn sets(&self) -> [u64; Self::SET_COUNT] {
+        [
+            self.reads,
+            self.writes_through,
+            self.returned,
+            self.stored,
+            self.unknown,
+        ]
+    }
+}
+
+/// Compute the ownership record of every chunk. A call site resolves through
+/// its relocation symbol to every body of that name (target-specific bodies
+/// are combined conservatively); a symbol with no body is an unknown target.
+pub fn ownership_records(
+    chunks: &[Chunk],
+    relocations: &[QziCallRelocation],
+) -> Vec<QziOwnershipRecord> {
+    use crate::bytecode::effects::{chunk_effects, compose};
+    let mut grouped: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        grouped.entry(chunk.name.as_str()).or_default().push(index);
+    }
+    // Call sites share one body list per symbol instead of copying it.
+    let bodies: std::collections::HashMap<&str, std::rc::Rc<[usize]>> = grouped
+        .into_iter()
+        .map(|(name, indices)| (name, std::rc::Rc::from(indices)))
+        .collect();
+    let symbols: std::collections::HashMap<(usize, usize), &str> = relocations
+        .iter()
+        .map(|relocation| {
+            (
+                (
+                    relocation.chunk_index as usize,
+                    relocation.instruction_index as usize,
+                ),
+                relocation.symbol.as_str(),
+            )
+        })
+        .collect();
+    let mut effects: Vec<_> = chunks.iter().map(chunk_effects).collect();
+    compose(&mut effects, |caller, call| {
+        match symbols.get(&(caller, call.instruction)) {
+            Some(symbol) => bodies.get(symbol).cloned(),
+            None => (usize::from(call.function) < chunks.len())
+                .then(|| std::rc::Rc::from([usize::from(call.function)])),
+        }
+    });
+    chunks
+        .iter()
+        .zip(effects)
+        .map(|(chunk, effects)| QziOwnershipRecord {
+            param_count: u16::try_from(chunk.param_count).unwrap_or(u16::MAX),
+            reads: effects.reads,
+            writes_through: effects.writes_through,
+            returned: effects.returned,
+            stored: effects.stored,
+            unknown: effects.unknown,
+        })
+        .collect()
 }
 
 impl Default for QziOwnershipArtifact {
@@ -909,7 +1001,10 @@ pub const QZI_MAGIC: &[u8; 4] = b"\x00QZI";
 pub const QZI_MODULE_VERSION: u8 = 14;
 const QZI_LEGACY_VERSION: u8 = 5;
 const QZI_FIRST_SECTIONED_VERSION: u8 = 6;
+/// Schema 1: content-bound envelope only (state 0, unverified).
 const QZI_OWNERSHIP_SCHEMA_VERSION: u16 = 1;
+/// Schema 2: envelope plus per-body effect records (state 1, certified).
+const QZI_OWNERSHIP_CERTIFIED_SCHEMA_VERSION: u16 = 2;
 
 fn chunks_use_preownership_function_values(chunks: &[Chunk]) -> bool {
     chunks.iter().any(|chunk| {
@@ -1031,11 +1126,15 @@ fn qzi_content_binding(
     }
 }
 
-fn encode_ownership_artifact(binding: &QziContentBinding) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(2 + 1 + 4 * 32);
-    bytes.extend_from_slice(&QZI_OWNERSHIP_SCHEMA_VERSION.to_le_bytes());
-    // State 0 is intentionally the only supported, non-proof state today.
-    bytes.push(0);
+fn encode_ownership_artifact(
+    binding: &QziContentBinding,
+    records: &[QziOwnershipRecord],
+) -> Result<Vec<u8>, String> {
+    let count =
+        u32::try_from(records.len()).map_err(|_| "too many QZI ownership records".to_string())?;
+    let mut bytes = Vec::with_capacity(2 + 1 + 4 * 32 + 4 + records.len() * 3);
+    bytes.extend_from_slice(&QZI_OWNERSHIP_CERTIFIED_SCHEMA_VERSION.to_le_bytes());
+    bytes.push(1);
     for digest in [
         binding.metadata,
         binding.interface,
@@ -1044,24 +1143,45 @@ fn encode_ownership_artifact(binding: &QziContentBinding) -> Vec<u8> {
     ] {
         bytes.extend_from_slice(&digest);
     }
-    bytes
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for record in records {
+        // A presence byte names the non-empty sets; only those follow, so the
+        // common effect-free record takes three bytes.
+        let sets = record.sets();
+        let present = sets.iter().enumerate().fold(0u8, |mask, (index, set)| {
+            mask | (u8::from(*set != 0) << index)
+        });
+        bytes.extend_from_slice(&record.param_count.to_le_bytes());
+        bytes.push(present);
+        for set in sets.into_iter().filter(|set| *set != 0) {
+            bytes.extend_from_slice(&set.to_le_bytes());
+        }
+    }
+    Ok(bytes)
 }
 
+/// Decode the ownership section and check its content binding. Certified
+/// records are returned unverified here; `verify_ownership_certificate` checks
+/// them once the bytecode is decoded.
 fn decode_ownership_artifact(
     bytes: &[u8],
     expected_binding: &QziContentBinding,
 ) -> Result<QziOwnershipArtifact, String> {
     const ENVELOPE_LEN: usize = 2 + 1 + 4 * 32;
-    if bytes.len() != ENVELOPE_LEN {
+    if bytes.len() < ENVELOPE_LEN {
         return Err("invalid QZI ownership envelope length".to_string());
     }
     let schema_version = u16::from_le_bytes(bytes[..2].try_into().unwrap());
-    if schema_version != QZI_OWNERSHIP_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported QZI ownership schema version {schema_version}"
-        ));
-    }
-    if bytes[2] != 0 {
+    let expected_state = match schema_version {
+        QZI_OWNERSHIP_SCHEMA_VERSION => 0,
+        QZI_OWNERSHIP_CERTIFIED_SCHEMA_VERSION => 1,
+        _ => {
+            return Err(format!(
+                "unsupported QZI ownership schema version {schema_version}"
+            ));
+        }
+    };
+    if bytes[2] != expected_state {
         return Err(format!(
             "unsupported QZI ownership envelope state {}",
             bytes[2]
@@ -1085,10 +1205,101 @@ fn decode_ownership_artifact(
                 .to_string(),
         );
     }
-    Ok(QziOwnershipArtifact::Unverified {
-        schema_version,
-        binding,
-    })
+    if schema_version == QZI_OWNERSHIP_SCHEMA_VERSION {
+        if bytes.len() != ENVELOPE_LEN {
+            return Err("invalid QZI ownership envelope length".to_string());
+        }
+        return Ok(QziOwnershipArtifact::Unverified {
+            schema_version,
+            binding,
+        });
+    }
+    let records_bytes = &bytes[ENVELOPE_LEN..];
+    if records_bytes.len() < 4 {
+        return Err("truncated QZI ownership certificate".to_string());
+    }
+    let count = u32::from_le_bytes(records_bytes[..4].try_into().unwrap()) as usize;
+    let invalid = || "invalid QZI ownership certificate length".to_string();
+    let mut body = &records_bytes[4..];
+    // Every record takes at least three bytes; bound the allocation first.
+    if count > body.len() / 3 {
+        return Err(invalid());
+    }
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (header, rest) = body.split_at_checked(3).ok_or_else(invalid)?;
+        let present = header[2];
+        if present >> QziOwnershipRecord::SET_COUNT != 0 {
+            return Err("invalid QZI ownership record".to_string());
+        }
+        let mut sets = [0u64; QziOwnershipRecord::SET_COUNT];
+        let mut rest = rest;
+        for (index, set) in sets.iter_mut().enumerate() {
+            if present & (1 << index) == 0 {
+                continue;
+            }
+            let (value, tail) = rest.split_at_checked(8).ok_or_else(invalid)?;
+            *set = u64::from_le_bytes(value.try_into().unwrap());
+            if *set == 0 {
+                return Err("non-canonical QZI ownership record".to_string());
+            }
+            rest = tail;
+        }
+        let [reads, writes_through, returned, stored, unknown] = sets;
+        records.push(QziOwnershipRecord {
+            param_count: u16::from_le_bytes(header[..2].try_into().unwrap()),
+            reads,
+            writes_through,
+            returned,
+            stored,
+            unknown,
+        });
+        body = rest;
+    }
+    if !body.is_empty() {
+        return Err(invalid());
+    }
+    Ok(QziOwnershipArtifact::Certified { binding, records })
+}
+
+/// Recompute certified records from the decoded bytecode. Any difference
+/// (stale, forged or produced by a different analysis) rejects the artifact.
+fn verify_ownership_certificate(
+    ownership: &QziOwnershipArtifact,
+    chunks: &[Chunk],
+    relocations: &[QziCallRelocation],
+) -> Result<(), String> {
+    let QziOwnershipArtifact::Certified { records, .. } = ownership else {
+        return Ok(());
+    };
+    if records.len() != chunks.len() {
+        return Err(
+            "QZI ownership certificate does not cover every function body; rebuild the artifact from source"
+                .to_string(),
+        );
+    }
+    // Bodies sharing a name have disjoint target masks, so a well-formed
+    // module has at most one per target. Rejecting more also bounds the
+    // composition work an untrusted file can demand.
+    let mut per_name: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for chunk in chunks {
+        let count = per_name.entry(chunk.name.as_str()).or_default();
+        *count += 1;
+        if *count > 8 {
+            return Err(format!(
+                "QZI has more than eight bodies named `{}`; rebuild the artifact from source",
+                chunk.name
+            ));
+        }
+    }
+    let recomputed = ownership_records(chunks, relocations);
+    if let Some(index) = (0..records.len()).find(|&index| records[index] != recomputed[index]) {
+        return Err(format!(
+            "QZI ownership certificate for `{}` does not match its bytecode; rebuild the artifact from source",
+            chunks[index].name
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn infer_call_relocations(chunks: &[Chunk]) -> Result<Vec<QziCallRelocation>, String> {
@@ -1254,8 +1465,13 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
     // final transformed payloads. Keep this match exhaustive: adding a future
     // verified certificate must force this path to choose a proof-preserving
     // transformation instead of silently rebinding it.
+    // Certificates are a function of the bytecode and relocations, so every
+    // state is regenerated below from the final payloads; a transformed module
+    // (namespace aliasing, target projection) is re-certified, never rebound.
     match &module.ownership {
-        QziOwnershipArtifact::LegacyAbsent | QziOwnershipArtifact::Unverified { .. } => {}
+        QziOwnershipArtifact::LegacyAbsent
+        | QziOwnershipArtifact::Unverified { .. }
+        | QziOwnershipArtifact::Certified { .. } => {}
     }
     validate_qzi_chunks(&module.chunks)?;
     if module
@@ -1286,6 +1502,7 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
         );
     }
     let relocations: Vec<_> = relocation_map.into_values().collect();
+    let records = ownership_records(&module.chunks, &relocations);
     if !(2..=QZI_MODULE_VERSION).contains(&module.ownership_abi_version) {
         return Err("unsupported QZI ownership ABI generation".to_string());
     }
@@ -1295,7 +1512,7 @@ pub fn serialize_qzi_module(module: &QziModule) -> Result<Vec<u8>, String> {
     let relocations = encode_call_relocations(&relocations)?;
     let bytecode = serialize_qzi_legacy(&module.chunks)?;
     let binding = qzi_content_binding(&metadata, &interface, &relocations, &bytecode);
-    let ownership = encode_ownership_artifact(&binding);
+    let ownership = encode_ownership_artifact(&binding, &records)?;
     // QZI v10 section order is part of the ownership envelope's canonical
     // representation. Do not derive it from a map or caller-provided order.
     let sections = [
@@ -1340,24 +1557,29 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
 }
 
 /// Retired format 15: one complete program per operating system in a
-/// container. A project now compiles to one QZI (format 16); such
+/// container. A project now compiles to one QZI (format 17); such
 /// files are rejected with a request to rebuild.
 const QZI_RETIRED_PER_OS_VERSION: u8 = 15;
 
-/// QZI (format 16): ONE program or library. Every
+/// Retired format 16: the same layout as 17, but its module carried only the
+/// unverified ownership envelope (schema 1). Rejected with a rebuild request.
+const QZI_UNCERTIFIED_VERSION: u8 = 16;
+
+/// QZI (format 17): ONE program or library. Every
 /// function body appears once with the set of target operating systems it
 /// applies to: platform-independent functions apply to all of them, and the
 /// `@cfg(target_os)` alternatives of a function are separate bodies with
 /// disjoint target sets. Calls are resolved by name when a target is
 /// selected, so shared code links to that target's implementation.
 ///
-/// Layout: magic, 16, u8 target count and u8-length target names; a u32-length
+/// Layout: magic, 17, u8 target count and u8-length target names; a u32-length
 /// module in the format 14 sectioned layout holding every distinct function
-/// body (metadata, interface, call relocations, ownership envelope, bytecode);
+/// body (metadata, interface, call relocations, ownership certificate in
+/// schema 2, bytecode);
 /// a u32 count and one target-mask byte per function body; a u8 count of
 /// interface overrides, each a target mask and a u32-length interface; then a
 /// SHA-256 of all preceding bytes.
-pub const QZI_VERSION: u8 = 16;
+pub const QZI_VERSION: u8 = 17;
 
 /// Decoded QZI: target names, the module of all function bodies,
 /// each body's target mask, and interface overrides.
@@ -1399,7 +1621,7 @@ impl Qzi {
         }
     }
 
-    /// Serialize target-masked bodies and interfaces in the v16 layout.
+    /// Serialize target-masked bodies and interfaces in the v17 layout.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         let target_count = self.targets.len();
         if !(1..=8).contains(&target_count) {
@@ -1506,6 +1728,9 @@ pub fn decode_qzi(bytes: &[u8]) -> Result<Qzi, String> {
     }
     let module_length = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
     let module = deserialize_qzi_module(take(&mut offset, module_length)?)?;
+    if !matches!(module.ownership, QziOwnershipArtifact::Certified { .. }) {
+        return Err(malformed("the module has no ownership certificate"));
+    }
     let body_count = u32::from_le_bytes(take(&mut offset, 4)?.try_into().unwrap()) as usize;
     if body_count != module.chunks.len() {
         return Err(malformed("target masks do not match the function bodies"));
@@ -1598,12 +1823,23 @@ pub(crate) fn project_qzi_for_target(qzi: Qzi, os: &str) -> Result<QziModule, St
         .find(|(mask, _)| mask & bit != 0)
         .map(|(_, interface)| interface)
         .unwrap_or(module.interface);
+    let call_relocations = infer_call_relocations(&kept)?;
+    // The target's bodies are re-certified: records of the projection are
+    // recomputed from its bytecode (calls now name one body each), and the
+    // binding stays that of the verified container module.
+    let ownership = match module.ownership {
+        QziOwnershipArtifact::Certified { binding, .. } => QziOwnershipArtifact::Certified {
+            binding,
+            records: ownership_records(&kept, &call_relocations),
+        },
+        other => other,
+    };
     Ok(QziModule {
         ownership_abi_version: module.ownership_abi_version,
         metadata: module.metadata,
         interface,
-        call_relocations: infer_call_relocations(&kept)?,
-        ownership: QziOwnershipArtifact::default(),
+        call_relocations,
+        ownership,
         chunks: kept,
     })
 }
@@ -1637,6 +1873,13 @@ fn selected_qzi_target() -> String {
 pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_VERSION {
         return project_qzi_for_target(decode_qzi(bytes)?, &selected_qzi_target());
+    }
+    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_UNCERTIFIED_VERSION
+    {
+        return Err(
+            "QZI format 16 predates ownership certificates; rebuild it from source with this compiler"
+                .to_string(),
+        );
     }
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_RETIRED_PER_OS_VERSION {
         return Err(
@@ -1868,6 +2111,7 @@ pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
             return Err("QZI call relocation does not reference CallIdx".to_string());
         }
     }
+    verify_ownership_certificate(&ownership, &chunks, &call_relocations)?;
     Ok(QziModule {
         metadata,
         interface,
@@ -2324,6 +2568,22 @@ mod tests {
         output
     }
 
+    /// The schema 1 envelope written by QZI module versions 10-14 before
+    /// certificates existed.
+    fn encode_unverified_envelope(binding: &QziContentBinding) -> Vec<u8> {
+        let mut bytes = QZI_OWNERSHIP_SCHEMA_VERSION.to_le_bytes().to_vec();
+        bytes.push(0);
+        for digest in [
+            binding.metadata,
+            binding.interface,
+            binding.relocations,
+            binding.bytecode,
+        ] {
+            bytes.extend_from_slice(&digest);
+        }
+        bytes
+    }
+
     fn legacy_abi_library(source: &str) -> QziModule {
         let mut chunk = Chunk::new("old.answer");
         chunk.reg_count = 1;
@@ -2369,7 +2629,7 @@ mod tests {
             &sections[2].1,
             &sections[4].1,
         );
-        sections[3].1 = encode_ownership_artifact(&binding);
+        sections[3].1 = encode_unverified_envelope(&binding);
         let mut historical = Vec::from(QZI_MAGIC.as_slice());
         historical.push(10);
         historical.extend_from_slice(&(count as u16).to_le_bytes());
@@ -2688,7 +2948,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_v12_receiver_contract_roundtrip_stays_unverified() {
+    fn qzi_v12_receiver_contract_roundtrip_is_certified() {
         let mut module = legacy_abi_library(
             "pub struct Owner { value: i32, } impl Owner { pub fn answer(self: &Owner) i32; }",
         );
@@ -2699,7 +2959,7 @@ mod tests {
         assert_eq!(decoded.ownership_abi_version, 12);
         assert!(matches!(
             decoded.ownership,
-            QziOwnershipArtifact::Unverified { .. }
+            QziOwnershipArtifact::Certified { .. }
         ));
         decoded.validate_current_ownership_abi().unwrap();
         link_qzi_modules(&[decoded]).unwrap();
@@ -2726,7 +2986,7 @@ mod tests {
         assert_eq!(decoded.chunks, module.chunks);
         assert!(matches!(
             decoded.ownership,
-            QziOwnershipArtifact::Unverified { .. }
+            QziOwnershipArtifact::Certified { .. }
         ));
         // Partial cache units can retain descriptors before target chunks exist.
         assert!(
@@ -2854,7 +3114,7 @@ mod tests {
     }
 
     #[test]
-    fn qzi_current_owned_contract_roundtrip_stays_unverified() {
+    fn qzi_current_owned_contract_roundtrip_is_certified() {
         let mut module = legacy_abi_library("pub type Text = String; pub fn answer() Text;");
         module.ownership_abi_version = QZI_MODULE_VERSION;
         module.chunks[0].name = "old.String.free".to_string();
@@ -2862,7 +3122,7 @@ mod tests {
         assert_eq!(decoded.ownership_abi_version, QZI_MODULE_VERSION);
         assert!(matches!(
             decoded.ownership,
-            QziOwnershipArtifact::Unverified { .. }
+            QziOwnershipArtifact::Certified { .. }
         ));
         decoded.validate_current_ownership_abi().unwrap();
         link_qzi_modules(&[decoded]).unwrap();
@@ -2964,15 +3224,204 @@ mod tests {
         assert_eq!(decoded.interface, module.interface);
         assert_eq!(decoded.chunks[0].name, "math.add");
         assert!(matches!(
-            decoded.ownership,
-            QziOwnershipArtifact::Unverified {
-                schema_version: QZI_OWNERSHIP_SCHEMA_VERSION,
+            &decoded.ownership,
+            QziOwnershipArtifact::Certified {
                 binding: QziContentBinding { metadata, interface, relocations, bytecode },
-            } if metadata != [0; 32]
-                && interface != [0; 32]
-                && relocations != [0; 32]
-                && bytecode != [0; 32]
+                records,
+            } if records.len() == 1
+                && *metadata != [0; 32]
+                && *interface != [0; 32]
+                && *relocations != [0; 32]
+                && *bytecode != [0; 32]
         ));
+    }
+
+    /// A library whose `set` writes through its reference parameter and whose
+    /// `relay` reaches that write only through a call.
+    fn certified_library() -> QziModule {
+        let source = r#"
+struct Pair { left: i32, right: i32 }
+pub fn set(pair: &Pair!) void { pair.left = 1; }
+pub fn relay(pair: &Pair!) void { set(pair); }
+pub fn first(pair: &Pair) &i32 { ret &pair.left; }
+fn main() i32 {
+    var pair = Pair { left: 0, right: 0 };
+    relay(&pair!);
+    ret *first(&pair);
+}
+"#;
+        let program = crate::parser::Parser::new(crate::lexer::Lexer::new(source).tokenize())
+            .parse()
+            .unwrap();
+        let mut report = crate::semantic::Analyzer::new().analyze_program(&program);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        report.inline_candidates.clear();
+        let chunks = crate::bytecode::codegen::Codegen::new(&report)
+            .compile_program(&program, &[])
+            .unwrap();
+        QziModule::from_chunks(chunks)
+    }
+
+    fn ownership_section(encoded: &[u8]) -> std::ops::Range<usize> {
+        let entry = 7 + 3 * QZI_SECTION_ENTRY_SIZE;
+        assert_eq!(encoded[entry], QZI_SECTION_OWNERSHIP);
+        let offset = u32::from_le_bytes(encoded[entry + 4..entry + 8].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(encoded[entry + 8..entry + 12].try_into().unwrap()) as usize;
+        offset..offset + len
+    }
+
+    #[test]
+    fn ownership_certificate_records_composed_bytecode_effects() {
+        let module = certified_library();
+        let encoded = serialize_qzi_module(&module).unwrap();
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        let QziOwnershipArtifact::Certified { records, .. } = &decoded.ownership else {
+            panic!("current QZI must be certified: {:?}", decoded.ownership);
+        };
+        assert_eq!(records.len(), decoded.chunks.len());
+        let record = |name: &str| {
+            let index = decoded
+                .chunks
+                .iter()
+                .position(|chunk| chunk.name == name)
+                .unwrap();
+            &records[index]
+        };
+        // `relay` inherits `set`'s write through its first parameter slot.
+        assert_eq!(record("set").writes_through & 1, 1);
+        assert_eq!(record("relay").writes_through & 1, 1);
+        assert_eq!(record("first").returned & 1, 1);
+        assert_eq!(record("first").writes_through, 0);
+        assert!(record("relay").is_complete());
+        // Re-serializing the decoded module reproduces the same bytes.
+        assert_eq!(serialize_qzi_module(&decoded).unwrap(), encoded);
+    }
+
+    #[test]
+    fn ownership_certificate_must_match_recomputed_effects() {
+        let encoded = serialize_qzi_module(&certified_library()).unwrap();
+        let section = ownership_section(&encoded);
+        // Clear the first record's set of returned slots: its presence bit
+        // goes and the eight bytes after the earlier present sets are removed.
+        let records = section.start + 2 + 1 + 4 * 32 + 4;
+        let decoded = deserialize_qzi_module(&encoded).unwrap();
+        let QziOwnershipArtifact::Certified {
+            records: certified, ..
+        } = &decoded.ownership
+        else {
+            panic!("certified");
+        };
+        let index = certified
+            .iter()
+            .position(|record| record.returned != 0)
+            .unwrap();
+        let mut at = records;
+        for record in &certified[..index] {
+            at += 3 + 8 * record.sets().iter().filter(|set| **set != 0).count();
+        }
+        let before = certified[index].sets()[..2]
+            .iter()
+            .filter(|set| **set != 0)
+            .count();
+        let mut forged = encoded[..at + 2].to_vec();
+        forged.push(encoded[at + 2] & !0b100);
+        forged.extend_from_slice(&encoded[at + 3..at + 3 + 8 * before]);
+        forged.extend_from_slice(&encoded[at + 3 + 8 * (before + 1)..section.end]);
+        let length = u32::try_from(section.len() - 8).unwrap().to_le_bytes();
+        let entry = 7 + 3 * QZI_SECTION_ENTRY_SIZE;
+        forged[entry + 8..entry + 12].copy_from_slice(&length);
+        let bytecode_entry = 7 + 4 * QZI_SECTION_ENTRY_SIZE;
+        let bytecode_offset = u32::from_le_bytes(
+            forged[bytecode_entry + 4..bytecode_entry + 8]
+                .try_into()
+                .unwrap(),
+        ) - 8;
+        forged[bytecode_entry + 4..bytecode_entry + 8]
+            .copy_from_slice(&bytecode_offset.to_le_bytes());
+        forged.extend_from_slice(&encoded[section.end..]);
+        let error = deserialize_qzi_module(&forged).expect_err("a forged record must be rejected");
+        assert!(error.contains("does not match its bytecode"), "{error}");
+
+        let mut zero = encoded.clone();
+        let first_set = at + 3;
+        zero[first_set..first_set + 8].fill(0);
+        let error =
+            deserialize_qzi_module(&zero).expect_err("an empty present set is not canonical");
+        assert!(error.contains("non-canonical"), "{error}");
+
+        let mut truncated = encoded[..section.end - 1].to_vec();
+        truncated.extend_from_slice(&encoded[section.end..]);
+        assert!(deserialize_qzi_module(&truncated).is_err());
+
+        let mut count = encoded.clone();
+        let count_at = section.start + 2 + 1 + 4 * 32;
+        count[count_at] = count[count_at].wrapping_add(1);
+        let error = deserialize_qzi_module(&count).expect_err("record count must match");
+        assert!(error.contains("certificate length"), "{error}");
+    }
+
+    #[test]
+    fn target_projection_keeps_a_recomputed_certificate() {
+        let module = certified_library();
+        let masks = vec![0b111; module.chunks.len()];
+        let qzi = Qzi {
+            targets: vec!["linux".into(), "windows".into(), "netbsd".into()],
+            module,
+            masks,
+            interface_overrides: Vec::new(),
+        };
+        let decoded = decode_qzi(&qzi.encode().unwrap()).unwrap();
+        let projected = project_qzi_for_target(decoded, "linux").unwrap();
+        let QziOwnershipArtifact::Certified { records, .. } = &projected.ownership else {
+            panic!(
+                "projection dropped the certificate: {:?}",
+                projected.ownership
+            );
+        };
+        assert_eq!(
+            *records,
+            ownership_records(&projected.chunks, &projected.call_relocations)
+        );
+        let relay = projected
+            .chunks
+            .iter()
+            .position(|chunk| chunk.name == "relay")
+            .unwrap();
+        assert_eq!(records[relay].writes_through & 1, 1);
+    }
+
+    #[test]
+    fn ownership_verification_bounds_bodies_per_name() {
+        let chunks: Vec<Chunk> = (0..9)
+            .map(|_| {
+                let mut chunk = Chunk::new("f");
+                chunk.reg_count = 1;
+                chunk.emit_rrr(Opcode::Ret, 0, 0, 0);
+                chunk
+            })
+            .collect();
+        let records = ownership_records(&chunks, &[]);
+        let ownership = QziOwnershipArtifact::Certified {
+            binding: QziContentBinding {
+                metadata: [0; 32],
+                interface: [0; 32],
+                relocations: [0; 32],
+                bytecode: [0; 32],
+            },
+            records,
+        };
+        let error = verify_ownership_certificate(&ownership, &chunks, &[]).unwrap_err();
+        assert!(error.contains("more than eight bodies"), "{error}");
+        assert!(verify_ownership_certificate(&ownership, &chunks[..0], &[]).is_err());
+    }
+
+    #[test]
+    fn qzi_format_16_requires_a_certified_rebuild() {
+        let mut bytes = Vec::from(QZI_MAGIC.as_slice());
+        bytes.push(QZI_UNCERTIFIED_VERSION);
+        bytes.extend_from_slice(&[0; 40]);
+        let error = deserialize_qzi_module(&bytes).expect_err("format 16 is retired");
+        assert!(error.contains("predates ownership certificates"), "{error}");
     }
 
     #[test]
@@ -3015,7 +3464,7 @@ mod tests {
                 .unwrap(),
         ) as usize;
         let mut malformed = encoded.clone();
-        malformed[ownership_offset + 2] = 1;
+        malformed[ownership_offset + 2] = 0;
         let error = deserialize_qzi_module(&malformed)
             .expect_err("unknown ownership envelope state must be rejected");
         assert!(error.contains("unsupported QZI ownership envelope state"));
@@ -3432,7 +3881,7 @@ mod tests {
             assert_eq!(decoded.chunks[0].code, chunk.code);
             assert!(matches!(
                 decoded.ownership,
-                QziOwnershipArtifact::Unverified { .. }
+                QziOwnershipArtifact::Certified { .. }
             ));
         }
     }
@@ -3499,7 +3948,7 @@ mod tests {
         assert_eq!(restored.ownership_abi_version, 13);
         assert!(matches!(
             restored.ownership,
-            QziOwnershipArtifact::Unverified { .. }
+            QziOwnershipArtifact::Certified { .. }
         ));
     }
 

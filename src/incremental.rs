@@ -13,7 +13,7 @@ use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
 // Rebuild derived codecs whose `@serde` keys gained a wildcard and derive use.
-const QZC_VERSION: u8 = 39;
+const QZC_VERSION: u8 = 40;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {

@@ -83,7 +83,7 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI (format 16)
+## QZI (format 17)
 
 `qz build --qzi` and `qz build path/to/main.qz -i` produce one QZI that serves
 Linux, Windows, and NetBSD from a single compilation. Import resolution
@@ -119,18 +119,23 @@ output. The successful build summary says `QZI`.
 Earlier partial QZI artifacts can still be read for the targets they contain.
 One artifact carries one entry signature.
 
-Layout: magic, 16, the target names, one module in the sectioned v14 layout
+Layout: magic, 17, the target names, one module in the sectioned v14 layout
 holding every distinct body (one metadata section, interface, call
-relocations, ownership envelope, bytecode), one target mask per body,
+relocations, ownership certificate, bytecode), one target mask per body,
 interface overrides for targets whose public interface differs, and a
-SHA-256 of the whole file. Integrity verification does not establish
-ownership safety. `scripts/check_qzi.py` checks the contract.
+SHA-256 of the whole file. Format 17 requires the module's ownership
+certificate (schema 2): one effect record per body, recomputed from the
+bytecode and compared on every read. Format 16 carried only the unverified
+envelope and is rejected with a request to rebuild from source. The
+certificate is verified, but downstream ownership analysis does not consume it
+yet. `scripts/check_qzi.py` checks the contract; see
+[ownership certificates](internals/ownership-certificates.md).
 
 Shared references to multi-slot fixed arrays can refer to stack or heap
 storage. A library interface that exchanges these references requires the
 current reference representation marker. Rebuild an older library from
 source if the compiler reports a fixed-array reference ABI mismatch. Existing
-raw-pointer buffers retain their slot order, and the QZI v16 layout is unchanged.
+raw-pointer buffers retain their slot order, and the QZI container layout is unchanged.
 
 ### Dependencies inside a project QZI
 
@@ -147,12 +152,12 @@ system, is retired; reading such a file asks to rebuild it from source.
 ## QZI module layout and compatibility
 
 QZI is the bytecode container for executables and compiled libraries. The
-module embedded in v16 uses the sectioned layout from v14:
+module embedded in v17 uses the sectioned layout from v14:
 
 1. package name, version, `executable`/`library` kind, and entry signature;
 2. a source-visible public interface;
 3. symbolic call relocations;
-4. a mandatory ownership-artifact envelope; and
+4. a mandatory ownership artifact (in v17, a certificate); and
 5. bytecode chunks and constant pools.
 
 V7 recorded unsigned integer division, remainder, and relational semantics in

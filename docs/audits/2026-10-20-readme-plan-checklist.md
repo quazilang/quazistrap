@@ -7,6 +7,12 @@ README statuses are updated before committing this checkpoint, as requested.
 
 **Complete: 98.7%. Remaining: 1.3%.**
 
+On 2026-11-19 QZI format 17 started carrying a D-014 ownership certificate
+(per-body bytecode parameter effects, recomputed and compared on every read;
+[design](../internals/ownership-certificates.md)). The requirement "Verified
+QZI-only ownership certificates" stays open: records do not yet cover every
+D-014 item and no consumer composes them, so no credit changes.
+
 On 2026-11-18 flow-sensitive loan regions were completed (Ownership 12/16,
 98.7%): field addresses, parameter-derived reference results and last-use
 loan ends ([safety](../language/safety.md#safe-references)).

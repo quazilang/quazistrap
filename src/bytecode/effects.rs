@@ -4,12 +4,13 @@
 
 //! Parameter provenance and effects recomputed from bytecode.
 //!
-//! This is stage 1 of the D-014 certificate verifier design
+//! This is the analysis behind D-014 QZI ownership certificates
 //! (`docs/internals/ownership-certificates.md`): a flow-sensitive dataflow
-//! over a chunk's control flow tracks, per register, the parameter slots its
+//! over a chunk's basic blocks tracks, per register, the parameter slots its
 //! value may derive from. Loads, stores, returns and calls then yield
-//! conservative effects on parameter slots. It is validated differentially
-//! against the source `parameter_effects`; nothing consumes it as proof yet.
+//! conservative effects on parameter slots, and [`compose`] closes them over
+//! the call graph. It is validated differentially against the source
+//! `parameter_effects`.
 
 use super::chunk::Chunk;
 use super::opcode::Opcode;
@@ -17,10 +18,21 @@ use super::regalloc::{instr_def, instr_uses, jump_target};
 
 /// Parameter slots a register may derive from, as a bit set over the first
 /// 64 slots. Higher slots collapse into bit 63.
-type Slots = u64;
+pub type Slots = u64;
 
-fn slot_bit(slot: usize) -> Slots {
+pub fn slot_bit(slot: usize) -> Slots {
     1 << slot.min(63)
+}
+
+/// A direct call recorded by [`chunk_effects`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSite {
+    /// Index of the `CallIdx` instruction in its chunk.
+    pub instruction: usize,
+    /// The function-table index the instruction names.
+    pub function: u16,
+    /// Per argument register in `CallArg` order, the slots it may derive from.
+    pub arguments: Vec<Slots>,
 }
 
 /// Effects of one chunk on its parameter register slots.
@@ -34,151 +46,109 @@ pub struct ChunkEffects {
     pub returned: Slots,
     /// Slots whose derived values are stored into memory.
     pub stored: Slots,
-    /// Direct calls: function-table index and, per argument register in
-    /// `CallArg` order, the slots it may derive from.
-    pub calls: Vec<(u16, Vec<Slots>)>,
+    /// Direct calls in instruction order.
+    pub calls: Vec<CallSite>,
     /// Slots passed to calls with unknown targets (indirect, foreign,
     /// syscall, intrinsic).
     pub unknown: Slots,
 }
 
+impl ChunkEffects {
+    /// True when no parameter-derived value reaches code the analysis cannot
+    /// see, so the other sets are a complete summary.
+    pub fn is_complete(&self) -> bool {
+        self.unknown == 0
+    }
+}
+
+/// Number of registers a chunk names (an upper bound on its register file).
+fn register_count(chunk: &Chunk) -> usize {
+    let mut highest = chunk.param_count.min(256);
+    for instruction in &chunk.code {
+        for register in instr_uses(instruction)
+            .into_iter()
+            .chain(instr_def(instruction))
+        {
+            highest = highest.max(register as usize + 1);
+        }
+        // Lea, CallArg-adjacent and multi-slot forms address ops[0..2]
+        // directly; cover them as well.
+        for register in [instruction.ops[0], instruction.ops[1]] {
+            highest = highest.max(register as usize + 1);
+        }
+        if instruction.flags > 1 {
+            highest = highest
+                .max((instruction.ops[0] as usize + instruction.flags as usize + 1).min(256));
+        }
+    }
+    highest.max(1)
+}
+
+fn falls_through(instruction: &crate::bytecode::instruction::Instruction) -> bool {
+    !matches!(
+        Opcode::from_u8(instruction.opcode),
+        Some(Opcode::Ret | Opcode::Trap | Opcode::Jmp)
+    )
+}
+
 /// Recompute a chunk's parameter effects. Registers `0..param_count` start
 /// holding their own slot.
 pub fn chunk_effects(chunk: &Chunk) -> ChunkEffects {
-    let registers = 256;
     let length = chunk.code.len();
-    let mut entry_state = vec![0 as Slots; registers];
-    for slot in 0..chunk.param_count.min(registers) {
-        entry_state[slot] = slot_bit(slot);
-    }
-    // In-state per instruction; `None` until reached.
-    let mut states: Vec<Option<Vec<Slots>>> = vec![None; length];
     let mut effects = ChunkEffects::default();
     if length == 0 {
         return effects;
     }
+    let registers = register_count(chunk);
+    // Basic-block leaders: the entry, jump targets and instructions after a
+    // jump or a block end.
+    let mut leader = vec![false; length];
+    leader[0] = true;
+    for (index, instruction) in chunk.code.iter().enumerate() {
+        if let Some(target) = jump_target(instruction)
+            && target < length
+        {
+            leader[target] = true;
+        }
+        if (jump_target(instruction).is_some() || !falls_through(instruction)) && index + 1 < length
+        {
+            leader[index + 1] = true;
+        }
+    }
+    let mut entry_state = vec![0 as Slots; registers];
+    for (slot, state) in entry_state.iter_mut().take(chunk.param_count).enumerate() {
+        *state = slot_bit(slot);
+    }
+    // In-state per block leader; `None` until reached.
+    let mut states: Vec<Option<Vec<Slots>>> = vec![None; length];
     states[0] = Some(entry_state);
     let mut worklist = vec![0usize];
     // Per call site, the `CallArg` masks seen on paths reaching it.
     let mut call_masks: std::collections::BTreeMap<usize, Vec<Slots>> = Default::default();
-    while let Some(index) = worklist.pop() {
-        let Some(mut state) = states[index].clone() else {
+    let mut successors = Vec::with_capacity(2);
+    while let Some(start) = worklist.pop() {
+        let Some(mut state) = states[start].clone() else {
             continue;
         };
-        let instruction = &chunk.code[index];
-        let Some(opcode) = Opcode::from_u8(instruction.opcode) else {
-            continue;
-        };
-        let mask = |state: &[Slots], register: u8| state[register as usize];
-        let union = |state: &[Slots], uses: &[u8]| {
-            uses.iter()
-                .fold(0, |all, &register| all | state[register as usize])
-        };
-        // Pending `CallArg` registers are recovered by scanning backwards from
-        // a call to the preceding non-`CallArg` instruction (lowering emits
-        // them contiguously before each call).
-        let pending_args = |state: &[Slots]| {
-            let mut masks = Vec::new();
-            let mut at = index;
-            while at > 0 && chunk.code[at - 1].opcode == Opcode::CallArg as u8 {
-                at -= 1;
-                masks.push(state[chunk.code[at].ops[0] as usize]);
+        successors.clear();
+        let mut index = start;
+        loop {
+            let instruction = &chunk.code[index];
+            let fall_through = step(chunk, index, &mut state, &mut effects, &mut call_masks);
+            if let Some(target) = jump_target(instruction) {
+                successors.push(target);
             }
-            masks.reverse();
-            masks
-        };
-        let uses = instr_uses(instruction);
-        let mut fall_through = true;
-        match opcode {
-            Opcode::Load | Opcode::FieldLoad | Opcode::ArrayLoad => {
-                let base = mask(&state, instruction.ops[1]);
-                effects.reads |= base;
-                if let Some(destination) = instr_def(instruction) {
-                    state[destination as usize] = base;
-                }
-                if opcode == Opcode::ArrayLoad && instruction.flags > 1 {
-                    // A multi-slot element is copied through the sret pointer.
-                    effects.writes_through |= mask(&state, instruction.ops[0]);
-                }
+            let next = index + 1;
+            if !fall_through || next >= length {
+                break;
             }
-            Opcode::Store | Opcode::FieldStore | Opcode::ArrayStore => {
-                // ops[0] is the stored value (a slot block for a multi-slot
-                // array element); ops[1] is the address base.
-                effects.writes_through |= mask(&state, instruction.ops[1]);
-                let slots = instruction.flags.max(1);
-                let values: Vec<u8> = if opcode == Opcode::ArrayStore {
-                    (0..slots)
-                        .map(|offset| instruction.ops[0].wrapping_add(offset))
-                        .collect()
-                } else {
-                    vec![instruction.ops[0]]
-                };
-                effects.stored |= union(&state, &values);
+            if leader[next] {
+                successors.push(next);
+                break;
             }
-            Opcode::Lea => {
-                // The address of this frame's own registers: writes through
-                // it change local storage, not the caller's.
-                state[instruction.ops[0] as usize] = 0;
-            }
-            Opcode::MovI | Opcode::MovConst | Opcode::New | Opcode::NewObj => {
-                state[instruction.ops[0] as usize] = 0;
-            }
-            Opcode::CallIdx => {
-                let args = pending_args(&state);
-                let merged = call_masks
-                    .entry(index)
-                    .or_insert_with(|| vec![0; args.len()]);
-                if merged.len() < args.len() {
-                    merged.resize(args.len(), 0);
-                }
-                for (slot, arg) in merged.iter_mut().zip(&args) {
-                    *slot |= arg;
-                }
-                // The result may derive from any argument.
-                state[instruction.ops[0] as usize] = args.iter().fold(0, |all, arg| all | arg);
-            }
-            Opcode::CallReg | Opcode::CallCReg | Opcode::Spawn => {
-                let args = pending_args(&state);
-                let all = args
-                    .iter()
-                    .fold(mask(&state, instruction.ops[1]), |all, arg| all | arg);
-                effects.unknown |= all;
-                state[instruction.ops[0] as usize] = all;
-            }
-            Opcode::CallExt | Opcode::Syscall | Opcode::Intrinsic => {
-                let all = union(&state, &uses)
-                    | pending_args(&state).iter().fold(0, |all, arg| all | arg);
-                effects.unknown |= all;
-                if let Some(destination) = instr_def(instruction) {
-                    state[destination as usize] = all;
-                }
-            }
-            Opcode::Ret => {
-                // A multi-slot result lives in r1.. behind the sret pointer r0.
-                let values: Vec<u8> = if instruction.flags > 1 {
-                    (1..=instruction.flags).collect()
-                } else {
-                    vec![instruction.ops[0]]
-                };
-                effects.returned |= union(&state, &values);
-                fall_through = false;
-            }
-            Opcode::Trap => fall_through = false,
-            Opcode::Jmp => fall_through = false,
-            _ => {
-                if let Some(destination) = instr_def(instruction) {
-                    state[destination as usize] = union(&state, &uses);
-                }
-            }
+            index = next;
         }
-        let mut successors = Vec::with_capacity(2);
-        if let Some(target) = jump_target(instruction) {
-            successors.push(target);
-        }
-        if fall_through {
-            successors.push(index + 1);
-        }
-        for successor in successors {
+        for &successor in &successors {
             if successor >= length {
                 continue;
             }
@@ -202,40 +172,225 @@ pub fn chunk_effects(chunk: &Chunk) -> ChunkEffects {
             }
         }
     }
-    for (index, masks) in call_masks {
-        let (_, function) = chunk.code[index].ri16();
-        effects.calls.push((function, masks));
+    for (instruction, arguments) in call_masks {
+        let (_, function) = chunk.code[instruction].ri16();
+        effects.calls.push(CallSite {
+            instruction,
+            function,
+            arguments,
+        });
     }
     effects
 }
 
-/// Compose callee writes through parameter slots into callers to a fixed
-/// point, over chunks indexed by function-table position.
-pub fn compose_writes_through(effects: &mut [ChunkEffects]) {
+/// Transfer function of one instruction; returns whether control may fall
+/// through to the next instruction.
+fn step(
+    chunk: &Chunk,
+    index: usize,
+    state: &mut [Slots],
+    effects: &mut ChunkEffects,
+    call_masks: &mut std::collections::BTreeMap<usize, Vec<Slots>>,
+) -> bool {
+    let instruction = &chunk.code[index];
+    let Some(opcode) = Opcode::from_u8(instruction.opcode) else {
+        return true;
+    };
+    let at = |state: &[Slots], register: u8| state.get(register as usize).copied().unwrap_or(0);
+    let union = |state: &[Slots], uses: &[u8]| {
+        uses.iter()
+            .fold(0, |all, &register| all | at(state, register))
+    };
+    let define = |state: &mut [Slots], register: u8, value: Slots| {
+        if let Some(slot) = state.get_mut(register as usize) {
+            *slot = value;
+        }
+    };
+    // Pending `CallArg` registers are recovered by scanning backwards from a
+    // call to the preceding non-`CallArg` instruction (lowering emits them
+    // contiguously before each call).
+    let pending_args = |state: &[Slots]| {
+        let mut masks = Vec::new();
+        let mut cursor = index;
+        while cursor > 0 && chunk.code[cursor - 1].opcode == Opcode::CallArg as u8 {
+            cursor -= 1;
+            masks.push(at(state, chunk.code[cursor].ops[0]));
+        }
+        masks.reverse();
+        masks
+    };
+    match opcode {
+        Opcode::Load | Opcode::FieldLoad | Opcode::ArrayLoad => {
+            let base = at(state, instruction.ops[1]);
+            effects.reads |= base;
+            if let Some(destination) = instr_def(instruction) {
+                define(state, destination, base);
+            }
+            if opcode == Opcode::ArrayLoad && instruction.flags > 1 {
+                // A multi-slot element is copied through the sret pointer.
+                effects.writes_through |= at(state, instruction.ops[0]);
+            }
+        }
+        Opcode::Store | Opcode::FieldStore | Opcode::ArrayStore => {
+            // ops[0] is the stored value (a slot block for a multi-slot array
+            // element); ops[1] is the address base.
+            effects.writes_through |= at(state, instruction.ops[1]);
+            let slots = instruction.flags.max(1);
+            let values: Vec<u8> = if opcode == Opcode::ArrayStore {
+                (0..slots)
+                    .map(|offset| instruction.ops[0].wrapping_add(offset))
+                    .collect()
+            } else {
+                vec![instruction.ops[0]]
+            };
+            effects.stored |= union(state, &values);
+        }
+        Opcode::Lea => {
+            // The address of this frame's own registers: writes through it
+            // change local storage, not the caller's.
+            define(state, instruction.ops[0], 0);
+        }
+        Opcode::MovI | Opcode::MovConst | Opcode::New | Opcode::NewObj => {
+            define(state, instruction.ops[0], 0);
+        }
+        Opcode::CallIdx => {
+            let args = pending_args(state);
+            let merged = call_masks
+                .entry(index)
+                .or_insert_with(|| vec![0; args.len()]);
+            if merged.len() < args.len() {
+                merged.resize(args.len(), 0);
+            }
+            for (slot, arg) in merged.iter_mut().zip(&args) {
+                *slot |= arg;
+            }
+            // The result may derive from any argument.
+            define(
+                state,
+                instruction.ops[0],
+                args.iter().fold(0, |all, arg| all | arg),
+            );
+        }
+        Opcode::CallReg | Opcode::CallCReg | Opcode::Spawn => {
+            let args = pending_args(state);
+            let all = args
+                .iter()
+                .fold(at(state, instruction.ops[1]), |all, arg| all | arg);
+            effects.unknown |= all;
+            define(state, instruction.ops[0], all);
+        }
+        Opcode::CallExt | Opcode::Syscall | Opcode::Intrinsic => {
+            let all = union(state, &instr_uses(instruction))
+                | pending_args(state).iter().fold(0, |all, arg| all | arg);
+            effects.unknown |= all;
+            if let Some(destination) = instr_def(instruction) {
+                define(state, destination, all);
+            }
+        }
+        Opcode::Ret => {
+            // A multi-slot result lives in r1.. behind the sret pointer r0.
+            let values: Vec<u8> = if instruction.flags > 1 {
+                (1..=instruction.flags).collect()
+            } else {
+                vec![instruction.ops[0]]
+            };
+            effects.returned |= union(state, &values);
+            return false;
+        }
+        Opcode::Trap | Opcode::Jmp => return false,
+        _ => {
+            if let Some(destination) = instr_def(instruction) {
+                let value = union(state, &instr_uses(instruction));
+                define(state, destination, value);
+            }
+        }
+    }
+    true
+}
+
+/// Close chunk effects over direct calls to a fixed point. `resolve` names
+/// the chunks a call site may reach (several for target-specific bodies);
+/// `None` means the target is unknown, so every argument becomes unknown.
+///
+/// A callee's reads, writes through, stores and unknown uses of a parameter
+/// slot become the caller's effects on the slots that argument derives from.
+/// Results already derive from every argument (see [`chunk_effects`]).
+pub fn compose(
+    effects: &mut [ChunkEffects],
+    resolve: impl Fn(usize, &CallSite) -> Option<std::rc::Rc<[usize]>>,
+) {
+    let targets: Vec<Vec<Option<std::rc::Rc<[usize]>>>> = effects
+        .iter()
+        .enumerate()
+        .map(|(caller, chunk)| {
+            chunk
+                .calls
+                .iter()
+                .map(|call| resolve(caller, call))
+                .collect()
+        })
+        .collect();
     loop {
         let mut changed = false;
         for caller in 0..effects.len() {
-            let mut inherited: Slots = 0;
-            for (function, arguments) in &effects[caller].calls {
-                let Some(callee) = effects.get(*function as usize) else {
+            let mut inherited = [0 as Slots; 4];
+            for (call, callees) in effects[caller].calls.iter().zip(&targets[caller]) {
+                let Some(callees) = callees else {
+                    inherited[3] |= call
+                        .arguments
+                        .iter()
+                        .fold(0, |all, argument| all | argument);
                     continue;
                 };
-                for (slot, argument) in arguments.iter().enumerate() {
-                    if callee.writes_through & slot_bit(slot) != 0 {
-                        inherited |= argument;
+                for &callee in callees.iter() {
+                    let Some(callee) = effects.get(callee) else {
+                        inherited[3] |= call
+                            .arguments
+                            .iter()
+                            .fold(0, |all, argument| all | argument);
+                        continue;
+                    };
+                    let sets = [
+                        callee.reads,
+                        callee.writes_through,
+                        callee.stored,
+                        callee.unknown,
+                    ];
+                    for (slot, argument) in call.arguments.iter().enumerate() {
+                        for (inherit, set) in inherited.iter_mut().zip(sets) {
+                            if set & slot_bit(slot) != 0 {
+                                *inherit |= argument;
+                            }
+                        }
                     }
                 }
             }
-            let joined = effects[caller].writes_through | inherited;
-            if joined != effects[caller].writes_through {
-                effects[caller].writes_through = joined;
-                changed = true;
+            let chunk = &mut effects[caller];
+            for (field, inherit) in [
+                &mut chunk.reads,
+                &mut chunk.writes_through,
+                &mut chunk.stored,
+                &mut chunk.unknown,
+            ]
+            .into_iter()
+            .zip(inherited)
+            {
+                let joined = *field | inherit;
+                changed |= joined != *field;
+                *field = joined;
             }
         }
         if !changed {
             break;
         }
     }
+}
+
+/// [`compose`] over chunks indexed by function-table position.
+pub fn compose_by_function_index(effects: &mut [ChunkEffects]) {
+    compose(effects, |_, call| {
+        Some(std::rc::Rc::from([call.function as usize]))
+    });
 }
 
 #[cfg(test)]
@@ -292,7 +447,7 @@ mod tests {
         let mut compared = 0;
         let (report, chunks) = build(source);
         let mut effects: Vec<ChunkEffects> = chunks.iter().map(chunk_effects).collect();
-        compose_writes_through(&mut effects);
+        compose_by_function_index(&mut effects);
         for callable in &report.ownership_call_graph {
             let Some(source_effects) = &callable.parameter_effects else {
                 continue;
@@ -383,7 +538,7 @@ fn main() i32 {
     /// program; returns how many callables had source effects to cover.
     fn covered_callables(report: &SemanticReport, chunks: &[Chunk]) -> usize {
         let mut effects: Vec<ChunkEffects> = chunks.iter().map(chunk_effects).collect();
-        compose_writes_through(&mut effects);
+        compose_by_function_index(&mut effects);
         let mut compared = 0;
         for callable in &report.ownership_call_graph {
             let Some(source_effects) = &callable.parameter_effects else {
@@ -482,7 +637,7 @@ fn main() i32 {
             effects
                 .calls
                 .iter()
-                .any(|(function, _)| chunks[*function as usize].name == "leaf"),
+                .any(|call| chunks[call.function as usize].name == "leaf"),
             "{:?}",
             effects.calls
         );

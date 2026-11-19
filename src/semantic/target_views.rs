@@ -16,7 +16,7 @@
 //!   conditional variants with the same signature) gets one copy per
 //!   distinct target class. The first copy keeps the source name; the others
 //!   are named `name@t<mask>`. Callers keep calling `name`, and the QZI
-//!   selects the body for the target by name (format 16 body masks).
+//!   selects the body for the target by name (format 17 body masks).
 //! - A target-dependent type alias (`c_long`) is substituted by its
 //!   per-target definition inside each copy that uses it, and declarations
 //!   whose signatures change through it are copied the same way; their
