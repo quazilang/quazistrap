@@ -830,6 +830,62 @@ impl Analyzer {
     }
 
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
+        self.declare_import_names(import_path, span);
+        if import_path.pub_import {
+            self.declare_function_reexports(import_path, span);
+        }
+    }
+
+    /// `pub import ./helpers.format_name;` in module `utils` also makes the
+    /// function importable and callable as `utils.format_name`: an alias
+    /// symbol whose import path is the function's own, which importers follow.
+    fn declare_function_reexports(&mut self, import_path: &ImportPath, span: Span) {
+        let Some(module) = self.module_path_for_span(span) else {
+            return;
+        };
+        let local_names: Vec<String> = match &import_path.items {
+            ImportItems::Single(name) => vec![name.clone()],
+            ImportItems::Aliased(_, alias) => vec![alias.clone()],
+            ImportItems::Multiple(names) => names.clone(),
+            ImportItems::All => Vec::new(),
+        };
+        for local in local_names {
+            let Some(binding) = self.resolve_symbol(&local) else {
+                continue;
+            };
+            if !matches!(binding.kind, SymbolKind::Function) || !binding.is_import {
+                continue;
+            }
+            let Some(target) = binding.import_path.clone() else {
+                continue;
+            };
+            let alias = format!("{module}.{local}");
+            if self.resolve_symbol(&alias).is_some() {
+                continue;
+            }
+            self.declare(
+                alias,
+                Symbol {
+                    kind: SymbolKind::Function,
+                    ty: binding.ty,
+                    span,
+                    params: binding.params,
+                    used: true,
+                    initialized: true,
+                    is_import: true,
+                    import_path: Some(target),
+                    const_value: None,
+                    variadic: binding.variadic,
+                    attributes: binding.attributes,
+                    public: true,
+                    unsafe_fn: binding.unsafe_fn,
+                    generic_params: binding.generic_params,
+                },
+            );
+        }
+    }
+
+    fn declare_import_names(&mut self, import_path: &ImportPath, span: Span) {
         match &import_path.items {
             ImportItems::Single(name) => {
                 let full = build_import_path(&import_path.path, name);
@@ -920,6 +976,20 @@ impl Analyzer {
         alias_span: Option<Span>,
         span: Span,
     ) {
+        // A function re-exported with `pub import` is imported from where it
+        // is defined (see `declare_function_reexports`).
+        let (full_path, mangled) = match mangled
+            .as_ref()
+            .and_then(|target| self.resolve_symbol(target))
+            .filter(|symbol| symbol.is_import && matches!(symbol.kind, SymbolKind::Function))
+            .and_then(|symbol| symbol.import_path)
+        {
+            Some(real) => {
+                let real_mangled = mangle_import_path(&real);
+                (real, real_mangled)
+            }
+            None => (full_path, mangled),
+        };
         self.add_dependency_edge(DependencyKind::Import, "__program__", &full_path);
 
         // Short-circuit: local_name already names a library function in scope

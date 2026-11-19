@@ -3,7 +3,10 @@
 calls infer generic impl parameters, enum variants work after a symbol import
 (`import lib.Shape;` then `Shape.Circle`), and `lib.Shape.Circle` is rejected
 with a diagnostic naming that remedy instead of a misleading export error.
-A private function cannot be called through a module path from another file."""
+A private function cannot be called through a module path from another file.
+Functions re-exported with `pub import ./file.name;` by a directory gateway
+(`utils/mod.qz`) or a plain module file can be imported and called through
+that module in every import form."""
 
 import argparse
 import subprocess
@@ -55,6 +58,36 @@ def project(root: Path, name: str, source: str) -> Path:
     return path
 
 
+# `pub import` re-exports of functions (and a type) through a directory
+# gateway and through a plain module file; each main must exit with 42.
+REEXPORT_FILES = {
+    "src/utils/helpers.qz": "pub fn format_name(x: i32) i32 { ret x + 1; }\npub struct Thing { v: i32 }\n",
+    "src/utils/mod.qz": "pub import ./helpers.format_name;\npub import ./helpers.Thing;\n",
+    "src/sub.qz": "pub fn f() i32 { ret 41; }\n",
+    "src/math.qz": "pub import ./sub.f;\n",
+}
+REEXPORT_MAINS = [
+    "import utils.format_name;\nfn main() i32 { ret format_name(41); }\n",
+    "import utils;\nfn main() i32 { ret utils.format_name(41); }\n",
+    "import utils.{format_name, Thing};\nfn main() i32 { const t = Thing { v: 1 }; ret format_name(40) + t.v; }\n",
+    "import utils.format_name as named;\nfn main() i32 { ret named(41); }\n",
+    "import math.f;\nfn main() i32 { ret f() + 1; }\n",
+    "import math;\nfn main() i32 { ret math.f() + 1; }\n",
+]
+
+
+def check_reexports(qz, root):
+    for index, main in enumerate(REEXPORT_MAINS):
+        path = root / f"reexport{index}"
+        for name, text in {**REEXPORT_FILES, "src/main.qz": main}.items():
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_text(text)
+        (path / "quazi.toml").write_text('[package]\nname="r"\n[build]\nentry="src/main.qz"\n')
+        result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=path,
+                                text=True, capture_output=True, timeout=600)
+        assert result.returncode == 42, (main, result.returncode, result.stdout + result.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
@@ -71,7 +104,9 @@ def main():
                                     text=True, capture_output=True, timeout=600)
             output = result.stdout + result.stderr
             assert result.returncode != 0 and message in output, (source, output)
-    print(f"PASS module paths: qualified calls and imported variants run; {len(INVALID)} invalid uses diagnosed")
+        check_reexports(qz, root)
+    print(f"PASS module paths: qualified calls and imported variants run; {len(INVALID)} invalid uses "
+          f"diagnosed; {len(REEXPORT_MAINS)} function re-export forms run")
 
 
 if __name__ == "__main__":

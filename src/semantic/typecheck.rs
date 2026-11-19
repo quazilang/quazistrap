@@ -6789,7 +6789,15 @@ impl Analyzer {
             segments.last().copied().unwrap_or(&base)
         };
         let resolved = format!("{}.{}", module_file, method);
-        if self.resolve_symbol(&resolved).is_some() {
+        if let Some(symbol) = self.resolve_symbol(&resolved) {
+            // A function the module re-exports with `pub import` is called
+            // where it is defined.
+            if symbol.is_import
+                && matches!(symbol.kind, SymbolKind::Function)
+                && let Some(real) = symbol.import_path
+            {
+                return Some(super::declare::mangle_import_path(&real).unwrap_or(real));
+            }
             return Some(resolved);
         }
 

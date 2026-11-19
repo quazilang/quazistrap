@@ -2002,8 +2002,14 @@ fn local_import_paths(
                                 overrides,
                                 checkpoint,
                             )? {
+                                let reexports_function = specific_defines_function(
+                                    &specific, sub, overrides, checkpoint,
+                                )?;
                                 if seen.insert(specific.clone()) {
                                     paths.push((specific, true));
+                                }
+                                if reexports_function && seen.insert(mod_entry_path.clone()) {
+                                    paths.push((mod_entry_path.clone(), true));
                                 }
                                 continue;
                             }
@@ -2094,8 +2100,14 @@ fn local_import_paths(
                 if let Some(specific) =
                     find_pub_exported_file(&mod_entry, sub, target, overrides, checkpoint)?
                 {
+                    let reexports_function = specific_defines_function(
+                        &specific, sub, overrides, checkpoint,
+                    )?;
                     if seen.insert(specific.clone()) {
                         paths.push((specific, true));
+                    }
+                    if reexports_function && seen.insert(mod_entry.clone()) {
+                        paths.push((mod_entry, true));
                     }
                 } else if seen.insert(mod_entry.clone()) {
                     paths.push((mod_entry, true));
@@ -2308,6 +2320,25 @@ fn is_public_item_in_entry_with_checkpoint(
         }
     }
     Ok(false)
+}
+
+/// Whether `file` declares a function `name`. A function re-exported by a
+/// gateway `mod.qz` is importable under the gateway's module name only once
+/// the gateway's `pub import` is analyzed, so the gateway is loaded too;
+/// re-exported types resolve without it.
+fn specific_defines_function(
+    file: &Path,
+    name: &str,
+    overrides: &HashMap<PathBuf, String>,
+    checkpoint: &mut dyn FnMut() -> Result<(), CancellableLoadError>,
+) -> Result<bool, CancellableLoadError> {
+    if file.file_name().is_some_and(|file_name| file_name == "mod.qz") {
+        return Ok(false);
+    }
+    let source = source_for_path_with_checkpoint(file, overrides, checkpoint)?;
+    Ok(function_names_in_source_with_checkpoint(&source, checkpoint)?
+        .iter()
+        .any(|function| function == name))
 }
 
 /// Find the file that a `mod.qz` pub-exports `name` from.
