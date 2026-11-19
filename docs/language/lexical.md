@@ -31,11 +31,14 @@ import std.io.stdout;
 
 The following identifiers are reserved keywords:
 
-`as`, `break`, `const`, `continue`, `dyn`, `else`, `enum`, `false`, `fn`,
-`for`, `if`, `impl`, `import`, `match`, `mod`, `pub`, `qo`, `ret`, `self`,
-`struct`, `trait`, `true`, `type`, `unsafe`, `var`.
+`as`, `break`, `const`, `continue`, `else`, `enum`, `false`, `fn`, `for`,
+`if`, `impl`, `import`, `match`, `platform`, `pub`, `qo`, `ret`, `struct`,
+`trait`, `true`, `type`, `union`, `unsafe`, `var`, `while`.
 
-`any` is reserved syntax and is rejected in declarations.
+The built-in type names `bool`, `str`, `bytes`, `void`, `isize` and `usize`
+are also keywords. `any` is reserved syntax and is rejected in declarations.
+`self` and `dyn` are ordinary identifiers with a special meaning in receiver
+and type positions.
 
 ## Literals
 

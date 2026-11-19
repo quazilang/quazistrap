@@ -112,7 +112,7 @@ fn first[T](items: Array[T]) T {
 }
 
 fn swap[T](a: T, b: T) Array[T] {
-    var result = Array[T].new();
+    var result: Array[T] = Array.new();
     result.push(b);
     result.push(a);
     ret result;
@@ -184,7 +184,8 @@ var g = f;  // ownership moves to g
 
 ### Current limitations
 
-- Captures are limited to immutable plain scalars.
+- Captures copy plain scalars and move owned locals; a `String` parameter
+  cannot be captured yet.
 - Function values cannot be placed inside collections or structs.
 - Parameter and return types must match exactly.
 

@@ -92,7 +92,7 @@ must preserve valid initialized values and ownership invariants when writing
 through the pointer.
 
 ```quazi
-var items: Array[i32] = Array[i32].new();
+var items: Array[i32] = Array.new();
 items.push(42);
 const first: i32 = items[0];
 ```
@@ -216,7 +216,7 @@ take the field type. Field values follow the assignment conversion rules.
 A type parameter may require traits, `T: Trait` or `T: A + B`. Inside the
 generic body, a value of type `T` (or `&T`) can call the methods those traits
 declare. The receiver is the one the trait declares: `self: &Self` is shared,
-`self: &mut Self` is exclusive, and an implicit receiver takes the value.
+`self: &Self!` is exclusive, and an implicit receiver takes the value.
 
 ```quazi
 trait Hashed { fn hash_code(self: &Self) u64; }
@@ -246,9 +246,9 @@ its arguments or given explicitly (`shelf.first[bool](true)`). Known limit:
 a bounded call returning an aggregate that holds string views is rejected
 (S10) because no result-retention facts exist for it.
 
-Known limit (asks В23): the ownership pass treats a value of an unbounded
-or bounded type parameter as copyable, so a generic body can use an owned `T`
-after passing it by value. Prefer `&T` parameters for owned element types.
+A value of a type parameter moves unless the parameter is bounded by `Copy`
+(D-025): using an owned `T` after passing it by value is rejected (S10).
+Prefer `&T` parameters when a generic body needs the value again.
 
 ## Function types
 
@@ -256,9 +256,9 @@ after passing it by value. Prefer `&T` parameters for owned element types.
 environment. Assigning, passing, or returning one transfers ownership.
 Calling only borrows the environment. Use-after-move is rejected.
 
-Currently, closure captures are limited to immutable plain scalars, and
-function values cannot be placed inside arrays, structs, enums, or generic
-type arguments.
+Closures capture plain scalars by copy and owned values by move
+([closures](expressions.md)); function values cannot be placed inside arrays,
+structs, enums, or generic type arguments.
 
 `@repr(C) type Callback = fn(T, U) V` — a non-owning raw C function pointer.
 Only `@export` functions coerce to callback values; invocation is unsafe.

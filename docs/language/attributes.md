@@ -20,13 +20,20 @@ Conditionally includes declarations based on the build target:
 @cfg(target_os="linux") fn separator() str { ret "/"; }
 ```
 
-Block form:
+Block form, for statements inside a function body:
 
 ```quazi
-@cfg(target_os="windows") {
-    const platform_name: str = "Windows";
+fn platform_name() str {
+    var name: str = "other";
+    @cfg(target_os="windows") {
+        name = "Windows";
+    }
+    ret name;
 }
 ```
+
+At item level, put `@cfg` on each declaration; an item-level block is not
+accepted.
 
 Supported keys:
 

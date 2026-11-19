@@ -9,17 +9,23 @@ This guide helps you understand and fix common compiler errors and warnings.
 Quazi diagnostics include a code, location, and message:
 
 ```
-src/main.qz:5:12: error[S04]: cannot access private declaration 'internal_fn'
+error[S04]: function `internal_fn` is private to its module
+  --> src/main.qz:5:12
+  |
+5 |     ret store.internal_fn();
+  |         ^^^^^^^^^^^^^^^^^^^
 ```
 
-The format is `file:line:column: level[code]: message`.
+The first line is `level[code]: message`; the `-->` line gives
+`file:line:column`, followed by the source line. `--no-color` and
+`--no-unicode` keep the output plain.
 
 ## Semantic errors (S-codes)
 
 ### S04 — Visibility or access error
 
 ```
-error[S04]: cannot access private declaration 'helper'
+error[S04]: 'helper' is private and cannot be imported
 ```
 
 The declaration is not `pub` and you are importing it from another module.
@@ -29,7 +35,7 @@ The declaration is not `pub` and you are importing it from another module.
 ### S08 — Arity or signature mismatch
 
 ```
-error[S08]: expected 2 arguments, found 3
+error[S08]: expected 2 args, got 3
 ```
 
 The function call has the wrong number of arguments.
@@ -39,7 +45,7 @@ The function call has the wrong number of arguments.
 ### S11 — Unsafe operation in safe context
 
 ```
-error[S11]: dereference of raw pointer requires unsafe context
+error[S11]: dereference of raw pointer requires unsafe block
 ```
 
 You are using a pointer dereference, calling an `unsafe fn`, or invoking an
@@ -50,7 +56,7 @@ You are using a pointer dereference, calling an `unsafe fn`, or invoking an
 ### S12 — Unsafe function missing `unsafe` keyword
 
 ```
-error[S12]: function with pointer parameter must be declared 'unsafe fn'
+error[S12]: function `bad` with raw pointer types must be declared `unsafe fn`
 ```
 
 A function accepting `*T` parameters must be declared `unsafe fn`.
@@ -73,7 +79,7 @@ struct field outside `@repr(C)`, or fixed-array element).
 ### Type mismatch
 
 ```
-error: expected 'i32', found 'str'
+error[S01]: type mismatch: declared i32, got &str
 ```
 
 The expression type does not match what is expected.
@@ -84,7 +90,7 @@ The expression type does not match what is expected.
 ### Move after use
 
 ```
-error: use of moved value 'buffer'
+error[S10]: use of moved value 'buffer'
 ```
 
 An owned value was used after being moved to another binding or function.
@@ -95,7 +101,7 @@ to avoid the move.
 ### Cannot borrow
 
 ```
-error: cannot mutate 'x' while it is borrowed
+error[S10]: cannot mutate `x` while it is shared-borrowed
 ```
 
 A shared reference `&x` exists and you are trying to modify `x`.
@@ -107,7 +113,7 @@ A shared reference `&x` exists and you are trying to modify `x`.
 ### W01 / W02 — Unused variable
 
 ```
-warning[W01]: unused variable 'result'
+warning[W01]: unused const 'result'
 ```
 
 A `var` or `const` binding is declared but never used.
@@ -117,7 +123,7 @@ A `var` or `const` binding is declared but never used.
 ### W03 / W07 — Dead code
 
 ```
-warning[W03]: function 'helper' is never called
+warning[W03]: unused function 'helper'
 ```
 
 A function or declaration is defined but never referenced.
@@ -129,7 +135,7 @@ A function or declaration is defined but never referenced.
 ### Unterminated string
 
 ```
-error: unterminated string literal
+error[E00]: lexer error: unterminated string literal
 ```
 
 A quoted string is missing its closing `"`, or a raw backtick string is
@@ -138,7 +144,7 @@ missing its closing `` ` ``.
 ### Invalid escape
 
 ```
-error: invalid escape sequence '\\q'
+error[E00]: lexer error: unknown escape sequence '\\q'
 ```
 
 A quoted string contains an unrecognized escape. Valid escapes include `\n`,
@@ -150,7 +156,7 @@ A quoted string contains an unrecognized escape. Valid escapes include `\n`,
 ### Missing semicolon
 
 ```
-error: expected ';' after statement
+error[E02]: expected ;, found ret
 ```
 
 Quazi statements must end with `;`.
@@ -160,7 +166,7 @@ Quazi statements must end with `;`.
 ### Unresolved symbol
 
 ```
-error: unresolved symbol 'pthread_create'
+error: built-in linker cannot resolve external symbol: pthread_create
 ```
 
 The native linker cannot find a required symbol.

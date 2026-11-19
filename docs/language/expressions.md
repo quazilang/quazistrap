@@ -178,6 +178,8 @@ arrives as its text. Formatting functions are written this way
 ([D-024](../decisions/display-variadics.md)):
 
 ```quazi
+import std.io.println;
+
 fn report(template: str, ...args: Display) void {
     const text = format(template, ...args);
     println(text.as_str());
@@ -235,10 +237,15 @@ borrows it each time it runs and destroys it together with its environment
 `qo` call; other closures may run more than once:
 
 ```quazi
-fn make_greeting(name: String) fn() usize {
+fn make_counter() fn() usize {
+    const name: String = String.from("Quazi");
     ret || name.len();        // `name` lives as long as the closure
 }
 ```
+
+Capturing a parameter whose type can hold borrowed text (for example a
+`String` parameter) is still rejected with S10 until escape analysis proves
+its lifetime.
 
 Current closure limitations:
 
