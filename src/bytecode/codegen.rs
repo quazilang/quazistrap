@@ -6766,6 +6766,61 @@ impl<'a> FnCompiler<'a> {
     /// fields such as `p.inner.name` have their own bits) has moved out.
     /// Being a runtime mask, it is exact when the move happens on only some
     /// paths (inside an `if` or `match` arm).
+    /// The destruction a field assignment owes the field's previous value:
+    /// for a field chain rooted at a binding (`w.a`, `self.slots`) whose type
+    /// owns resources. Places reached through a dereference are left alone.
+    fn replaced_field_drop(&self, target: &Expr) -> Option<DropAction> {
+        let mut target = target;
+        while let ExprKind::Group(inner) = &target.node {
+            target = inner;
+        }
+        let ExprKind::Field { object, name: field } = &target.node else {
+            return None;
+        };
+        let mut root = object.as_ref();
+        loop {
+            match &root.node {
+                ExprKind::Group(inner) => root = inner,
+                ExprKind::Field { object, .. } => root = object,
+                ExprKind::Ident(_) => break,
+                _ => return None,
+            }
+        }
+        let ty = self
+            .type_of_expr(target)
+            .or_else(|| self.declared_field_type(object, field))?;
+        self.drop_action_for_type(&ty)
+    }
+
+    /// The declared type of `object.field`, from the object's struct type
+    /// (with its type arguments substituted).
+    fn declared_field_type(&self, object: &Expr, field: &str) -> Option<TypeKind> {
+        let Some(TypeKind::Named { name, type_args }) =
+            self.aggregate_type_of_span((object.span.start, object.span.end))
+        else {
+            return None;
+        };
+        let declared = self
+            .struct_defs
+            .get(&name)?
+            .iter()
+            .find(|(candidate, _)| candidate == field)?
+            .1
+            .clone();
+        let substitution: HashMap<String, TypeKind> = self
+            .struct_generic_params
+            .get(&name)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        Some(self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+            &declared,
+            &substitution,
+        )))
+    }
+
     fn move_field_out_of_local(&mut self, root: &str, path: &[u16]) {
         let Some(local) = self.drop_local(root).cloned() else {
             return;
@@ -9607,7 +9662,17 @@ impl<'a> FnCompiler<'a> {
                 }
                 let address = self.compute_lvalue_addr(target);
                 let source = self.compile_expr(value);
+                // Replacing an owned field destroys the value it held (the
+                // semantic pass rejects assigning a field that was moved out,
+                // so the old value is always initialized here).
+                let replaced = self.replaced_field_drop(target).map(|action| {
+                    let old = self.load_lvalue(&address);
+                    (old, action)
+                });
                 self.store_lvalue(&address, source);
+                if let Some((old, action)) = replaced {
+                    self.emit_drop_action(old, action);
+                }
                 source
             }
             ExprKind::StructInit { name, fields } => {

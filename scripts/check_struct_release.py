@@ -2,7 +2,7 @@
 """Check that struct storage shells are released: a loop creating 20000
 scalar-only structs (one moved into a function, one dropped locally) keeps
 the process's mapped pages flat (Linux), and nested structs release both
-shells."""
+shells. Assigning an owned field destroys the value it replaces."""
 
 import argparse
 import re
@@ -119,6 +119,53 @@ fn main() i32 {
 """
 
 
+# Assigning an owned field destroys the value it replaces: arrays through a
+# local, a `&T!` method (generic struct) and an owned struct field with a
+# `free` hook (drop order printed once).
+FIELDS = r"""import std.io;
+import std.fs;
+
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { io.println("drop {self.id}"); } }
+struct Pair { left: Res, right: Res }
+struct Holder[T] { items: Array[T] }
+impl Holder[T] {
+    fn reset(self: &Holder[T]!) void { self.items = Array.empty(); }
+}
+struct W { a: Array[usize] }
+
+fn mapped_pages() u64 {
+    const result = fs.read_to_string("/proc/self/statm");
+    if (result.is_err()) { ret 0; }
+    const text: String = result.unwrap();
+    const end: usize = text.as_str().find(" ").unwrap();
+    const field = text[0:end];
+    ret field.as_str().parse_u64().unwrap();
+}
+
+fn main() i32 {
+    var p = Pair { left: Res { id: 1 }, right: Res { id: 2 } };
+    p.right = Res { id: 3 };
+    p.left = Res { id: 4 };
+    io.println("replaced");
+    const before = mapped_pages();
+    var round: usize = 0;
+    for (round < 100000) {
+        var first: Array[usize] = Array.empty();
+        first.push(7);
+        var w = W { a: first };
+        w.a = Array.empty();
+        var h: Holder[i64] = Holder { items: Array.empty() };
+        h.items.push(5);
+        h.reset();
+        round = round + 1;
+    }
+    io.println("before {} after {}", before, mapped_pages());
+    0
+}
+"""
+
+
 def invoke(command, root):
     result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=300)
@@ -150,9 +197,18 @@ def check(qz, root):
     assert match, output
     enum_total, enum_before, enum_after = (int(value) for value in match.groups())
     assert enum_total == 100100000 and enum_after - enum_before < 1000, output
+    (case / "src/main.qz").write_text(FIELDS)
+    output = invoke([str(qz), "run", "--no-incremental", "--no-color", "--silent"], case)
+    assert output.startswith("drop 2\ndrop 1\nreplaced\n"), output
+    match = re.search(r"before (\d+) after (\d+)", output)
+    assert match, output
+    field_before, field_after = (int(value) for value in match.groups())
+    # 200000 leaked arrays would add thousands of pages.
+    assert field_after - field_before < 200, output
     print(f"PASS struct shells: 40000 structs ({before} -> {after} pages), "
           f"40000 generic structs incl. String fields ({generic_before} -> {generic_after}), "
-          f"100000 enum values ({enum_before} -> {enum_after})")
+          f"100000 enum values ({enum_before} -> {enum_after}), replaced owned fields destroyed "
+          f"({field_before} -> {field_after})")
 
 
 def main():
