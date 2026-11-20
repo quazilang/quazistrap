@@ -55,7 +55,7 @@ fn netbsd_has_process(output: str, program: str) bool {
     var start: usize = 0;
     var pos: usize = 0;
     for (pos <= len) {
-        if (pos == len || core.str_byte_at(output, pos) == 10) {
+        if (pos == len || byte_at(output, pos) == 10) {
             if (pos > start) {
                 const raw = output[start as isize:pos as isize];
                 const line = raw.trim();
@@ -140,7 +140,7 @@ fn basename_of(path: String) String {
     var start: usize = 0;
     var i: usize = 0;
     for (i < length) {
-        const byte: u8 = core.str_byte_at(text, i);
+        const byte: u8 = byte_at(text, i);
         if (byte == 47 || byte == 92) { start = i + 1; }
         i++;
     }
@@ -327,7 +327,7 @@ fn starts_at_bounded(
     if (offset + needle_len > text_len) { ret false; }
     var i: usize = 0;
     for (i < needle_len) {
-        if (core.str_byte_at(text, offset + i) != core.str_byte_at(needle, i)) {
+        if (byte_at(text, offset + i) != byte_at(needle, i)) {
             ret false;
         }
         i++;
@@ -501,4 +501,10 @@ fn main(args: Array[str]) void {
     row("1;32", "cpu   ", cpu.as_str());
     row("1;31", "ram   ", memory.as_str());
     io.println("");
+}
+
+// The byte at `index`; every caller here stays below `text.bytes_len()`, the
+// invariant `core.str_byte_at` needs (it is unsafe: there is no bounds check).
+fn byte_at(text: str, index: usize) u8 {
+    unsafe { ret core.str_byte_at(text, index); }
 }

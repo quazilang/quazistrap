@@ -17,7 +17,7 @@ Quazi's `bool`. `c_size`, `c_ssize`, `c_ptrdiff`, `c_intptr`, and `c_uintptr`
 follow the target pointer width.
 
 `c_long` and `c_ulong` are target dependent: they are 32-bit on Windows and
-64-bit on Linux and macOS. Use the fixed-width aliases when a foreign contract
+64-bit on Linux and NetBSD. Use the fixed-width aliases when a foreign contract
 requires an exact size. `c_void` is `void`; `va_list` is an opaque ABI marker
 only—Quazi does not marshal C variadic arguments through it.
 

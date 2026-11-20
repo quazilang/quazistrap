@@ -1,7 +1,8 @@
 # Randomness
 
 `std.random` uses the operating system's cryptographically secure generator:
-`BCryptGenRandom` on Windows and `getrandom` on Linux. It requires no libc and
+`BCryptGenRandom` on Windows, `getrandom` on Linux (no libc) and libc's
+`arc4random_buf` on NetBSD. It
 returns `RandomError.Unavailable` instead of substituting a weak seed.
 
 The API includes `next_u64`, `next_u32`, `next_u8`, `next_i64`, `next_i32`,

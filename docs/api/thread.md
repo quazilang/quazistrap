@@ -23,7 +23,7 @@ C callback representation and cannot be passed as thread callbacks.
 ## `unsafe fn thread_spawn(f: ThreadCallback) usize`
 
 Starts one native operating-system thread. The callback receives a null context
-pointer because this provisional API does not yet accept user context.
+pointer; `thread_spawn_arg(f, arg)` passes `arg` instead.
 
 Returns an opaque nonzero handle on success and `0` on failure. On Linux
 without `[link] libc`, the embedded runtime starts the thread with `clone` on

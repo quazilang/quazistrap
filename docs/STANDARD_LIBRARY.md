@@ -11,7 +11,13 @@ support. Other modules are explicit imports.
 - `std.math`: dependency-free integer combinatorics and floating approximations.
 - `std.random`: OS-CSPRNG-backed secure values, unbiased ranges, choice,
   shuffling, probabilities, and random bytes.
-- `std.collections.array`: growable `Array[T]`; map/set currently use `usize`.
+- `std.collections`: growable `Array[T]`, generic `HashMap[K, V]` and
+  `HashSet[K]` with owned keys and values, and the `usize`-keyed `Map`/`Set`.
+- `std.json` / `std.codec`: JSON validation and typed, derive-backed encoding
+  and decoding with input and depth limits.
+- `std.ini`: INI documents with typed lookups.
+- `std.tls`: verified TLS client streams and HTTPS (Linux).
+- `std.dylib`: runtime-loaded shared libraries with unsafe symbol casts.
 - `std.fs`: owned files, whole-file reads, metadata, directories, path helpers.
 - `std.path`: the structured `Path` type (join, parent, normalization).
 - `std.stream`: `Reader`/`Writer` byte streams and buffered adapters.

@@ -1,5 +1,6 @@
 # Change records
 
+- [2026-11-20: Trait objects own their values; `core.str_byte_at` is unsafe](2026-11-20-trait-objects-and-unsafe-bytes.md)
 - [2026-11-20: Destructors track the fields they move out](2026-11-20-destructor-field-moves.md)
 - [2026-11-19: Isolated thread panics, joining on drop, cooperative cancellation](2026-11-19-isolated-thread-panics.md)
 - [2026-11-19: Destructors follow live types; methods on unit variants](2026-11-19-destructor-reachability.md)

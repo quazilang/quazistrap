@@ -3,7 +3,7 @@
 Audience: Quazi developers maintaining a deliberately small native-plugin or
 system-library adapter.
 
-`std.dylib` loads a Windows DLL or Linux shared object at runtime. It exposes
+`std.dylib` loads a Windows DLL or a Linux or NetBSD shared object at runtime. It exposes
 only a library handle and untyped symbol addresses; it does not validate ABI,
 calling convention, ownership, thread safety, or unload safety. Keep all use
 inside a narrow `unsafe` integration boundary.
@@ -16,13 +16,12 @@ inside a narrow `unsafe` integration boundary.
 `AllocationFailed`, and load failures become `OpenFailed` on Linux or
 `Native(code)` on Windows.
 
-`close()` releases an open library and returns `Ok(true)`. It returns
-`Ok(false)` when the handle was already closed. A native close failure becomes
-`Native(code)` and leaves the owner open so normal cleanup can retry it.
-`free()` invokes `close()` and intentionally discards that error; ordinary
-scope cleanup calls `free()` once. Use `close()` when an unload failure must be
-handled explicitly, and do not use the library or any address obtained from it
-after a successful close.
+`close()` consumes the owner, unloads the library and returns `Ok(true)`
+(`Ok(false)` for an owner without a handle). A native unload failure becomes
+`Native(code)`; the owner is consumed either way and the unload is not
+retried. `free()`, run once by ordinary scope cleanup, unloads directly and
+ignores a failure. Use `close()` when an unload failure must be reported, and
+do not use any address obtained from the library after it is closed.
 
 `raw_handle()` exposes the platform handle as `usize` for a foreign API that
 explicitly requires it. It remains valid only while the `DynamicLibrary` owner

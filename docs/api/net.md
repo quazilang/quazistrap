@@ -3,7 +3,10 @@
 Audience: Quazi application developers.
 
 `std.net` currently provides IPv4 TCP and UDP sockets plus small HTTP/1.1
-request, response, and one-request server helpers on Linux and Windows. It is
+request, response, and one-request server helpers on Linux, Windows and
+NetBSD. Linux builds resolve names through libc: add
+`[target.x86_64-linux.link]` with `libc = true` to `quazi.toml` (the built-in
+linker otherwise reports unresolved `getaddrinfo`/`inet_pton`). It is
 not a general asynchronous networking framework: sockets are blocking, there
 is no IPv6, proxy support, or connection pooling. TLS
 and HTTPS are in [`std.tls`](tls.md).
@@ -20,8 +23,8 @@ return `InvalidUtf8`; binary protocols must use the unsafe/raw boundaries not
 yet exposed as a complete high-level binary-stream API. Receive limits are byte
 limits. A `TcpStream.receive` may read additional bytes only to complete a
 trailing UTF-8 scalar, and returns `LimitExceeded` if that scalar would exceed
-the requested limit. `receive_all` requires EOF before the limit and returns
-`LimitExceeded` when the buffer fills.
+the requested limit. `receive_all` reads until EOF and accepts at most `limit`
+bytes (exactly `limit` is accepted); one more byte returns `LimitExceeded`.
 
 ## Addresses
 
@@ -171,6 +174,6 @@ cloned handles or split read/write halves; OS threads can only receive the raw
 
 HTTPS through this module fails with `TlsUnavailable`; use [`std.tls`](tls.md),
 which verifies certificates and host names. Do not send credentials over HTTP. Linux
-uses native sockets and Windows uses Winsock; error normalization is best-effort,
+and NetBSD use native sockets and Windows uses Winsock; error normalization is best-effort,
 so portable applications must handle `Native` and `Unsupported`. Blocking
 operations may wait indefinitely without external OS-level controls.

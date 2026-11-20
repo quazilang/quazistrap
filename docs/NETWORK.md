@@ -1,12 +1,15 @@
 # `std.net`
 
-`std.net` provides cross-platform TCP plus small HTTP/1.1 client and local
-server building blocks. Linux uses sockets; Windows uses Winsock.
+`std.net` provides cross-platform IPv4 TCP and UDP plus small HTTP/1.1
+client and local server building blocks. Linux and NetBSD use sockets (Linux
+builds need `[target.x86_64-linux.link] libc = true` for name resolution);
+Windows uses Winsock.
 
 - TCP connect, bind, listen, accept, complete send, bounded receive, close.
+- UDP bind, connect, `send_to`/`receive_from`.
 - HTTP request creation and response status/header/body parsing.
 - One-request local server accept/read/respond flow.
-- No HTTPS claim: TLS requires a separate implementation or dependency.
+- HTTPS goes through [`std.tls`](api/tls.md) (Linux, system OpenSSL 3).
 
 See `examples/26-http-client-server`. Close network resources on success and error paths;
 keep receive limits explicit.

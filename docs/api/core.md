@@ -47,7 +47,8 @@ contracts: all ranges must be valid, and only `memmove` permits overlap.
 ## Text and UTF-8
 
 `strlen(text)` returns the UTF-8 byte length of a null-terminated `str`.
-`str_byte_at(text, index)` is unchecked: `index < strlen(text)` is required.
+`str_byte_at(text, index)` is an `unsafe fn` without a bounds check: `index <
+text.bytes_len()` is required, and a larger index reads outside the string.
 `unsafe str_as_ptr(text)` borrows immutable storage and must not be freed or
 written through. `unsafe str_from_ptr(ptr)` creates a borrowed view only after
 the caller proves valid, null-terminated UTF-8 and lifetime.
