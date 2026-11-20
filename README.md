@@ -66,7 +66,9 @@ every format, `"json:key"` for one, also under `@derive(Serialize,
 Deserialize)`; it replaces `@tag`. QZC39 rebuilds derived codecs.
 A program without `main` compiles only concrete callables, so a missing
 entry point is reported instead of a generic-template layout error.
-QZI format 17 carries a D-014 ownership certificate: one record of bytecode
+QZI format 18 gives trait objects a destroy word, so a `dyn Trait` destroys
+its value; format 17 asks for a rebuild and QZC41 invalidates caches.
+QZI format 17 introduced the D-014 ownership certificate: one record of bytecode
 parameter effects per function body (reads, writes through references,
 returned and stored slots, unknown uses), closed over direct calls. Readers
 recompute and compare it; format 16 asks for a rebuild. QZC40 invalidates

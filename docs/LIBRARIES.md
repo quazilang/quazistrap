@@ -83,7 +83,7 @@ Build dependency trees show logical import names such as `std.io` and
 Git's reported percentage as an accurate progress bar followed by the same green
 status diamond as build stages; failures use a red diamond.
 
-## QZI (format 17)
+## QZI (format 18)
 
 `qz build --qzi` and `qz build path/to/main.qz -i` produce one QZI that serves
 Linux, Windows, and NetBSD from a single compilation. Import resolution

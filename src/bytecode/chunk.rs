@@ -1678,29 +1678,34 @@ pub fn serialize_qzi(chunks: &[Chunk]) -> Result<Vec<u8>, String> {
 }
 
 /// Retired format 15: one complete program per operating system in a
-/// container. A project now compiles to one QZI (format 17); such
+/// container. A project now compiles to one QZI (format 18); such
 /// files are rejected with a request to rebuild.
 const QZI_RETIRED_PER_OS_VERSION: u8 = 15;
+
+/// Retired format 17: the same layout as 18, but its trait objects were
+/// 16-byte (value, vtable) blocks without the destroy word that format 18
+/// code reads. Rejected with a rebuild request.
+const QZI_TWO_WORD_DYN_VERSION: u8 = 17;
 
 /// Retired format 16: the same layout as 17, but its module carried only the
 /// unverified ownership envelope (schema 1). Rejected with a rebuild request.
 const QZI_UNCERTIFIED_VERSION: u8 = 16;
 
-/// QZI (format 17): ONE program or library. Every
+/// QZI (format 18): ONE program or library. Every
 /// function body appears once with the set of target operating systems it
 /// applies to: platform-independent functions apply to all of them, and the
 /// `@cfg(target_os)` alternatives of a function are separate bodies with
 /// disjoint target sets. Calls are resolved by name when a target is
 /// selected, so shared code links to that target's implementation.
 ///
-/// Layout: magic, 17, u8 target count and u8-length target names; a u32-length
+/// Layout: magic, 18, u8 target count and u8-length target names; a u32-length
 /// module in the format 14 sectioned layout holding every distinct function
 /// body (metadata, interface, call relocations, ownership certificate in
 /// schema 2, bytecode);
 /// a u32 count and one target-mask byte per function body; a u8 count of
 /// interface overrides, each a target mask and a u32-length interface; then a
 /// SHA-256 of all preceding bytes.
-pub const QZI_VERSION: u8 = 17;
+pub const QZI_VERSION: u8 = 18;
 
 /// Decoded QZI: target names, the module of all function bodies,
 /// each body's target mask, and interface overrides.
@@ -1994,6 +1999,13 @@ fn selected_qzi_target() -> String {
 pub fn deserialize_qzi_module(bytes: &[u8]) -> Result<QziModule, String> {
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_VERSION {
         return project_qzi_for_target(decode_qzi(bytes)?, &selected_qzi_target());
+    }
+    if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_TWO_WORD_DYN_VERSION
+    {
+        return Err(
+            "QZI format 17 lays out trait objects without a destructor; rebuild it from source with this compiler"
+                .to_string(),
+        );
     }
     if bytes.len() > 4 && &bytes[..4] == QZI_MAGIC.as_slice() && bytes[4] == QZI_UNCERTIFIED_VERSION
     {
@@ -3557,6 +3569,15 @@ fn main() i32 {
         merge_certified_effect(&mut effects, "dep.g".into(), record(0, 1));
         merge_certified_effect(&mut effects, "dep.g".into(), QziOwnershipRecord::unverified(1));
         assert!(!effects["dep.g"].is_complete());
+    }
+
+    #[test]
+    fn qzi_format_17_requires_a_rebuild_for_trait_object_destructors() {
+        let mut bytes = Vec::from(QZI_MAGIC.as_slice());
+        bytes.push(QZI_TWO_WORD_DYN_VERSION);
+        bytes.extend_from_slice(&[0; 40]);
+        let error = deserialize_qzi_module(&bytes).expect_err("format 17 is retired");
+        assert!(error.contains("without a destructor"), "{error}");
     }
 
     #[test]

@@ -4785,6 +4785,7 @@ impl Analyzer {
                                         .zip(type_args.into_iter().map(|arg| arg.node)),
                                 );
                             }
+                            let mut payload_types = Vec::new();
                             for (index, arg) in args.iter().enumerate() {
                                 let arg_eval = self.type_check_expr(arg, reachable);
                                 if variant_arity.is_none() {
@@ -4793,6 +4794,7 @@ impl Analyzer {
                                 let Some(payload_ty) = &arg_eval.ty else {
                                     continue;
                                 };
+                                payload_types.push((index, payload_ty.clone()));
                                 if let Some(field_ty) = declared_fields.get(index) {
                                     infer_struct_type_subst(
                                         field_ty,
@@ -4811,6 +4813,31 @@ impl Analyzer {
                                         "S14",
                                         format!(
                                             "{enum_name}.{method} payload `{resolved}` cannot be stored through the current one-slot enum representation"
+                                        ),
+                                    );
+                                }
+                            }
+                            // Each payload must fit its declared field once the
+                            // enum's parameters are known; this also records a
+                            // conversion to a `dyn Trait` field.
+                            for (index, payload_ty) in payload_types {
+                                let Some(field_ty) = declared_fields.get(index) else {
+                                    continue;
+                                };
+                                let field_ty = substitute_type_kind(field_ty, &substitution);
+                                // `Array.new()` is still `Array[T]` here; its
+                                // parameter comes from the field, as for arguments.
+                                if type_mentions_any(&field_ty, &enum_params)
+                                    || self.mentions_unresolved_type_parameter(&payload_ty)
+                                {
+                                    continue;
+                                }
+                                if !self.check_expr_compat(&args[index], &field_ty, &payload_ty) {
+                                    self.push_error(
+                                        args[index].span,
+                                        "S08",
+                                        format!(
+                                            "{enum_name}.{method} payload: expected {field_ty}, got {payload_ty}"
                                         ),
                                     );
                                 }
@@ -8123,6 +8150,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            dyn_coercion: None,
             inferred_type_args: Vec::new(),
         });
 
@@ -8162,6 +8190,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            dyn_coercion: None,
             inferred_type_args: Vec::new(),
         });
     }
@@ -8198,6 +8227,7 @@ impl Analyzer {
             resolved_binding,
             auto_deref: false,
             c_abi_function: false,
+            dyn_coercion: None,
             inferred_type_args: Vec::new(),
         });
 
@@ -8498,6 +8528,26 @@ impl Analyzer {
         let grew = !added.is_empty();
         self.monomorphizations.extend(added);
         grew
+    }
+
+    fn mentions_unresolved_type_parameter(&self, ty: &TypeKind) -> bool {
+        if self.is_unresolved_type_parameter(ty) {
+            return true;
+        }
+        match ty {
+            TypeKind::Named { type_args, .. } => type_args
+                .iter()
+                .any(|arg| self.mentions_unresolved_type_parameter(&arg.node)),
+            TypeKind::Ref { inner }
+            | TypeKind::MutRef { inner }
+            | TypeKind::RawPtr { inner }
+            | TypeKind::FlexibleArray { elem_ty: inner }
+            | TypeKind::Slice { elem_ty: inner }
+            | TypeKind::Array { elem_ty: inner, .. } => {
+                self.mentions_unresolved_type_parameter(&inner.node)
+            }
+            _ => false,
+        }
     }
 
     /// A type parameter not yet substituted (a caller's own `U`): its bounds
@@ -9060,6 +9110,39 @@ impl Analyzer {
             }
             return false;
         }
+        match (&expected_resolved, &actual_resolved) {
+            (TypeKind::Dyn { trait_name }, TypeKind::Named { .. })
+                if self.types_compatible(&expected_resolved, &actual_resolved) =>
+            {
+                let trait_name = trait_name.clone();
+                if let Some(annotation) = self
+                    .annotated_exprs
+                    .iter_mut()
+                    .rev()
+                    .find(|annotation| annotation.span == expr.span)
+                {
+                    annotation.dyn_coercion = Some(trait_name);
+                }
+                return true;
+            }
+            (TypeKind::Named { name, .. }, TypeKind::Dyn { trait_name })
+                if !self
+                    .current_generic_params
+                    .iter()
+                    .any(|params| params.contains(name)) =>
+            {
+                // A trait object does not convert back to a concrete type.
+                self.push_error(
+                    expr.span,
+                    "S01",
+                    format!(
+                        "expected `{expected_resolved}`, found `dyn {trait_name}`; a trait object cannot be used as its concrete type"
+                    ),
+                );
+                return true;
+            }
+            _ => {}
+        }
         if let TypeKind::Ref { inner } | TypeKind::MutRef { inner } = &actual_resolved
             && !matches!(
                 expected_resolved,
@@ -9369,6 +9452,7 @@ impl Analyzer {
                             resolved_binding: None,
                             auto_deref: false,
                             c_abi_function: false,
+                            dyn_coercion: None,
                             inferred_type_args: Vec::new(),
                         });
                     }
@@ -11199,5 +11283,26 @@ fn dyn_through_reference(ty: &TypeKind) -> TypeKind {
             inner.node.clone()
         }
         other => other.clone(),
+    }
+}
+
+/// Whether `ty` mentions any of the type parameter names in `params`.
+fn type_mentions_any(ty: &TypeKind, params: &[String]) -> bool {
+    match ty {
+        TypeKind::Named { name, type_args } => {
+            (type_args.is_empty() && params.contains(name))
+                || type_args.iter().any(|arg| type_mentions_any(&arg.node, params))
+        }
+        TypeKind::Ref { inner }
+        | TypeKind::MutRef { inner }
+        | TypeKind::RawPtr { inner }
+        | TypeKind::FlexibleArray { elem_ty: inner }
+        | TypeKind::Slice { elem_ty: inner }
+        | TypeKind::Array { elem_ty: inner, .. } => type_mentions_any(&inner.node, params),
+        TypeKind::Fn { params: fn_params, return_ty } | TypeKind::CFn { params: fn_params, return_ty } => {
+            fn_params.iter().any(|param| type_mentions_any(&param.node, params))
+                || type_mentions_any(&return_ty.node, params)
+        }
+        _ => false,
     }
 }

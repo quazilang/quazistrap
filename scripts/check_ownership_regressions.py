@@ -69,6 +69,50 @@ fn main() i32 {
 """
 CHANNEL_OUT = "got true\ndrop 1\ndrop 2\ndrop 3\n"
 
+# A trait object owns its value wherever the value became `dyn`: locals,
+# arguments, returns, fields, Array/Box elements; `self: Self` consumes it.
+DYN = r"""import std.io;
+struct Res { id: i64, name: String }
+impl Res { fn free(self: Res) void { io.println("drop {self.id}"); } }
+struct Plain { v: i64 }
+trait Show { fn show(self: &Self) i64; fn eat(self: Self) i64; }
+impl Show for Res { fn show(self: &Res) i64 { self.id } fn eat(self: Res) i64 { ret self.id * 10; } }
+impl Show for Plain { fn show(self: &Plain) i64 { self.v } fn eat(self: Plain) i64 { ret self.v; } }
+struct Holder { item: dyn Show }
+enum Slot { Full(dyn Show), Empty }
+fn take(x: dyn Show) i64 { ret x.show(); }
+fn pick(f: bool) dyn Show {
+    if (f) { ret Res { id: 4, name: String.from("d") }; }
+    ret Plain { v: 5 };
+}
+fn main() i32 {
+    var arr: Array[dyn Show] = Array.new();
+    arr.push(Res { id: 1, name: String.from("a") });
+    arr.push(Plain { v: 2 });
+    io.println("take {}", take(Res { id: 9, name: String.from("t") }));
+    const e: dyn Show = Res { id: 3, name: String.from("c") };
+    io.println("eat {}", e.eat());
+    const h = Holder { item: Res { id: 6, name: String.from("f") } };
+    const b: Box[dyn Show] = Box.new(Res { id: 10, name: String.from("b") });
+    const p = pick(true);
+    const q = pick(false);
+    io.println("{} {} {}", h.item.show(), p.show(), q.show());
+    var r: dyn Show = Res { id: 7, name: String.from("g") };
+    r = Res { id: 8, name: String.from("h") };
+    io.println("temp {}", pick(true).show());
+    const o: Option[dyn Show] = Option.Some(Res { id: 11, name: String.from("o") });
+    match (o) { Option.Some(x) => io.println("some {}", x.show()), Option.None => io.println("none") };
+    const s = Slot.Full(Res { id: 12, name: String.from("s") });
+    match (s) { Slot.Full(x) => io.println("full {}", x.show()), Slot.Empty => io.println("empty") };
+    const c: dyn Show = if (q.show() == 5) { Res { id: 13, name: String.from("i") } } else { Res { id: 14, name: String.from("j") } };
+    io.println("end {} {}", r.show(), c.show());
+    0
+}
+"""
+DYN_OUT = ("drop 9\ntake 9\ndrop 3\neat 30\n6 4 5\ndrop 7\ndrop 4\ntemp 4\n"
+           "some 11\ndrop 11\nfull 12\ndrop 12\nend 8 13\n"
+           "drop 13\ndrop 8\ndrop 4\ndrop 10\ndrop 6\ndrop 1\n")
+
 
 def run(command, cwd):
     result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=600)
@@ -84,7 +128,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="quazi-ownership-") as directory:
         for name, source, expected in (("field_match", FIELD_MATCH, FIELD_MATCH_OUT),
                                        ("generic_copy", GENERIC_COPY, GENERIC_COPY_OUT),
-                                       ("channel", CHANNEL, CHANNEL_OUT)):
+                                       ("channel", CHANNEL, CHANNEL_OUT),
+                                       ("dyn", DYN, DYN_OUT)):
             root = Path(directory) / name
             (root / "src").mkdir(parents=True)
             (root / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
@@ -94,7 +139,7 @@ def main():
             run([qz, "build", *common, "-i", "-o", str(root / "program.qzi")], root)
             run([qz, "build", str(root / "program.qzi"), *common, "-o", str(root / "portable")], root)
             assert run([str(root / "portable")], root) == expected, name
-    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values; native and QZI")
+    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values; native and QZI")
 
 
 if __name__ == "__main__":

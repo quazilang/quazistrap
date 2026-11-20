@@ -2234,8 +2234,11 @@ impl Analyzer {
                     .chain(named_args.iter().map(|(_, arg)| arg))
                     .any(|argument| !self.bc_view_origins(argument, env).is_empty())
                     || self.bc_is_display_variadic_call(expr);
-                let consuming_receiver =
-                    self.bc_has_consuming_receiver(expr) && !self.bc_is_dynamic_receiver(object);
+                let consuming_receiver = if self.bc_is_dynamic_receiver(object) {
+                    self.bc_dynamic_call_consumes(object, method)
+                } else {
+                    self.bc_has_consuming_receiver(expr)
+                };
                 if exclusive_receiver {
                     self.bc_reject_borrowed_write(object, env);
                 }
@@ -3185,6 +3188,30 @@ impl Analyzer {
         self.bc_annotated_type(expr)
             .as_ref()
             .is_some_and(|ty| self.bc_is_move_type(&self.resolve_type_aliases(ty)))
+    }
+
+    /// A trait method called through `dyn Trait` takes the trait object's
+    /// value unless its receiver is a reference (`self: &Self`/`&Self!`),
+    /// matching codegen's receiver choice.
+    fn bc_dynamic_call_consumes(&self, object: &Expr, method: &str) -> bool {
+        let Some(TypeKind::Dyn { trait_name }) = self
+            .bc_annotated_type(object)
+            .map(|ty| self.resolve_type_aliases(&ty))
+        else {
+            return false;
+        };
+        self.trait_method_signatures
+            .get(&trait_name)
+            .and_then(|methods| methods.get(method))
+            .is_some_and(|signature| {
+                !(signature.has_explicit_receiver
+                    && signature.params.first().is_some_and(|ty| {
+                        matches!(
+                            self.resolve_type_aliases(ty),
+                            TypeKind::Ref { .. } | TypeKind::MutRef { .. }
+                        )
+                    }))
+            })
     }
 
     fn bc_is_dynamic_receiver(&self, expr: &Expr) -> bool {

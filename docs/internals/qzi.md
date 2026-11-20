@@ -2,7 +2,9 @@
 
 Audience: compiler developers.
 
-`qz build -i` (project or explicit source files) writes one format-17 QZI
+`qz build -i` (project or explicit source files) writes one format-18 QZI
+(format 18 added the destroy word of trait objects; see
+[dynamic vtable layouts](dynamic-vtable-layout.md))
 for Linux, Windows and NetBSD from a single compilation. There is no
 per-target frontend run, no staging artifact and no merge of compiled
 programs. The pipeline lives in `src/qzi_build.rs`:
@@ -16,7 +18,7 @@ programs. The pipeline lives in `src/qzi_build.rs`:
    valid for a known target mask.
 3. **Analysis and code generation** run once on that program.
 4. **Assembly** (`bytecode::qzi_link::link_qzi`) assigns each
-   chunk its targets and writes the v17 layout directly.
+   chunk its targets and writes the v18 layout directly.
 
 ## Target views
 
@@ -100,7 +102,7 @@ A hit skips target-view construction, semantic analysis and bytecode lowering.
 A miss recompiles the whole program once. `--debug` bypasses the cache so it
 can print the lowering output.
 
-The output keeps the v17 encoding: one module of distinct bodies, one mask
+The output keeps the v18 encoding: one module of distinct bodies, one mask
 per body and interface overrides for targets whose public interface differs.
 `scripts/check_qzi.py` verifies one analysis and one bytecode stage
 per build, the layout, natives for every target (Windows under Wine),

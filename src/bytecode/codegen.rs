@@ -2949,6 +2949,7 @@ struct FnCompiler<'a> {
     closure_env_regs: HashSet<u8>,
     /// Drop functions of recursive enums whose bodies are being emitted.
     generating_drop_glue: HashSet<String>,
+    dyn_coercions_in_progress: HashSet<(usize, usize)>,
     /// Type substitution map for monomorphized functions: generic param name → concrete type.
     type_subst: HashMap<String, TypeKind>,
     /// Semantic declaration-slot mappings for source call sites.
@@ -3040,6 +3041,22 @@ enum DropAction {
     /// `Option[Node]`): its generated drop function, called through its
     /// address, destroys it.
     RecursiveDrop { glue: String, ty: TypeKind },
+    /// A `dyn Trait` value: a 24-byte block (value, vtable, destroy). The
+    /// destroy word is 0 when the value owns nothing or a by-value method
+    /// consumed it, `DYN_DESTROY_STORAGE` when only the value's storage is
+    /// released, and otherwise the address of the concrete type's drop glue.
+    DynObject,
+}
+
+/// The destroy word of a trait object whose value needs only its storage
+/// released (no glue function).
+const DYN_DESTROY_STORAGE: u16 = 1;
+
+/// How a trait object destroys its concrete value.
+enum DynDestroy {
+    Nothing,
+    Storage,
+    Glue(String),
 }
 
 /// The owned payload slots of one enum variant.
@@ -3226,6 +3243,7 @@ impl<'a> FnCompiler<'a> {
             closure_occurrences: HashMap::new(),
             closure_env_regs: HashSet::new(),
             generating_drop_glue: HashSet::new(),
+            dyn_coercions_in_progress: HashSet::new(),
             type_subst,
             named_call_slots,
             source_files,
@@ -3459,6 +3477,34 @@ impl<'a> FnCompiler<'a> {
             signed,
             float32,
         })
+    }
+
+    /// The typechecker marked `expr` as a concrete value used where a trait
+    /// object is expected. Nested expressions with the same span (a call and
+    /// its callee) see the claim and are left alone.
+    fn claim_dyn_coercion(&mut self, expr: &Expr) -> Option<(String, Vec<TypeKind>, String)> {
+        let key = (expr.span.start, expr.span.end);
+        if !self.dyn_coercions_in_progress.insert(key) {
+            return None;
+        }
+        let trait_name = self
+            .annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| (annotation.span.start, annotation.span.end) == key)
+            .and_then(|annotation| annotation.dyn_coercion.clone());
+        let concrete = trait_name.as_ref().and_then(|_| self.type_of_span(key));
+        match (trait_name, concrete) {
+            (Some(trait_name), Some(TypeKind::Named { name, type_args })) => Some((
+                name,
+                type_args.into_iter().map(|argument| argument.node).collect(),
+                trait_name,
+            )),
+            _ => {
+                self.dyn_coercions_in_progress.remove(&key);
+                None
+            }
+        }
     }
 
     fn is_c_abi_function_span(&self, span: crate::parser::ast::Span) -> bool {
@@ -5572,6 +5618,9 @@ impl<'a> FnCompiler<'a> {
         if matches!(resolved, TypeKind::Fn { .. }) {
             return Some(DropAction::FreeClosureEnv);
         }
+        if matches!(resolved, TypeKind::Dyn { .. }) {
+            return Some(DropAction::DynObject);
+        }
         let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
@@ -5844,6 +5893,9 @@ impl<'a> FnCompiler<'a> {
         if matches!(resolved, TypeKind::Fn { .. }) {
             return None;
         }
+        if matches!(resolved, TypeKind::Dyn { .. }) {
+            return Some(DropAction::DynObject);
+        }
         let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
@@ -5999,6 +6051,58 @@ impl<'a> FnCompiler<'a> {
 
     /// Emit (once) the drop function of a recursive enum: `fn(value)` that
     /// destroys the active payload, calling itself for nested values.
+    /// How a trait object of concrete type `ty` destroys its value. Values
+    /// that own only their storage use a sentinel instead of generated glue,
+    /// which keeps their callers' codegen units cacheable.
+    fn dyn_destroy(&mut self, ty: &TypeKind) -> DynDestroy {
+        let Some(action) = self.drop_action_for_type(ty) else {
+            return DynDestroy::Nothing;
+        };
+        if matches!(&action, DropAction::ReleaseStorage)
+            || matches!(&action, DropAction::Structural(fields) if fields.is_empty())
+        {
+            return DynDestroy::Storage;
+        }
+        // Escape every other character so distinct types never share glue
+        // (`m.Res` and `m_Res`, `A[B_C]` and `A[B][C]`).
+        let suffix: String = ty
+            .to_string()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_string()
+                } else {
+                    format!("_{:x}_", c as u32)
+                }
+            })
+            .collect();
+        let glue = format!("__quazi_drop_dyn_{suffix}");
+        if self.generating_drop_glue.contains(&glue)
+            || self.output_chunks.iter().any(|chunk| chunk.name == glue)
+        {
+            return DynDestroy::Glue(glue);
+        }
+        self.generating_drop_glue.insert(glue.clone());
+        let saved_chunk = std::mem::replace(&mut self.chunk, Chunk::with_params(&glue, 1));
+        let saved_next = self.next_reg;
+        let saved_high = self.reg_high_water;
+        // Glue is a separate function: the caller's per-expression owner
+        // slots must not leak into it.
+        let saved_expression = self.take_expression_state();
+        self.next_reg = 0;
+        self.reg_high_water = 0;
+        let value = self.alloc_reg();
+        self.emit_drop_action(value, action);
+        self.chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        self.chunk.reg_count = self.next_reg.max(self.reg_high_water).min(u8::MAX as u16) as u8;
+        let glue_chunk = std::mem::replace(&mut self.chunk, saved_chunk);
+        self.next_reg = saved_next;
+        self.reg_high_water = saved_high;
+        self.restore_expression_state(saved_expression);
+        self.output_chunks.push(glue_chunk);
+        DynDestroy::Glue(glue)
+    }
+
     fn ensure_recursive_drop_glue(&mut self, glue: &str, ty: &TypeKind) {
         if self.generating_drop_glue.contains(glue)
             || self.output_chunks.iter().any(|chunk| chunk.name == glue)
@@ -6013,6 +6117,9 @@ impl<'a> FnCompiler<'a> {
         let saved_chunk = std::mem::replace(&mut self.chunk, Chunk::with_params(glue, 1));
         let saved_next = self.next_reg;
         let saved_high = self.reg_high_water;
+        // Glue is a separate function: the caller's per-expression owner
+        // slots must not leak into it.
+        let saved_expression = self.take_expression_state();
         self.next_reg = 0;
         self.reg_high_water = 0;
         let value = self.alloc_reg();
@@ -6031,7 +6138,25 @@ impl<'a> FnCompiler<'a> {
         let glue_chunk = std::mem::replace(&mut self.chunk, saved_chunk);
         self.next_reg = saved_next;
         self.reg_high_water = saved_high;
+        self.restore_expression_state(saved_expression);
         self.output_chunks.push(glue_chunk);
+    }
+
+    fn take_expression_state(&mut self) -> (usize, HashSet<(usize, usize)>, Vec<ExpressionTemporary>) {
+        (
+            std::mem::take(&mut self.expression_depth),
+            std::mem::take(&mut self.pending_consumption),
+            std::mem::take(&mut self.expression_temporaries),
+        )
+    }
+
+    fn restore_expression_state(
+        &mut self,
+        (depth, pending, temporaries): (usize, HashSet<(usize, usize)>, Vec<ExpressionTemporary>),
+    ) {
+        self.expression_depth = depth;
+        self.pending_consumption = pending;
+        self.expression_temporaries = temporaries;
     }
 
     fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
@@ -6125,6 +6250,31 @@ impl<'a> FnCompiler<'a> {
                 let mut instruction = ri16(Opcode::Intrinsic, reg, 4);
                 instruction.flags = 1;
                 self.chunk.emit(instruction);
+            }
+            DropAction::DynObject => {
+                // destroy word: 0 nothing, DYN_DESTROY_STORAGE release the
+                // value's storage, otherwise the address of its drop glue.
+                let destroy = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::FieldLoad, destroy, reg, 16));
+                let zero = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                self.chunk.emit(rrr(Opcode::Cmp, 0, destroy, zero));
+                let skip_nothing = self.chunk.emit(ri16(Opcode::Je, 0, 0));
+                let value = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::FieldLoad, value, reg, 0));
+                let storage = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, storage, DYN_DESTROY_STORAGE));
+                self.chunk.emit(rrr(Opcode::Cmp, 0, destroy, storage));
+                let glue = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                self.emit_drop_action(value, DropAction::ReleaseStorage);
+                let skip_glue = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                self.chunk.patch_jump(glue, self.chunk.len() as u16);
+                let ignored = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::CallArg, value, 0, 0));
+                self.chunk.emit(rrr(Opcode::CallReg, ignored, destroy, 0));
+                self.chunk.patch_jump(skip_glue, self.chunk.len() as u16);
+                self.chunk.patch_jump(skip_nothing, self.chunk.len() as u16);
+                self.emit_drop_action(reg, DropAction::ReleaseStorage);
             }
             DropAction::RecursiveDrop { glue, ty } => {
                 self.ensure_recursive_drop_glue(&glue, &ty);
@@ -9067,14 +9217,19 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    /// Box a concrete struct pointer into a 16-byte fat pointer for `dyn Trait`.
-    /// Layout: word[0] = concrete ptr, word[1] = vtable ptr.
-    /// A concrete value bound to a `dyn Trait` declaration becomes a fat
-    /// pointer (value, vtable); other declarations take the value as is.
+    /// A concrete value bound to a `dyn Trait` declaration becomes a trait
+    /// object (see `coerce_to_dyn`) unless compile_expr already built it;
+    /// other declarations take the value as is.
     fn coerce_declared_value(&mut self, src: u8, value: &Expr, declared: Option<&Type>) -> u8 {
         let Some(TypeKind::Dyn { trait_name }) = declared.map(|ty| &ty.node) else {
             return src;
         };
+        if self.annotated_exprs.iter().any(|annotation| {
+            annotation.span == value.span && annotation.dyn_coercion.is_some()
+        }) {
+            // compile_expr already built the trait object.
+            return src;
+        }
         let Some(TypeKind::Named { name, type_args }) =
             self.type_of_span((value.span.start, value.span.end))
         else {
@@ -9084,6 +9239,8 @@ impl<'a> FnCompiler<'a> {
         self.coerce_to_dyn(src, &name, &type_args, trait_name)
     }
 
+    /// Build a 24-byte trait object: word 0 the concrete value, word 1 the
+    /// vtable, word 2 the destroy word (`DropAction::DynObject`).
     fn coerce_to_dyn(
         &mut self,
         obj_reg: u8,
@@ -9092,9 +9249,31 @@ impl<'a> FnCompiler<'a> {
         trait_name: &str,
     ) -> u8 {
         let fat = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::New, fat, 16));
+        self.chunk.emit(ri16(Opcode::New, fat, 24));
         // fat[0] = concrete ptr
         self.chunk.emit(rrr(Opcode::FieldStore, obj_reg, fat, 0));
+        // fat[16] = the concrete type's drop function, or 0 if it owns nothing.
+        let destroy = self.alloc_reg();
+        let concrete = TypeKind::Named {
+            name: type_name.to_string(),
+            type_args: type_args
+                .iter()
+                .map(|argument| crate::parser::ast::Spanned::new(argument.clone(), crate::parser::ast::Span::new(0, 0, 0, 0)))
+                .collect(),
+        };
+        match self.dyn_destroy(&concrete) {
+            DynDestroy::Glue(glue) => {
+                let constant = self.chunk.add_constant(ConstPoolEntry::FnAddr(glue));
+                self.chunk.emit(ri16(Opcode::MovConst, destroy, constant));
+            }
+            DynDestroy::Storage => {
+                self.chunk.emit(ri16(Opcode::MovI, destroy, DYN_DESTROY_STORAGE));
+            }
+            DynDestroy::Nothing => {
+                self.chunk.emit(ri16(Opcode::MovI, destroy, 0));
+            }
+        }
+        self.chunk.emit(rrr(Opcode::FieldStore, destroy, fat, 16));
         // Retain exact implementation symbols in semantic slot order. Native
         // emission must not reconstruct this layout from a source-only report.
         let methods = self.trait_method_slots.get(trait_name).map(|slots| {
@@ -9180,6 +9359,12 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(rrr(Opcode::Mov, temp.slot, reg, 0));
             temp.produced = true;
             temp.value_reg = Some(reg);
+        }
+        if let Some((name, type_args, trait_name)) = self.claim_dyn_coercion(expr) {
+            // The trait object owns the value from here on.
+            self.transfer_expression_temporary(reg);
+            reg = self.coerce_to_dyn(reg, &name, &type_args, &trait_name);
+            self.dyn_coercions_in_progress.remove(&(expr.span.start, expr.span.end));
         }
         self.expression_depth -= 1;
         if root {
@@ -10622,6 +10807,8 @@ impl<'a> FnCompiler<'a> {
                 // Dynamic dispatch: dyn Trait receiver → vtable lookup + CallReg.
                 // A `&dyn Trait` receiver is read through its reference first.
                 let receiver_ty = self.type_of_span(key);
+                let owned_dyn_temporary = matches!(receiver_ty, Some(TypeKind::Dyn { .. }))
+                    && is_owned_temporary_expr(object);
                 let (dyn_ty, obj) = match receiver_ty.clone() {
                     Some(TypeKind::Ref { inner }) | Some(TypeKind::MutRef { inner })
                         if matches!(inner.node, TypeKind::Dyn { .. }) =>
@@ -10655,6 +10842,7 @@ impl<'a> FnCompiler<'a> {
                     self.chunk.emit(rrr(Opcode::FieldLoad, data_ptr, obj, 0));
                     let dst = self.alloc_reg();
                     let receiver = self.dynamic_receiver(obj, data_ptr, &trait_name, method);
+                    let consumes_value = receiver == data_ptr;
                     let mut all_args = vec![receiver];
                     for a in args {
                         self.mark_consumed_expr(a);
@@ -10664,6 +10852,17 @@ impl<'a> FnCompiler<'a> {
                         self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
                     }
                     self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr, 0));
+                    if consumes_value {
+                        // A by-value receiver took the concrete value: the
+                        // trait object must not destroy it again.
+                        let zero = self.alloc_reg();
+                        self.chunk.emit(ri16(Opcode::MovI, zero, 0));
+                        self.chunk.emit(rrr(Opcode::FieldStore, zero, obj, 16));
+                    }
+                    if owned_dyn_temporary {
+                        // `make().show()`: nothing else owns the trait object.
+                        self.emit_drop_action(obj, DropAction::DynObject);
+                    }
                     return dst;
                 }
 
@@ -11747,6 +11946,18 @@ fn is_unresolved_layout_intrinsic_mono(
         && mono.type_args.iter().any(type_kind_mentions_unresolved_param)
 }
 
+/// An expression whose value nothing else owns: a call result or a value
+/// selected by `match`/`?`. Places (locals, fields, elements) are owned by
+/// their binding.
+fn is_owned_temporary_expr(expr: &Expr) -> bool {
+    match &expr.node {
+        ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Match { .. } => true,
+        ExprKind::Try { .. } => true,
+        ExprKind::Group(inner) => is_owned_temporary_expr(inner),
+        _ => false,
+    }
+}
+
 fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Named { name, type_args } => {
@@ -12248,7 +12459,10 @@ fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
                     .zip(a2)
                     .all(|(t1, t2)| types_equal(&t1.node, &t2.node))
         }
-        (Ref { inner: i1 }, Ref { inner: i2 }) => types_equal(&i1.node, &i2.node),
+        (Ref { inner: i1 }, Ref { inner: i2 }) | (MutRef { inner: i1 }, MutRef { inner: i2 }) => {
+            types_equal(&i1.node, &i2.node)
+        }
+        (Dyn { trait_name: t1 }, Dyn { trait_name: t2 }) => t1 == t2,
         (RawPtr { inner: i1 }, RawPtr { inner: i2 }) => types_equal(&i1.node, &i2.node),
         (
             Array {

@@ -4,9 +4,26 @@ Audience: compiler, runtime, and tooling contributors.
 
 ## Contract
 
-A lowered `dyn Trait` value contains the concrete value in its first word and
-a vtable address in its second. Borrowed trait receivers receive the first
-word's address; value receivers receive its contents. The receiver ABI remains
+A lowered `dyn Trait` value is a 24-byte block: the concrete value in its
+first word, a vtable address in its second, and a destroy word in its third
+(QZI format 18). Borrowed trait receivers receive the first word's address;
+value receivers receive its contents, and the call then clears the destroy
+word because the receiver consumed the value.
+
+The destroy word is 0 when the value owns nothing (or a by-value method
+consumed it), 1 when only the value's storage must be released, and otherwise
+the address of a generated `__quazi_drop_dyn_<type>` function that runs the
+concrete type's drop action (its `free` hook or structural drop); the type
+name is escaped character by character, so distinct types never share glue.
+The storage sentinel avoids glue for plain values, which keeps their callers'
+incremental codegen units cacheable. Destroying a trait object applies the
+destroy word, then releases the block. A trait object that is a call result
+used directly as a receiver (`make().show()`) is destroyed after the call. The
+borrow checker treats a by-value method call through `dyn` as a move. Codegen builds trait objects
+wherever the typechecker recorded a coercion (`ExprAnnotation::dyn_coercion`:
+declarations, arguments, returns, fields, generic arguments). Format 17
+objects had no destroy word, so format 17 files are rejected with a rebuild
+request; QZC 41 invalidates caches. The receiver ABI remains
 the slot-reference convention introduced in QZI v12.
 
 QZI v13 retains the table's exact layout in a target-neutral constant:

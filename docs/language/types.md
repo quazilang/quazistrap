@@ -269,8 +269,11 @@ Only `@export` functions coerce to callback values; invocation is unsafe.
 ## Trait objects
 
 `dyn Trait` — dynamic dispatch through a data pointer and vtable. A value of
-a type implementing `Trait` converts to `dyn Trait` where that type is
-declared, and calling a trait method dispatches through the vtable:
+a type implementing `Trait` converts to `dyn Trait` wherever `dyn Trait` is
+expected (a declaration, an argument, a returned value, a field, a generic
+argument such as `Array[dyn Trait]` or `Box[dyn Trait]`), and calling a trait
+method dispatches through the vtable. The conversion is one way: a
+`dyn Trait` is not accepted where a concrete type is expected (S01).
 
 ```quazi
 trait Readable { fn read(self: &Self) i32; }
@@ -290,10 +293,10 @@ larger expression (such as an `if` condition) can last to the end of the
 enclosing block; bind the call's result first (`const n = bump(&value!);`)
 to end the loan at that statement.
 
-Known limit: the concrete value inside a `dyn Trait` (also in a
-`Box[dyn Trait]`) is not destroyed yet, so its owned resources leak and its
-`free` hook does not run; trait objects that own heap data should be
-short-lived until vtables carry a destructor.
+A trait object owns its value: when the trait object is destroyed, so is the
+value (its `free` hook runs and its owned fields are released). A method
+whose receiver is `self: Self` consumes the value; the trait object then
+only releases its own storage.
 
 ## Prelude types
 

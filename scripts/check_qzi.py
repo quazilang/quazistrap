@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the QZI (format 17, qzifix.txt):
+"""Check the QZI (format 18, qzifix.txt):
 
 A. one project is ONE artifact from ONE compilation: analysis and bytecode
    generation run once for every target (no per-target build or merge);
@@ -90,7 +90,7 @@ def project(root, source, name="qzi_app"):
 
 def qzi_layout(data):
     """(targets, masks of every function body, body names) of a format-17 QZI."""
-    assert data[:5] == b"\x00QZI\x11", "expected a QZI (format 17)"
+    assert data[:5] == b"\x00QZI\x12", "expected a QZI (format 18)"
     offset = 6
     targets = []
     for _ in range(data[5]):

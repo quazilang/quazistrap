@@ -7686,6 +7686,74 @@ fn main() void {}
     }
 
     #[test]
+    fn enum_payloads_take_generic_constructors_from_the_field_type() {
+        let report = analyze(
+            r#"
+enum E { A(Array[i64]), B }
+fn main() i32 {
+    const e = E.A(Array.new());
+    const d: Option[Array[i64]] = Option.Some(Array.new());
+    0
+}
+"#,
+        );
+        assert!(
+            !report.errors.iter().any(|e| e.message.contains("payload: expected")),
+            "{:?}",
+            report.errors
+        );
+        let wrong = analyze("enum E { A(bool), B }\nfn main() i32 { const e = E.A(5); 0 }\n");
+        assert!(
+            wrong.errors.iter().any(|e| e.code == "S08" || e.code == "S01"),
+            "{:?}",
+            wrong.errors
+        );
+    }
+
+    #[test]
+    fn by_value_trait_object_calls_move_the_object() {
+        let report = analyze(
+            r#"
+struct Res { id: i64, }
+trait Show { fn eat(self: Self) i64; fn show(self: &Self) i64; }
+impl Show for Res { fn eat(self: Res) i64 { ret self.id; } fn show(self: &Res) i64 { ret self.id; } }
+fn main() i64 {
+    const d: dyn Show = Res { id: 7 };
+    const a = d.eat();
+    ret a + d.show();
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S10" && e.message.contains("use of moved value 'd'")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn trait_objects_do_not_convert_back_to_concrete_types() {
+        let report = analyze(
+            r#"
+struct Res { id: i64, }
+trait Show { fn show(self: &Self) i64; }
+impl Show for Res { fn show(self: &Res) i64 { ret self.id; } }
+fn take(r: Res) i64 { ret r.id; }
+fn main() i64 {
+    const d: dyn Show = Res { id: 7 };
+    ret take(d);
+}
+"#,
+        );
+        assert!(
+            report.errors.iter().any(|e| e.code == "S01"
+                && e.message.contains("a trait object cannot be used as its concrete type")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn moves_in_branches_ending_with_continue_do_not_reach_later_code() {
         let report = analyze(
             r#"
@@ -11038,8 +11106,8 @@ fn main() void { }
         let report = analyze(
             r#"
 trait Metric {
-    fn value() i32;
-    fn add(delta: i32) i32;
+    fn value(self: &Self) i32;
+    fn add(self: &Self, delta: i32) i32;
 }
 
 fn read(metric: dyn Metric) i32 {

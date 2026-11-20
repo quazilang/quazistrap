@@ -305,6 +305,9 @@ pub struct ExprAnnotation {
     pub auto_deref: bool,
     /// The expression is an exported Quazi function coerced to its C adapter address.
     pub c_abi_function: bool,
+    /// The concrete value is used where `dyn <trait>` is expected: codegen
+    /// wraps it in a trait object for this trait.
+    pub dyn_coercion: Option<String>,
     /// Generic arguments inferred for a call written without explicit ones
     /// (`id(5)` for `fn id[T](x: T) T`); codegen selects that specialization.
     pub inferred_type_args: Vec<TypeKind>,
