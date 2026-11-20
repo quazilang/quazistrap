@@ -110,6 +110,23 @@ fn main() i32 {
     0
 }
 """
+# A generic constructor as an enum payload takes its type argument from the
+# field (`Array.new()` stayed `Array[T]` and failed in codegen).
+GENERIC_PAYLOAD = r"""import std.io;
+enum E { A(Array[i64]), B }
+fn main() i32 {
+    var a: Array[i64] = Array.new();
+    a.push(3);
+    const e = E.A(a);
+    const f = E.A(Array.new());
+    const d: Option[Array[i64]] = Option.Some(Array.new());
+    match (e) { E.A(x) => io.println("{}", x.len()), E.B => io.println("b") };
+    match (d) { Option.Some(x) => io.println("d {}", x.len()), Option.None => io.println("n") };
+    0
+}
+"""
+GENERIC_PAYLOAD_OUT = "1\nd 0\n"
+
 # A qualified unit variant has no type of its own; the declared type makes
 # the binding its owner (it leaked 32 bytes per iteration).
 QUALIFIED_NONE = r"""fn main() i32 {
@@ -153,7 +170,8 @@ def main():
         for name, source, expected in (("field_match", FIELD_MATCH, FIELD_MATCH_OUT),
                                        ("generic_copy", GENERIC_COPY, GENERIC_COPY_OUT),
                                        ("channel", CHANNEL, CHANNEL_OUT),
-                                       ("dyn", DYN, DYN_OUT)):
+                                       ("dyn", DYN, DYN_OUT),
+                                       ("generic_payload", GENERIC_PAYLOAD, GENERIC_PAYLOAD_OUT)):
             root = Path(directory) / name
             (root / "src").mkdir(parents=True)
             (root / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
@@ -173,7 +191,7 @@ def main():
             peaks.append(peak_kib([str(root / "native")]))
         # A 32-byte leak per iteration would add about 31 MiB.
         assert peaks[1] - peaks[0] < 4096, f"Option.None bindings leak: peaks {peaks} KiB"
-    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values, qualified None is owned; native and QZI")
+    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values, qualified None is owned, generic payloads infer from the field; native and QZI")
 
 
 if __name__ == "__main__":

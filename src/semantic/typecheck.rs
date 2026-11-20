@@ -4787,7 +4787,18 @@ impl Analyzer {
                             }
                             let mut payload_types = Vec::new();
                             for (index, arg) in args.iter().enumerate() {
-                                let arg_eval = self.type_check_expr(arg, reachable);
+                                // A field type already known (from the enum or the
+                                // expected type) guides the payload, as an argument's
+                                // parameter type does (`E.A(Array.new())`).
+                                let known_field = declared_fields
+                                    .get(index)
+                                    .filter(|_| variant_arity.is_some())
+                                    .map(|field| substitute_type_kind(field, &substitution))
+                                    .filter(|field| !type_mentions_any(field, &enum_params));
+                                let arg_eval = match &known_field {
+                                    Some(field) => self.type_check_expr_expected(arg, reachable, Some(field)),
+                                    None => self.type_check_expr(arg, reachable),
+                                };
                                 if variant_arity.is_none() {
                                     continue;
                                 }
