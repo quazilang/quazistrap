@@ -26,6 +26,34 @@ fn main() i32 {
 """
 
 
+# Calls through `&dyn Trait` (shared method) and `&dyn Trait!` (exclusive
+# method) dispatch through the referenced value's vtable.
+REFERENCES = """pub struct Counter { padding: i64, value: i32 }
+pub struct Pair { left: i32, right: i32 }
+pub trait Readable { fn read(self: &Self) i32; fn bump(self: &Self!) void; }
+impl Readable for Counter {
+    fn read(self: &Counter) i32 { ret self.value; }
+    fn bump(self: &Counter!) void { self.value = self.value + 1; }
+}
+impl Readable for Pair {
+    fn read(self: &Pair) i32 { ret self.left + self.right; }
+    fn bump(self: &Pair!) void { self.left = self.left + 10; }
+}
+fn shared(value: &dyn Readable) i32 { ret value.read(); }
+fn exclusive(value: &dyn Readable!) i32 { value.bump(); ret value.read(); }
+fn main() i32 {
+    var counter: dyn Readable = Counter { padding: 1, value: 41 };
+    var pair: dyn Readable = Pair { left: 3, right: 4 };
+    if (shared(&counter) != 41 || shared(&pair) != 7) { ret 1; }
+    const first: i32 = exclusive(&counter!);
+    const second: i32 = exclusive(&pair!);
+    if (first != 42 || second != 17) { ret 2; }
+    if (counter.read() != 42 || pair.read() != 17) { ret 3; }
+    ret 0;
+}
+"""
+
+
 def project(root, name, source, *, unmangled=False, library=False):
     (root / "src").mkdir(parents=True)
     manifest = (
@@ -72,6 +100,12 @@ def imported_dispatch(qz, root):
     (root / "src/counter.qz").write_text(IMPLEMENTATION)
     portable_outputs(qz, root, "imported")
     print("PASS imported trait/type: native, QZI-only, Windows COFF, mangling=false")
+
+
+def reference_dispatch(qz, root):
+    project(root, "reference_dispatch", REFERENCES)
+    portable_outputs(qz, root, "references")
+    print("PASS dyn through references: &dyn shared and &dyn! exclusive methods, native, QZI-only, COFF")
 
 
 def incremental_dispatch(qz, root):
@@ -128,6 +162,7 @@ def main():
         root = Path(temporary)
         imported_dispatch(qz, root / "imported")
         incremental_dispatch(qz, root / "incremental")
+        reference_dispatch(qz, root / "references")
         aliased_library_dispatch(qz, root / "aliased")
 
 

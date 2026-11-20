@@ -7664,6 +7664,28 @@ fn main() void {}
     }
 
     #[test]
+    fn dyn_trait_methods_follow_their_declared_receiver() {
+        let report = analyze(
+            r#"
+struct Res { id: i32, }
+trait Bump { fn bump(self: &Self!) void; fn read(self: &Self) i32; }
+impl Bump for Res { fn bump(self: &Res!) void { self.id = self.id + 1; } fn read(self: &Res) i32 { ret self.id; } }
+fn shared_read(r: &dyn Bump) i32 { ret r.read(); }
+fn shared_bump(r: &dyn Bump) void { r.bump(); }
+fn exclusive(r: &dyn Bump!) i32 { r.bump(); ret r.read(); }
+fn main() void {}
+"#,
+        );
+        let messages: Vec<&str> = report.errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec!["method `bump` takes an exclusive receiver (`&Self!`); call it through `&value!`, not a shared reference"],
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn lexical_reference_loans_end_with_their_scope() {
         for source in [
             r#"

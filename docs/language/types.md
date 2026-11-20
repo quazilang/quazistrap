@@ -283,9 +283,12 @@ fn main() i32 {
 }
 ```
 
-Current limit: a method cannot yet be called through a shared reference
-`&dyn Trait` (S07, the same rule as other method calls through `&T`); hold
-the `dyn Trait` value itself.
+Through a reference, `&dyn Trait` calls the trait's `self: &Self` methods
+and `&dyn Trait!` also its `self: &Self!` methods (S07 otherwise). Because a
+trait object might hold views, an exclusive loan `&value!` passed inside a
+larger expression (such as an `if` condition) can last to the end of the
+enclosing block; bind the call's result first (`const n = bump(&value!);`)
+to end the loan at that statement.
 
 ## Prelude types
 

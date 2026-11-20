@@ -10573,7 +10573,17 @@ impl<'a> FnCompiler<'a> {
                 }
 
                 // Dynamic dispatch: dyn Trait receiver → vtable lookup + CallReg.
-                if let Some(TypeKind::Dyn { trait_name }) = self.type_of_span(key)
+                // A `&dyn Trait` receiver is read through its reference first.
+                let receiver_ty = self.type_of_span(key);
+                let (dyn_ty, obj) = match receiver_ty.clone() {
+                    Some(TypeKind::Ref { inner }) | Some(TypeKind::MutRef { inner })
+                        if matches!(inner.node, TypeKind::Dyn { .. }) =>
+                    {
+                        (Some(inner.node.clone()), self.load_reference_value(obj, receiver_ty))
+                    }
+                    other => (other, obj),
+                };
+                if let Some(TypeKind::Dyn { trait_name }) = dyn_ty
                     && let Some(slots) = self.trait_method_slots.get(&trait_name)
                 {
                     let slot = slots.iter().position(|m: &String| m == method);

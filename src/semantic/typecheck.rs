@@ -1573,6 +1573,22 @@ impl Analyzer {
             TypeKind::Ref { inner } | TypeKind::MutRef { inner } => inner.node.clone(),
             other => other,
         };
+        // A `dyn Trait` receiver has the receiver its trait method declares.
+        if let TypeKind::Dyn { trait_name } = &receiver {
+            let signature = self
+                .trait_method_signatures
+                .get(trait_name.as_str())
+                .and_then(|methods| methods.get(method))?
+                .clone();
+            if !signature.has_explicit_receiver {
+                return Some((false, false));
+            }
+            return Some(match signature.params.first().map(|ty| self.resolve_type_aliases(ty)) {
+                Some(TypeKind::Ref { .. }) => (true, false),
+                Some(TypeKind::MutRef { .. }) => (false, true),
+                _ => (false, false),
+            });
+        }
         let TypeKind::Named { name: param, type_args } = &receiver else {
             return None;
         };
@@ -4879,15 +4895,19 @@ impl Analyzer {
                     if !reference_receiver_is_compatible
                         || self.expr_dereferences_shared_reference(object)
                     {
-                        self.push_error(
-                            object.span,
-                            "S07",
+                        let message = if exclusive_receiver_is_explicit {
+                            format!(
+                                "method `{method}` takes an exclusive receiver (`&Self!`); call it through `&value!`, not a shared reference"
+                            )
+                        } else {
                             "method calls through shared references are unavailable until methods distinguish shared and mutable receivers"
-                                .to_string(),
-                        );
+                                .to_string()
+                        };
+                        self.push_error(object.span, "S07", message);
                     }
                     let contextual_method_signature =
                         object_eval.ty.as_ref().and_then(|object_ty| {
+                            let object_ty = &dyn_through_reference(object_ty);
                             if let TypeKind::Dyn { trait_name } = object_ty {
                                 return self
                                     .trait_method_signatures
@@ -5374,7 +5394,9 @@ impl Analyzer {
                     // Methods mentioning `Self` in their return type are not object-safe:
                     // the erased receiver cannot determine a concrete result layout.
                     let dyn_resolved: Option<Option<TypeKind>> = if impl_resolved.is_none() {
-                        if let Some(TypeKind::Dyn { trait_name }) = &object_eval.ty {
+                        if let Some(TypeKind::Dyn { trait_name }) =
+                            &object_eval.ty.as_ref().map(dyn_through_reference)
+                        {
                             let signature = self
                                 .trait_method_signatures
                                 .get(trait_name.as_str())
@@ -11164,5 +11186,18 @@ fn collect_bare_names(ty: &TypeKind, names: &mut Vec<String>) {
             collect_bare_names(&inner.node, names)
         }
         _ => {}
+    }
+}
+
+/// `&dyn Trait` and `&dyn Trait!` call trait methods like `dyn Trait`: the
+/// referenced trait object, otherwise the type itself.
+fn dyn_through_reference(ty: &TypeKind) -> TypeKind {
+    match ty {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner }
+            if matches!(inner.node, TypeKind::Dyn { .. }) =>
+        {
+            inner.node.clone()
+        }
+        other => other.clone(),
     }
 }
