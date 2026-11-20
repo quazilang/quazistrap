@@ -7430,9 +7430,13 @@ impl<'a> FnCompiler<'a> {
                 self.mark_consumed_expr(value);
                 let src = self.compile_expr(value);
                 let src = self.coerce_declared_value(src, value, ty.as_ref());
+                // An initializer without its own type (`Option.None`) takes
+                // the declared one; otherwise the binding would own nothing.
                 let local_ty = match ty.as_ref().map(|ty| self.resolve_type(&ty.node)) {
                     Some(declared @ TypeKind::Dyn { .. }) => Some(declared),
-                    _ => self.type_of_span((value.span.start, value.span.end)),
+                    declared => self
+                        .type_of_span((value.span.start, value.span.end))
+                        .or(declared),
                 };
                 let slots = self.value_slot_count(value);
                 let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =

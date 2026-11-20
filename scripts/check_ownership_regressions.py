@@ -8,6 +8,7 @@
   used to copy `P[Res]` and destroy the payload twice."""
 
 import argparse
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -109,6 +110,29 @@ fn main() i32 {
     0
 }
 """
+# A qualified unit variant has no type of its own; the declared type makes
+# the binding its owner (it leaked 32 bytes per iteration).
+QUALIFIED_NONE = r"""fn main() i32 {
+    var i: i64 = 0;
+    for (i < ITERATIONS) {
+        const o: Option[String] = Option.None;
+        if (o.is_some()) { ret 1; }
+        i = i + 1;
+    }
+    0
+}
+"""
+
+
+def peak_kib(command):
+    """Peak resident memory of a child process (includes a constant
+    launcher overhead, so callers compare two runs)."""
+    pid = os.posix_spawn(command[0], command, os.environ)
+    _, status, usage = os.wait4(pid, 0)
+    assert status == 0, (command, status)
+    return usage.ru_maxrss
+
+
 DYN_OUT = ("drop 9\ntake 9\ndrop 3\neat 30\n6 4 5\ndrop 7\ndrop 4\ntemp 4\n"
            "some 11\ndrop 11\nfull 12\ndrop 12\nend 8 13\n"
            "drop 13\ndrop 8\ndrop 4\ndrop 10\ndrop 6\ndrop 1\n")
@@ -139,7 +163,17 @@ def main():
             run([qz, "build", *common, "-i", "-o", str(root / "program.qzi")], root)
             run([qz, "build", str(root / "program.qzi"), *common, "-o", str(root / "portable")], root)
             assert run([str(root / "portable")], root) == expected, name
-    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values; native and QZI")
+        peaks = []
+        for iterations in (100000, 1100000):
+            root = Path(directory) / f"qualified_none_{iterations}"
+            (root / "src").mkdir(parents=True)
+            (root / "quazi.toml").write_text('[package]\nname="none"\n[build]\nentry="src/main.qz"\n')
+            (root / "src/main.qz").write_text(QUALIFIED_NONE.replace("ITERATIONS", str(iterations)))
+            run([qz, "build", *common, "-o", str(root / "native")], root)
+            peaks.append(peak_kib([str(root / "native")]))
+        # A 32-byte leak per iteration would add about 31 MiB.
+        assert peaks[1] - peaks[0] < 4096, f"Option.None bindings leak: peaks {peaks} KiB"
+    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values, qualified None is owned; native and QZI")
 
 
 if __name__ == "__main__":
