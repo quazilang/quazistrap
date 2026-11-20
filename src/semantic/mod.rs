@@ -7686,6 +7686,27 @@ fn main() void {}
     }
 
     #[test]
+    fn moves_in_branches_ending_with_continue_do_not_reach_later_code() {
+        let report = analyze(
+            r#"
+struct Res { id: i32, }
+impl Res { fn free(self: Res) void {} }
+fn take(r: Res) i32 { ret r.id; }
+fn main() void {
+    var i: i32 = 0;
+    for (i < 3) {
+        i = i + 1;
+        const r = Res { id: i };
+        if (i == 2) { take(r); continue; }
+        take(r);
+    }
+}
+"#,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+
+    #[test]
     fn lexical_reference_loans_end_with_their_scope() {
         for source in [
             r#"
@@ -9060,7 +9081,8 @@ fn main() void {
                 report.errors
             );
         }
-        // Falling through, or leaving only the loop, still keeps the move.
+        // Falling through, or leaving only the loop, still rejects the later
+        // use (a move of an outer value inside a loop is S10 by itself).
         for body in [
             "if (flag) { consume(p); } ret consume(p);",
             "for (flag) { if (flag) { consume(p); break; } break; } ret consume(p);",
@@ -9069,7 +9091,9 @@ fn main() void {
                 format!("{prefix}fn run(flag: bool) i32 {{ const p = Point {{ x: 1 }}; {body} }}");
             let report = analyze(&source);
             assert!(
-                report.errors.iter().any(|e| e.message.contains("use of moved value 'p'")),
+                report.errors.iter().any(|e| e.code == "S10"
+                    && (e.message.contains("use of moved value 'p'")
+                        || e.message.contains("cannot move 'p' inside a loop"))),
                 "{body}: {:?}",
                 report.errors
             );

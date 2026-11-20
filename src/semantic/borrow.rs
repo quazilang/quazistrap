@@ -696,6 +696,20 @@ impl Analyzer {
         false
     }
 
+    /// Whether control leaves `block` without reaching the code after the
+    /// enclosing `if`: it exits the function, or (inside a loop) its last
+    /// statement is `continue` or `break`. Moves of variables declared outside
+    /// the loop are rejected inside loops anyway, so only the iteration's own
+    /// locals are affected.
+    fn bc_block_leaves_branch(&self, block: &Block, in_loop: bool) -> bool {
+        self.bc_block_exits_function(block)
+            || (in_loop
+                && block
+                    .stmts
+                    .last()
+                    .is_some_and(|stmt| matches!(stmt.node, StmtKind::Break | StmtKind::Continue)))
+    }
+
     fn bc_stmt_exits_function(&self, stmt: &Stmt) -> bool {
         match &stmt.node {
             StmtKind::Return(_) => true,
@@ -1650,7 +1664,9 @@ impl Analyzer {
                 let mut then_env = env.clone();
                 then_env.control_depth += 1;
                 self.bc_block(then_block, &mut then_env);
-                let mut all_envs = vec![(then_env, self.bc_block_exits_function(then_block))];
+                let in_loop = env.loop_depth > 0;
+                let mut all_envs =
+                    vec![(then_env, self.bc_block_leaves_branch(then_block, in_loop))];
                 // Later conditions are evaluated on the fall-through path of
                 // the earlier ones, so their own moves carry forward.
                 // They run only when earlier conditions fail, so they are
@@ -1661,16 +1677,17 @@ impl Analyzer {
                     self.bc_expr(else_if_cond, &mut condition_env, false);
                     let mut ei_env = condition_env.clone();
                     self.bc_block(else_if_block, &mut ei_env);
-                    all_envs.push((ei_env, self.bc_block_exits_function(else_if_block)));
+                    all_envs.push((ei_env, self.bc_block_leaves_branch(else_if_block, in_loop)));
                 }
                 env.apply_branch_moves(&condition_env);
                 if let Some(eb) = else_block {
                     let mut else_env = condition_env.clone();
                     self.bc_block(eb, &mut else_env);
-                    all_envs.push((else_env, self.bc_block_exits_function(eb)));
+                    all_envs.push((else_env, self.bc_block_leaves_branch(eb, in_loop)));
                 }
                 // Moved in any branch that can fall through → moved after. A
-                // branch that leaves the function never reaches later code.
+                // branch that leaves the function (or, in a loop, the iteration
+                // through `continue`/`break`) never reaches later code here.
                 for (branch_env, exits) in &all_envs {
                     if !exits {
                         env.apply_branch_moves(branch_env);
