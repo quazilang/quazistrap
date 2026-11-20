@@ -7686,6 +7686,19 @@ fn main() void {}
     }
 
     #[test]
+    fn specializations_reject_multi_slot_enum_payloads() {
+        let report = analyze(
+            "fn wrap[T](x: T) Option[T] { ret Some(x); }\nfn main() i32 { const w = wrap([1, 2, 3]); const s = wrap(5); 0 }\n",
+        );
+        let errors: Vec<_> = report
+            .errors
+            .iter()
+            .filter(|e| e.code == "S14" && e.message.contains("one-slot representation"))
+            .collect();
+        assert_eq!(errors.len(), 1, "{:?}", report.errors);
+    }
+
+    #[test]
     fn enum_payloads_take_generic_constructors_from_the_field_type() {
         let report = analyze(
             r#"

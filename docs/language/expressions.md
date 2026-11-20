@@ -335,8 +335,11 @@ fn main() i32 {
 `receive` waits while it is empty and returns `None` once the channel is
 closed and drained; `close` stops further sends. The handle is reference
 counted: `clone()` creates another owner (pass the clone to `qo`), and the
-buffer is released with the last owner. A waiting qoroutine yields its
-worker. Values occupy one slot: send plain scalars for now.
+buffer is released with the last owner, destroying values nobody received.
+A waiting qoroutine yields its worker. Any one-slot value can be sent:
+scalars, `String`, structs, enums and trait objects. `receive` returns
+`Option[T]`, whose payload is one slot, so a multi-slot `T` such as
+`[i64; 3]` is rejected (S14); send it inside a struct.
 
 ## Match expressions
 

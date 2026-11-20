@@ -24,6 +24,23 @@ impl Analyzer {
         if !self.validate_specialization_identity(function, type_args, span) {
             return;
         }
+        // A specialization can put a multi-slot value (`[i64; 3]`) into an
+        // enum payload that the concrete constructor check never sees
+        // (`Channel[[i64; 3]].receive()` returns `Option[[i64; 3]]`).
+        if let Some((enum_ty, payload)) = params
+            .iter()
+            .chain(return_ty)
+            .find_map(|ty| self.multi_slot_enum_payload(ty, 0))
+        {
+            self.push_error(
+                span,
+                "S14",
+                format!(
+                    "`{function}` would store `{payload}` in `{enum_ty}`, but enum payloads use the one-slot representation; wrap the value in a Box or a struct"
+                ),
+            );
+            return;
+        }
         let key = if type_args.is_empty() {
             function.to_string()
         } else {
@@ -8539,6 +8556,38 @@ impl Analyzer {
         let grew = !added.is_empty();
         self.monomorphizations.extend(added);
         grew
+    }
+
+    /// An enum type in `ty` instantiated with a type argument that does not
+    /// fit one slot, as (enum type, argument).
+    fn multi_slot_enum_payload(&self, ty: &TypeKind, depth: usize) -> Option<(TypeKind, TypeKind)> {
+        if depth > 16 {
+            return None;
+        }
+        let resolved = self.resolve_type_aliases(ty);
+        match &resolved {
+            TypeKind::Named { name, type_args } => {
+                if self.enums.contains_key(name.as_str()) {
+                    for argument in type_args {
+                        let argument = self.resolve_type_aliases(&argument.node);
+                        if !matches!(argument, TypeKind::Error)
+                            && !self.mentions_unresolved_type_parameter(&argument)
+                            && !crate::runtime_layout::runtime_value_layout(&argument)
+                                .fits_single_slot()
+                        {
+                            return Some((resolved.clone(), argument));
+                        }
+                    }
+                }
+                type_args
+                    .iter()
+                    .find_map(|argument| self.multi_slot_enum_payload(&argument.node, depth + 1))
+            }
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                self.multi_slot_enum_payload(&inner.node, depth + 1)
+            }
+            _ => None,
+        }
     }
 
     fn mentions_unresolved_type_parameter(&self, ty: &TypeKind) -> bool {
