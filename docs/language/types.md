@@ -290,6 +290,11 @@ larger expression (such as an `if` condition) can last to the end of the
 enclosing block; bind the call's result first (`const n = bump(&value!);`)
 to end the loan at that statement.
 
+Known limit: the concrete value inside a `dyn Trait` (also in a
+`Box[dyn Trait]`) is not destroyed yet, so its owned resources leak and its
+`free` hook does not run; trait objects that own heap data should be
+short-lived until vtables carry a destructor.
+
 ## Prelude types
 
 The prelude automatically provides `String`, `Box[T]`, `Array[T]`,

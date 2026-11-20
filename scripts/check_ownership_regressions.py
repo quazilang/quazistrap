@@ -53,6 +53,22 @@ fn main() i32 {
 """
 GENERIC_COPY_OUT = "moved 1\ncopied 5 5\ndrop 1\n"
 
+# A channel destroys the values nobody received when its last owner goes.
+CHANNEL = r"""import std.io;
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { io.println("drop {self.id}"); } }
+fn main() i32 {
+    const c: Channel[Res] = Channel.new(3);
+    c.send(Res { id: 1 });
+    c.send(Res { id: 2 });
+    c.send(Res { id: 3 });
+    const got = c.receive();
+    io.println("got {}", got.is_some());
+    0
+}
+"""
+CHANNEL_OUT = "got true\ndrop 1\ndrop 2\ndrop 3\n"
+
 
 def run(command, cwd):
     result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=600)
@@ -67,7 +83,8 @@ def main():
     common = ["--no-incremental", "--no-color", "--silent"]
     with tempfile.TemporaryDirectory(prefix="quazi-ownership-") as directory:
         for name, source, expected in (("field_match", FIELD_MATCH, FIELD_MATCH_OUT),
-                                       ("generic_copy", GENERIC_COPY, GENERIC_COPY_OUT)):
+                                       ("generic_copy", GENERIC_COPY, GENERIC_COPY_OUT),
+                                       ("channel", CHANNEL, CHANNEL_OUT)):
             root = Path(directory) / name
             (root / "src").mkdir(parents=True)
             (root / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
@@ -77,7 +94,7 @@ def main():
             run([qz, "build", *common, "-i", "-o", str(root / "program.qzi")], root)
             run([qz, "build", str(root / "program.qzi"), *common, "-o", str(root / "portable")], root)
             assert run([str(root / "portable")], root) == expected, name
-    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move; native and QZI")
+    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values; native and QZI")
 
 
 if __name__ == "__main__":

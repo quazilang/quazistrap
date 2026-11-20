@@ -51,6 +51,8 @@
 // the result slot once and out through `join`, which reads the slot only for
 // a qoroutine that finished without panicking.
 
+import layout.size_of;
+
 @intrinsic("quazi.runtime.state")
 unsafe fn __qo_state() *u8;
 
@@ -676,14 +678,20 @@ impl Qoroutine[T] {
 // yields its OS time slice.
 //
 // Block (64 bytes): +0 lock, +8 owners, +16 capacity, +24 count, +32 head,
-// +40 closed, +48 buffer (capacity 8-byte slots).
-// Values are stored as one 8-byte slot: send plain scalars for now.
+// +40 closed, +48 buffer, +56 slot stride (size_of[T] rounded up to 8).
+// Values still buffered when the last owner goes away are destroyed.
 
 // A queue that passes values between qoroutines: `send` adds a value,
 // `receive` waits for one and returns `None` once the channel is closed and
 // empty. Clones share the same queue.
 pub struct Channel[T] {
     block: *u8,
+}
+
+// Bytes between buffered values (block +56).
+unsafe fn __qo_channel_stride(block: *u8) usize {
+    const stride: i64 = *((block + 56) as *i64);
+    stride as usize
 }
 
 unsafe fn __qo_channel_lock(block: *u8) void {
@@ -702,13 +710,16 @@ impl Channel[T] {
         var block: *u8 = 0;
         unsafe {
             const slots: usize = if (capacity == 0) { 1 } else { capacity };
+            var stride: usize = ((size_of[T]() + 7) / 8) * 8;
+            if (stride == 0) { stride = 8; }
             block = __qo_malloc(64);
-            const buffer: *u8 = __qo_malloc(slots * 8);
+            const buffer: *u8 = __qo_malloc(slots * stride);
             if (block == 0 || buffer == 0) { panic("channel allocation failed"); }
             __qo_memset(block, 0, 64);
             *((block + 8) as *i64) = 1;
             *((block + 16) as *i64) = slots as i64;
             *((block + 48) as **u8) = buffer;
+            *((block + 56) as *i64) = stride as i64;
         }
         Channel { block: block }
     }
@@ -735,7 +746,7 @@ impl Channel[T] {
                 const count: i64 = *((block + 24) as *i64);
                 if (count < capacity) {
                     const tail: i64 = (*((block + 32) as *i64) + count) % capacity;
-                    slot = *((block + 48) as **u8) + (tail as usize) * 8;
+                    slot = *((block + 48) as **u8) + (tail as usize) * __qo_channel_stride(block);
                     *((block + 24) as *i64) = count + 1;
                     break;
                 }
@@ -757,7 +768,7 @@ impl Channel[T] {
                 const count: i64 = *((block + 24) as *i64);
                 if (count > 0) {
                     const head: i64 = *((block + 32) as *i64);
-                    const value: T = *((*((block + 48) as **u8) + (head as usize) * 8) as *T);
+                    const value: T = *((*((block + 48) as **u8) + (head as usize) * __qo_channel_stride(block)) as *T);
                     *((block + 32) as *i64) = (head + 1) % *((block + 16) as *i64);
                     *((block + 24) as *i64) = count - 1;
                     __qo_channel_unlock(block);
@@ -787,8 +798,19 @@ impl Channel[T] {
     pub fn free(self: Channel[T]) void {
         unsafe {
             if (self.block != 0 && __qo_atomic_add((self.block + 8) as *i64, -1) == 1) {
-                __qo_free(*((self.block + 48) as **u8));
-                __qo_free(self.block);
+                // Destroy the values nobody received.
+                const block = self.block;
+                const capacity: i64 = *((block + 16) as *i64);
+                const stride: usize = __qo_channel_stride(block);
+                var remaining: i64 = *((block + 24) as *i64);
+                var head: i64 = *((block + 32) as *i64);
+                for (remaining > 0) {
+                    const value: T = *((*((block + 48) as **u8) + (head as usize) * stride) as *T);
+                    head = (head + 1) % capacity;
+                    remaining = remaining - 1;
+                }
+                __qo_free(*((block + 48) as **u8));
+                __qo_free(block);
             }
             self.block = 0;
         }
