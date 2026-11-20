@@ -146,7 +146,7 @@ impl IniDocument {
     pub fn get(self: &IniDocument, section: str, key: str) Option[String] { ret lookup(self.content.as_str(), section, key); }
     pub fn contains(self: &IniDocument, section: str, key: str) bool { ret has_key_in(self.content.as_str(), section, key); }
     pub fn has_section(self: &IniDocument, section: str) bool { ret has_section_in(self.content.as_str(), section); }
-    pub fn free(self: IniDocument) void { self.content.free(); self.content = String.new(); }
+    pub fn free(self: IniDocument) void { self.content.free(); }
     pub fn parse_string(self: &IniDocument!, content: str) Result[bool, IniError] {
         const checked = validate(content);
         // Preserve the original Result on validation failure. Do not unwrap an

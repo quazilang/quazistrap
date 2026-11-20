@@ -4,7 +4,9 @@
 - 20-c-variadic-functions: C `printf` output reaches a pipe (libc stdio is
   flushed when the program ends);
 - 30-dynamic-libraries: loads libc at run time and unloads it once;
-- 32-testing: `qz test` passes, as its README promises."""
+- 32-testing: `qz test` passes, as its README promises;
+- 33-ini-library / 34-ini-parser: the library builds and the parser that
+  depends on it runs."""
 
 import argparse
 import shutil
@@ -44,7 +46,12 @@ def main():
         result = run([qz, "test", "--no-color"], testing)
         assert result.returncode == 0 and "0 failed" in result.stdout + result.stderr, (
             result.returncode, result.stdout[-1500:], result.stderr[-1500:])
-    print("PASS examples: 20 prints through a pipe, 30 loads and unloads libc, 32 passes qz test")
+        copy("33-ini-library", root)
+        parser = copy("34-ini-parser", root)
+        result = run([qz, "run", "--no-color", "--silent", "--no-incremental"], parser)
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr[-1500:])
+    print("PASS examples: 20 prints through a pipe, 30 loads and unloads libc, 32 passes qz test, "
+          "34 runs on its 33 library")
 
 
 if __name__ == "__main__":
