@@ -5153,6 +5153,10 @@ impl<'a> FnCompiler<'a> {
         let owned_expression = match &inner.node {
             ExprKind::Ident(name) => self.drop_local(name).is_some(),
             ExprKind::Call { .. } | ExprKind::MethodCall { .. } => true,
+            // A field of an owned local struct (`match h.e`): the match moves
+            // the field out (the semantic pass treats it as moved), so the
+            // local's cleanup must skip it while the arm owns the payload.
+            ExprKind::Field { .. } => self.field_of_owned_local(inner),
             _ => false,
         };
         if !owned_expression {
@@ -5160,6 +5164,20 @@ impl<'a> FnCompiler<'a> {
         }
         let ty = self.type_of_expr(scrutinee)?;
         matches!(self.drop_action_for_type(&ty), Some(DropAction::EnumPayloads(_))).then_some(ty)
+    }
+
+    /// Whether `expr` is a field chain `root.a.b` of a local whose cleanup is
+    /// structural (so a moved field can be skipped through its drop mask).
+    fn field_of_owned_local(&self, expr: &Expr) -> bool {
+        let mut root = expr;
+        while let ExprKind::Field { object, .. } | ExprKind::Group(object) = &root.node {
+            root = object;
+        }
+        let ExprKind::Ident(name) = &root.node else {
+            return false;
+        };
+        self.drop_local(name)
+            .is_some_and(|local| matches!(local.action, DropAction::Structural(_)))
     }
 
     /// The payload types of the variant with discriminant `tag` of `enum_ty`.
@@ -9179,11 +9197,40 @@ impl<'a> FnCompiler<'a> {
 
     /// Whether `ty` is a struct with an `impl Copy` (`@derive(Copy)`).
     fn is_copy_struct(&self, ty: &TypeKind) -> bool {
-        let TypeKind::Named { name, .. } = self.resolve_type(ty) else {
+        self.is_copy_struct_at(ty, 0)
+    }
+
+    /// A `@derive(Copy)` generic struct is `Copy` exactly when its type
+    /// arguments are: every field of this specialization must own nothing
+    /// (or be a `Copy` struct itself). `P[String]` moves.
+    fn is_copy_struct_at(&self, ty: &TypeKind, depth: usize) -> bool {
+        let TypeKind::Named { name, type_args } = self.resolve_type(ty) else {
             return false;
         };
-        self.struct_defs.contains_key(name.as_str())
-            && self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
+        if depth > 16
+            || !self.struct_defs.contains_key(name.as_str())
+            || !self.trait_impls.get(&name).is_some_and(|traits| traits.contains("Copy"))
+        {
+            return false;
+        }
+        if type_args.is_empty() {
+            return true;
+        }
+        let params = self.struct_generic_params.get(&name).cloned().unwrap_or_default();
+        let substitution: HashMap<String, TypeKind> = params
+            .iter()
+            .cloned()
+            .zip(type_args.iter().map(|argument| argument.node.clone()))
+            .collect();
+        let fields = self.struct_defs.get(name.as_str()).cloned().unwrap_or_default();
+        fields.iter().all(|(_, field_ty)| {
+            let field_ty = self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
+                field_ty,
+                &substitution,
+            ));
+            self.is_copy_struct_at(&field_ty, depth + 1)
+                || self.drop_action_for_type(&field_ty).is_none()
+        })
     }
 
     /// A new storage shell holding a copy of the `Copy` struct in `src`;
