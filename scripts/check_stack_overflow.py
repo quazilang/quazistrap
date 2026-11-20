@@ -71,6 +71,12 @@ fn crash(n: i64) i64 {
 }
 fn main() i32 { ret thread.spawn(|| crash(1)).unwrap().join().unwrap() as i32; }
 """
+# SIGABRT (and SIGFPE/SIGBUS) get the crash report too: the start stub used
+# to install only the SIGSEGV handler (the system-call number was not reset).
+ABORT = """import std.os;
+import std.posix;
+fn main() i32 { posix.kill(os.getpid(), 6); ret 0; }
+"""
 NAMED_FRAMES = """fn inner(v: i32) i32 { if v > 2 { panic("bad value {}", v); } ret v; }
 fn middle(v: i32) i32 { ret inner(v + 1) * 2; }
 fn main() i32 { ret middle(5); }
@@ -143,6 +149,10 @@ def main():
                 assert worker.stderr.startswith("== CRASHED ==\n"), worker.stderr
                 assert worker.stderr.count("== CRASHED ==") == 1, worker.stderr
                 assert " in crash\n" in worker.stderr, worker.stderr
+            if not wine:
+                aborted = build(qz, root, ABORT, qzi)
+                assert aborted.returncode == 101, (aborted.returncode, aborted.stderr)
+                assert "== CRASHED ==\nfatal: signal 0x00000006" in aborted.stderr, aborted.stderr
             frames = build(qz, root, NAMED_FRAMES, qzi, {"QUAZI_TRACE": "1"}, wine=wine)
             assert frames.returncode == 101, (frames.returncode, frames.stderr)
             names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]

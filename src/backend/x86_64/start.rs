@@ -665,7 +665,10 @@ impl StartStub {
         lea_rip!(rax, "__quazi_crash_handler");
         emit!(asm.mov(qword_ptr(rsp), rax));
         // sa_flags = SA_SIGINFO | SA_RESTORER | SA_ONSTACK (0x0C000004)
-        emit!(asm.mov(dword_ptr(rsp + 8), 0x0C000004u32 as i32));
+        // The kernel's sa_flags is 8 bytes: store all of them (a 4-byte
+        // store left stack garbage in the high half).
+        emit!(asm.mov(eax, 0x0C000004u32));
+        emit!(asm.mov(qword_ptr(rsp + 8), rax));
         // sa_restorer = __quazi_sigreturn
         lea_rip!(rax, "__quazi_sigreturn");
         emit!(asm.mov(qword_ptr(rsp + 16), rax));
@@ -698,16 +701,14 @@ impl StartStub {
         emit!(asm.mov(rsi, rsp));
         emit!(asm.xor(rdx, rdx));
         emit!(asm.mov(r10, 8i64));
-        emit!(asm.mov(rax, 13i64));
-
-        emit!(asm.mov(rdi, 11i64)); // SIGSEGV
-        emit!(asm.syscall());
-        emit!(asm.mov(rdi, 6i64)); // SIGABRT
-        emit!(asm.syscall());
-        emit!(asm.mov(rdi, 8i64)); // SIGFPE
-        emit!(asm.syscall());
-        emit!(asm.mov(rdi, 7i64)); // SIGBUS
-        emit!(asm.syscall());
+        // Each syscall returns in rax (and clobbers rcx/r11), so the number is
+        // set again for every signal; before, only SIGSEGV was installed and
+        // the rest ran as read(2) and invalid system calls.
+        for (signal, _name) in [(11i64, "SIGSEGV"), (6, "SIGABRT"), (8, "SIGFPE"), (7, "SIGBUS")] {
+            emit!(asm.mov(rax, 13i64)); // rt_sigaction
+            emit!(asm.mov(rdi, signal));
+            emit!(asm.syscall());
+        }
 
         // Locate envp directly on the kernel-provided initial stack. This keeps
         // the entry path independent of libc and a dynamic loader.
