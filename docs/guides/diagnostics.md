@@ -127,7 +127,9 @@ A `var` or `const` binding is declared but never used.
 warning[W03]: unused function 'helper'
 ```
 
-A function or declaration is defined but never referenced.
+A function or declaration is defined but never referenced. A build without
+`main` (a library) does not report its public functions or `pub import`
+re-exports: they are its API.
 
 **Fix**: Use it, remove it, or suppress with `@ignore(dead_code)`.
 

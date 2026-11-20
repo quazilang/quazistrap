@@ -62,6 +62,24 @@ impl Analyzer {
             .map(|(name, symbol)| (name.clone(), symbol.clone()))
             .collect();
 
+        // Without `main` (a library build) the public functions and `pub
+        // import` re-exports are the API that dependents call.
+        let library_build = !global_symbols
+            .iter()
+            .any(|(name, symbol)| name == "main" && matches!(symbol.kind, SymbolKind::Function));
+        let global_symbols = global_symbols
+            .into_iter()
+            .filter(|(_, symbol)| {
+                let reexport = symbol.is_import
+                    && self.pub_import_spans.iter().any(|item| {
+                        item.start <= symbol.span.start && symbol.span.end <= item.end
+                    });
+                !(library_build
+                    && (reexport
+                        || (symbol.public && matches!(symbol.kind, SymbolKind::Function))))
+            })
+            .collect();
+
         self.emit_unused_warnings(global_symbols, true, true);
     }
 

@@ -157,6 +157,8 @@ pub struct Analyzer {
     pub(super) warnings: Vec<SemanticWarning>,
     pub(super) suggestions: Vec<SemanticSuggestion>,
     pub(super) used_import_paths: BTreeSet<String>,
+    /// Source spans of `pub import` items: their bindings are re-exports.
+    pub(super) pub_import_spans: Vec<Span>,
     pub(super) unused_import_paths: BTreeSet<String>,
     pub(super) annotated_exprs: Vec<ExprAnnotation>,
     pub(super) binding_declarations: Vec<BindingDeclaration>,
@@ -2580,6 +2582,7 @@ impl Analyzer {
             warnings: Vec::new(),
             suggestions: Vec::new(),
             used_import_paths: BTreeSet::new(),
+            pub_import_spans: Vec::new(),
             unused_import_paths: BTreeSet::new(),
             annotated_exprs: Vec::new(),
             binding_declarations: Vec::new(),
@@ -7682,6 +7685,19 @@ fn main() void {}
             vec!["method `bump` takes an exclusive receiver (`&Self!`); call it through `&value!`, not a shared reference"],
             "{:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn library_builds_do_not_warn_about_their_public_api() {
+        let library = analyze("pub fn api() i32 { ret 1; }\nfn helper() i32 { ret 2; }\n");
+        let unused: Vec<_> = library.warnings.iter().filter(|w| w.code == "W03").map(|w| w.message.clone()).collect();
+        assert_eq!(unused, vec!["unused function 'helper'".to_string()], "{unused:?}");
+        let program = analyze("pub fn api() i32 { ret 1; }\nfn main() i32 { ret 0; }\n");
+        assert!(
+            program.warnings.iter().any(|w| w.message == "unused function 'api'"),
+            "{:?}",
+            program.warnings
         );
     }
 

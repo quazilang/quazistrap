@@ -11,7 +11,7 @@ fn main(args: Array[str]) i32 {
             load_configuration("settings.toml");
         }
     }
-    io.println("Build, then pass `panic` to see a formatted panic and backtrace:");
-    io.println("  .\\panic-and-backtrace.exe panic");
+    io.println("Pass `panic` to see a formatted panic and backtrace:");
+    io.println("  qz run -- panic");
     ret 0;
 }

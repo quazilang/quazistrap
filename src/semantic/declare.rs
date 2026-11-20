@@ -832,6 +832,7 @@ impl Analyzer {
     pub(super) fn declare_import_item(&mut self, import_path: &ImportPath, span: Span) {
         self.declare_import_names(import_path, span);
         if import_path.pub_import {
+            self.pub_import_spans.push(span);
             self.declare_function_reexports(import_path, span);
         }
     }
