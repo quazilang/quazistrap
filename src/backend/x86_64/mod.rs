@@ -303,6 +303,13 @@ fn emit_native_object(
     }
 
     if target.os == target::Os::Linux {
+        // With libc linked, the C library provides the allocator and memory
+        // routines (one heap shared with C code, visible to tools such as
+        // valgrind); the embedded versions serve libc-free programs.
+        const LIBC_PROVIDED: [&str; 10] = [
+            "malloc", "free", "calloc", "realloc", "memcpy", "memmove", "memset", "memcmp",
+            "strcpy", "strcat",
+        ];
         let requested_runtime_symbols: std::collections::HashSet<String> = all_relocs
             .iter()
             .filter_map(|(reloc, _)| {
@@ -311,6 +318,7 @@ fn emit_native_object(
                     .is_none()
                     .then(|| reloc.symbol.clone())
             })
+            .filter(|symbol| !(target.libc && LIBC_PROVIDED.contains(&symbol.as_str())))
             .collect();
         for function in
             runtime::generate_required(&requested_runtime_symbols).map_err(BackendError)?

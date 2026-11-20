@@ -7,6 +7,7 @@ libc (`-l c` or `[link] libc = true`), returning from `main` and
 into a pipe or file is fully buffered) is written and the status is kept."""
 
 import argparse
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -16,7 +17,8 @@ RETURN = r"""import std.core;
 unsafe fn puts(text: *u8) i32;
 fn main() i32 {
     unsafe { puts(core.str_as_ptr("from main")); }
-    ret 3;
+    const owned: String = String.from("heap");
+    ret 2 + (owned.len() as i32) - 3;
 }
 """
 EXIT = r"""import std.core;
@@ -49,7 +51,13 @@ def main():
                                     timeout=60)
             assert (result.returncode, result.stdout) == (status, text), (
                 name, result.returncode, result.stdout, result.stderr)
-    print("PASS libc exit: buffered C stdio reaches a pipe after main returns and after core.exit")
+        # With libc the program uses libc's allocator (one heap with C code,
+        # visible to valgrind) instead of the embedded one.
+        symbols = subprocess.run(["nm", "-D", str(root / "return")], text=True,
+                                 capture_output=True, timeout=60).stdout
+        assert re.search(r"\bU malloc\b", symbols) and re.search(r"\bU free\b", symbols), symbols
+    print("PASS libc exit: buffered C stdio reaches a pipe after main returns and after core.exit; "
+          "libc allocator used")
 
 
 if __name__ == "__main__":

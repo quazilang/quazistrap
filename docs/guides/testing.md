@@ -194,3 +194,21 @@ tests for a specific module:
 ```bash
 qz test ini    # run std.ini tests
 ```
+
+## Finding memory errors
+
+Programs built without libc use Quazi's own allocator, which memory checkers
+cannot see. Link libc to use the C library's allocator instead, then run the
+program under a checker such as valgrind:
+
+```toml
+[target.x86_64-linux.link]
+libc = true
+```
+
+```bash
+qz build -o app
+valgrind --error-exitcode=1 ./app
+```
+
+Unsafe code that reads freed memory is then reported as `Invalid read`.
