@@ -268,7 +268,24 @@ Only `@export` functions coerce to callback values; invocation is unsafe.
 
 ## Trait objects
 
-`dyn Trait` — dynamic dispatch through a data pointer and vtable.
+`dyn Trait` — dynamic dispatch through a data pointer and vtable. A value of
+a type implementing `Trait` converts to `dyn Trait` where that type is
+declared, and calling a trait method dispatches through the vtable:
+
+```quazi
+trait Readable { fn read(self: &Self) i32; }
+struct Counter { value: i32 }
+impl Readable for Counter { fn read(self: &Counter) i32 { ret self.value; } }
+
+fn main() i32 {
+    var value: dyn Readable = Counter { value: 42 };
+    ret value.read() - 42;
+}
+```
+
+Current limit: a method cannot yet be called through a shared reference
+`&dyn Trait` (S07, the same rule as other method calls through `&T`); hold
+the `dyn Trait` value itself.
 
 ## Prelude types
 
