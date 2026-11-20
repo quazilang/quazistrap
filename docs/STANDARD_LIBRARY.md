@@ -13,11 +13,15 @@ support. Other modules are explicit imports.
   shuffling, probabilities, and random bytes.
 - `std.collections.array`: growable `Array[T]`; map/set currently use `usize`.
 - `std.fs`: owned files, whole-file reads, metadata, directories, path helpers.
+- `std.path`: the structured `Path` type (join, parent, normalization).
+- `std.stream`: `Reader`/`Writer` byte streams and buffered adapters.
+- `std.process`: shell-free child processes (`Command`, `Child`, output capture).
 - `std.os`: environment, hostname, OS/version, CPU, memory, shell, terminal.
 - `std.net`: TCP, HTTP/1.1 client requests, and local one-request servers.
 - `std.thread`: spawn/join primitives.
-- `std.time`: monotonic durations and elapsed-time instants; wall-clock and
-  civil-time APIs are intentionally not yet provided.
+- `std.time`: durations, monotonic instants, wall-clock `SystemTime`, civil
+  `DateTime`/`UtcOffset` and RFC 3339 text.
+- `std.timezone`: IANA time-zone rules for civil times in named zones.
 - `std.ffi`: C scalar aliases, `CStr`, `CString`, callbacks, null pointers.
 - `std.linux` / `std.windows`: platform-specific low-level operations; portable
   application code should prefer `std.fs`, `std.os`, `std.io`, and `std.net`.

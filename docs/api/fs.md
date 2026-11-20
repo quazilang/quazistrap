@@ -66,7 +66,7 @@ fn write_note(path: str) Result[bool, fs.FsError] {
 | `file.write_str(text)` | Performs one UTF-8 text write through an exclusive receiver and returns bytes written. It does not append a terminator or retry a partial write. |
 | `file.seek(offset, whence)` | Changes the current position through an exclusive receiver and returns the resulting byte offset. Use `fs.SEEK_SET`, `fs.SEEK_CUR` or `fs.SEEK_END` for `whence`; invalid offsets and non-seekable files return `FsError`. |
 | `file.sync()` | Requests through an exclusive receiver that file contents reach the platform’s persistent-storage boundary. It does not promise hardware durability beyond the operating system’s API. |
-| `file.truncate(len)` | Changes a file length through an exclusive receiver on Linux. It currently returns `Unsupported` on Windows. |
+| `file.truncate(len)` | Changes a file length through an exclusive receiver on Linux and NetBSD. It currently returns `Unsupported` on Windows. |
 | `file.fd()` / `file.raw_handle()` | Read the native handle through a shared receiver for tightly scoped interoperation. `fd()` truncates Windows handles and is therefore not a portable handle API; prefer `raw_handle()` only with target-specific FFI. |
 | `file.close()` / `file.free()` | Releases the native handle as described above. |
 
@@ -100,11 +100,11 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 | `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD uses libc `stat`/`lstat`. |
 | `remove(path)` | Removes a file, not a directory. |
 | `mkdir(path)` | Creates one directory. On Linux it requests `0o755` before `umask`; Windows ignores POSIX mode bits. Parent directories are not created. |
-| `mkdir_mode(path, mode)` | Linux-specific requested mode; Windows creates a directory but does not apply the mode. |
+| `mkdir_mode(path, mode)` | Requested POSIX mode on Linux and NetBSD; Windows creates a directory but does not apply the mode. |
 | `rmdir(path)` | Removes an empty directory. |
 | `rename(from, to)` | Renames a path using platform native semantics. Replacement and cross-volume behavior are platform-specific. |
-| `link(existing, new_path)` / `symlink(target, link_path)` | Create a hard link or symbolic link on Linux. They currently return `Unsupported` on Windows. |
-| `chmod(path, mode)` | Changes POSIX mode bits on Linux and returns `Unsupported` on Windows. |
+| `link(existing, new_path)` / `symlink(target, link_path)` | Create a hard link or symbolic link on Linux and NetBSD. They currently return `Unsupported` on Windows. |
+| `chmod(path, mode)` | Changes POSIX mode bits on Linux and NetBSD and returns `Unsupported` on Windows. |
 
 These APIs are subject to time-of-check/time-of-use races. Do not authorize a
 security-sensitive operation based on `exists`, `readable`, or `writable` and

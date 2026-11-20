@@ -11,8 +11,8 @@ kept in `std.core`.
 `stdout()` and `stderr()` return `Stdout` and `Stderr` writers implementing
 `Write`. Their `write(text)` and `writeln(text)` methods write text, with the
 latter appending `\n`. `writef` and `writelnf` are compiler-format-aware
-variants; the final `any` argument convention is erased at the call site and
-does not create a runtime dynamic value.
+variants taking `...args: Display`; the formatting is resolved at the call
+site and does not create a runtime dynamic value.
 
 `print`, `println`, `err`, and `errln` are matching standard-output and
 standard-error helpers. `writeln(fd, text)` writes to an arbitrary native file

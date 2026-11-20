@@ -3,7 +3,7 @@
 Audience: Quazi application developers.
 
 std.os is a small current-process and host-information module. Shell-free
-Linux and Windows child-process management is available through
+Linux, Windows and NetBSD child-process management is available through
 [`std.process`](process.md). See
 the [process runtime decision](../decisions/process-runtime.md) for the
 cross-platform contract.
