@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -86,6 +87,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
     parser.add_argument("--wine", type=Path)
+    parser.add_argument("--netbsd-run", help="command prefix that runs a NetBSD executable")
     args = parser.parse_args()
     qz = str(args.qz.resolve())
     os.environ.setdefault("WINEDEBUG", "-all")
@@ -104,6 +106,11 @@ def main():
             run([qz, "build", str(artifact), "--silent", "--target", "x86_64-windows",
                  "-o", str(windows)], root)
             assert run([str(args.wine), str(windows)], root) == EXPECTED
+        if args.netbsd_run:
+            netbsd = root / "message-netbsd"
+            run([qz, "build", str(artifact), "--silent", "--target", "x86_64-netbsd",
+                 "-o", str(netbsd)], root)
+            assert run([*shlex.split(args.netbsd_run), str(netbsd)], root) == EXPECTED
         invalid = project(root, "invalid-enum-tag", IMPORTS + r"""
 @derive(Serialize, Deserialize)
 enum Bad { First @serde("Second"), Second, Third @tag("third"), Fourth @serde("json:a", "json:b") }
@@ -137,7 +144,9 @@ fn main() i32 {
         linked = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=consumer,
                                 capture_output=True, text=True, timeout=600)
         assert linked.returncode == 0, (linked.stdout, linked.stderr)
-    print("PASS externally tagged enum codecs (native, QZI-only, library consumer, tag diagnostics)")
+    columns = "native, QZI-only" + (", Windows (Wine)" if args.wine else "") + (
+        ", NetBSD" if args.netbsd_run else "")
+    print(f"PASS externally tagged enum codecs ({columns}, library consumer, tag diagnostics)")
 
 
 if __name__ == "__main__":

@@ -5,7 +5,11 @@
 - `match h.e { Some(r) => keep(r), ... }` on a field of a local struct moves
   the field out; the struct's cleanup used to destroy it again (double free).
 - A `@derive(Copy)` generic struct holding a non-Copy `T` moves: codegen
-  used to copy `P[Res]` and destroy the payload twice."""
+  used to copy `P[Res]` and destroy the payload twice.
+- `o.inner.eat()` with a consuming `eat(self: Inner)` (inherent or trait,
+  as in derived `to_json`) moves the field out; the owner's cleanup used to
+  destroy it again (use after free and double free, found by the codec
+  matrix on NetBSD's libc allocator)."""
 
 import argparse
 import os
@@ -53,6 +57,28 @@ fn main() i32 {
 }
 """
 GENERIC_COPY_OUT = "moved 1\ncopied 5 5\ndrop 1\n"
+
+FIELD_RECEIVER = r"""import std.io;
+struct Res { id: i32 }
+impl Res {
+    fn free(self: Res) void { io.println("drop {self.id}"); }
+    fn eat(self: Res) i32 { ret self.id; }
+}
+trait Take { fn take(self: Self) i32; }
+impl Take for Res { fn take(self: Res) i32 { ret self.id * 10; } }
+struct Outer { inner: Res, other: Res }
+struct Nest { outer: Outer }
+fn inherent(o: Outer) i32 { ret o.inner.eat(); }
+fn by_trait(o: Outer) i32 { ret o.inner.take(); }
+fn main() i32 {
+    io.println("a {}", inherent(Outer { inner: Res { id: 1 }, other: Res { id: 2 } }));
+    io.println("b {}", by_trait(Outer { inner: Res { id: 3 }, other: Res { id: 4 } }));
+    const n = Nest { outer: Outer { inner: Res { id: 5 }, other: Res { id: 6 } } };
+    io.println("c {}", n.outer.inner.eat());
+    0
+}
+"""
+FIELD_RECEIVER_OUT = ("drop 1\ndrop 2\na 1\ndrop 3\ndrop 4\nb 30\ndrop 5\nc 5\ndrop 6\n")
 
 # A channel destroys the values nobody received when its last owner goes.
 CHANNEL = r"""import std.io;
@@ -171,7 +197,8 @@ def main():
                                        ("generic_copy", GENERIC_COPY, GENERIC_COPY_OUT),
                                        ("channel", CHANNEL, CHANNEL_OUT),
                                        ("dyn", DYN, DYN_OUT),
-                                       ("generic_payload", GENERIC_PAYLOAD, GENERIC_PAYLOAD_OUT)):
+                                       ("generic_payload", GENERIC_PAYLOAD, GENERIC_PAYLOAD_OUT),
+                                       ("field_receiver", FIELD_RECEIVER, FIELD_RECEIVER_OUT)):
             root = Path(directory) / name
             (root / "src").mkdir(parents=True)
             (root / "quazi.toml").write_text(f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n')
@@ -191,7 +218,7 @@ def main():
             peaks.append(peak_kib([str(root / "native")]))
         # A 32-byte leak per iteration would add about 31 MiB.
         assert peaks[1] - peaks[0] < 4096, f"Option.None bindings leak: peaks {peaks} KiB"
-    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values, qualified None is owned, generic payloads infer from the field; native and QZI")
+    print("PASS ownership regressions: field match moves the field once, Copy generics with owned T move, channels destroy unreceived values, trait objects destroy their values, qualified None is owned, generic payloads infer from the field, consuming field receivers move the field; native and QZI")
 
 
 if __name__ == "__main__":

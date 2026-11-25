@@ -4991,7 +4991,15 @@ impl<'a> FnCompiler<'a> {
         if let ExprKind::Group(inner) = &object.node {
             return self.compile_receiver_object(inner);
         }
-        if let ExprKind::Field { object: base, name } = &object.node
+        // A consuming receiver (`o.inner.eat()` with `eat(self: Inner)`)
+        // moves the field out: `compile_expr` records that place-level move
+        // in the owner's drop guard, so the owner no longer destroys it. The
+        // slot address of the projected path is only for borrowing receivers.
+        let consumed = self
+            .pending_consumption
+            .contains(&(object.span.start, object.span.end));
+        if !consumed
+            && let ExprKind::Field { object: base, name } = &object.node
             && let Some(TypeKind::Named {
                 name: aggregate, ..
             }) = self.aggregate_type_of_span((base.span.start, base.span.end))

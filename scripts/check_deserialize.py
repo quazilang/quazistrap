@@ -10,6 +10,7 @@ large struct does not leak."""
 
 import argparse
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -215,6 +216,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
     parser.add_argument("--wine", type=Path, help="also run the matrix as a Windows executable")
+    parser.add_argument("--netbsd-run",
+                        help="command prefix that runs a NetBSD executable (the matrix runs there)")
     args = parser.parse_args()
     qz = str(args.qz.resolve())
     with tempfile.TemporaryDirectory(prefix="quazi-deserialize-") as directory:
@@ -276,6 +279,16 @@ def main():
                                  timeout=600, env=env)
             assert run.stdout.replace("\r\n", "\n") == MATRIX_EXPECTED, run.stdout + run.stderr
             targets += ", Windows (Wine)"
+        if args.netbsd_run:
+            netbsd = root / "matrix-netbsd"
+            build = subprocess.run([qz, "build", str(matrix_qzi), "--silent", "--target",
+                                    "x86_64-netbsd", "-o", str(netbsd)], cwd=root, text=True,
+                                   capture_output=True, timeout=600)
+            assert build.returncode == 0, build.stdout + build.stderr
+            run = subprocess.run([*shlex.split(args.netbsd_run), str(netbsd)], text=True,
+                                 capture_output=True, timeout=600)
+            assert run.stdout == MATRIX_EXPECTED, run.stdout + run.stderr
+            targets += ", NetBSD"
         serde = project(root, "serde", SERDE)
         result = subprocess.run([qz, "run", "--silent", "--no-incremental"], cwd=serde,
                                 text=True, capture_output=True, timeout=600)

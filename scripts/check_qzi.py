@@ -7,7 +7,9 @@ A. one project is ONE artifact from ONE compilation: analysis and bytecode
    @cfg(target_os) alternatives once per target;
 B. that file compiles natively for Linux, Windows and NetBSD, each binary
    running its own branches (Linux runs; Windows under Wine with --wine;
-   NetBSD contains no Linux `syscall` and links only libc);
+   NetBSD contains no Linux `syscall` and links only libc, and runs with
+   --netbsd-run CMD: a command that runs a NetBSD executable given its path,
+   for example on a NetBSD machine over ssh);
 C. native generation needs no source files;
 D. shared code calls target-specific code and passes owned values across;
    a program without a Windows implementation fails without publishing a
@@ -22,6 +24,7 @@ F. per-target copies keep per-target semantics: a generic function with
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -109,7 +112,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
     parser.add_argument("--wine", type=Path)
+    parser.add_argument("--netbsd-run", help="command prefix that runs a NetBSD executable")
     args = parser.parse_args()
+    netbsd_run = shlex.split(args.netbsd_run) if args.netbsd_run else None
     qz = str(args.qz.resolve())
     with tempfile.TemporaryDirectory(prefix="quazi-qzi-") as directory:
         root = Path(directory)
@@ -220,6 +225,9 @@ def main():
                           out).stdout
         assert b"syscall" not in disassembly, "Linux syscall in the NetBSD binary"
         assert b"libc.so.12" in netbsd and b"os=windows" not in netbsd and b"linux" not in netbsd
+        if netbsd_run:
+            output = run([*netbsd_run, str(out / "netbsd")], out).stdout
+            assert output == b"shared-7 os=netbsd 8\n", output
 
         # D: a missing implementation fails both normal and quiet builds.
         project(work, LINUX_ONLY)
@@ -339,11 +347,15 @@ def main():
         # F: per-target copies keep per-target semantics.
         project(work, GENERIC)
         run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "generic.qzi")], work)
-        for target, expected in [("linux", b"1\n"), ("windows", b"2\n")]:
+        for target, expected in [("linux", b"1\n"), ("windows", b"2\n"), ("netbsd", b"3\n")]:
             run([qz, "build", str(root / "generic.qzi"), "--silent", "--target", f"x86_64-{target}",
                  "-o", str(out / f"generic-{target}")], out)
             if target == "linux":
                 assert run([str(out / "generic-linux")], out).stdout == expected
+            elif target == "netbsd":
+                if netbsd_run:
+                    got = run([*netbsd_run, str(out / "generic-netbsd")], out).stdout
+                    assert got == expected, got
             elif args.wine:
                 win = Path(str(out / "generic-windows") + ".exe")
                 if not win.exists():
@@ -362,7 +374,8 @@ def main():
         retired = run([qz, "build", str(root / "retired.qzi"), "-o", str(out / "retired")], out, ok=False)
         assert retired.returncode != 0 and b"format 15" in retired.stderr, retired.stderr
     print("PASS QZI: one compilation, one artifact with shared bodies once and per-target alternatives; "
-          f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}; "
+          f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}"
+          f"{' (netbsd run)' if netbsd_run else ''}; "
           "failed targets prevent publication; dependencies (source, QZI, QZI with std) linked into the one QZI; "
           "per-target generic copies and retention; format 15 rejected")
 
