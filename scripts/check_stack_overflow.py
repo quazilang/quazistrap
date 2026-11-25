@@ -5,9 +5,9 @@ handler on an alternate signal stack, Windows vectored handler; exit status
 (exit status 101). A custom panic handler runs once, for fatal panics only.
 Native and QZI; with `--wine`, also Windows executables under Wine. With
 `--netbsd-run CMD` (a command prefix that runs a NetBSD executable; it must
-pass QUAZI_* environment variables on) the panic cases run on NetBSD: named
-backtraces with QUAZI_TRACE=1, nested panics and the custom handler (NetBSD
-has no signal crash handler yet)."""
+pass QUAZI_* environment variables on) the main-thread cases run on NetBSD:
+stack overflow, crash reports with QUAZI_TRACE=1/2, abort, named panic
+backtraces, nested panics and the custom handler."""
 
 import argparse
 import os
@@ -104,6 +104,23 @@ def run_netbsd(qz, root, source, netbsd_run, environment=None):
 
 
 def check_netbsd(qz, root, netbsd_run):
+    overflow = run_netbsd(qz, root, RECURSION, netbsd_run)
+    assert overflow.returncode == 134, (overflow.returncode, overflow.stderr)
+    assert "thread 'main' has overflowed its stack" in overflow.stderr, overflow.stderr
+    fault = run_netbsd(qz, root, NULL_READ, netbsd_run)
+    assert fault.returncode == 101, (fault.returncode, fault.stderr)
+    assert "== CRASHED ==" in fault.stderr and "overflowed" not in fault.stderr, fault.stderr
+    assert fault.stderr.endswith("stack trace\n"), repr(fault.stderr)
+    traced = run_netbsd(qz, root, NULL_READ, netbsd_run, {"QUAZI_TRACE": "2"})
+    assert traced.returncode == 101, (traced.returncode, traced.stderr)
+    assert " in main\n" in traced.stderr, traced.stderr
+    assert "registers:\n" in traced.stderr and "  rip    = 0x" in traced.stderr, traced.stderr
+    assert "stack backtrace:" in traced.stderr, traced.stderr
+    plain = run_netbsd(qz, root, NULL_READ, netbsd_run, {"QUAZI_TRACE": "1"})
+    assert "registers:" not in plain.stderr and "stack backtrace:" in plain.stderr, plain.stderr
+    aborted = run_netbsd(qz, root, ABORT, netbsd_run)
+    assert aborted.returncode == 101, (aborted.returncode, aborted.stderr)
+    assert "== CRASHED ==\nfatal: signal 0x00000006" in aborted.stderr, aborted.stderr
     frames = run_netbsd(qz, root, NAMED_FRAMES, netbsd_run, {"QUAZI_TRACE": "1"})
     assert frames.returncode == 101, (frames.returncode, frames.stderr)
     names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]
@@ -212,7 +229,7 @@ def main():
           "faults), panic in panic handler aborts (101), "
           "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
           "native and QZI" + (", Windows under Wine" if args.wine else "")
-          + (", NetBSD panics with named backtraces" if args.netbsd_run else ""))
+          + (", NetBSD (main-thread overflow, crashes, panics)" if args.netbsd_run else ""))
 
 
 if __name__ == "__main__":

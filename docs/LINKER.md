@@ -203,8 +203,10 @@ paths do not import `sprintf`.
 Linux `_start` reads `QUAZI_TRACE=1` or `QUAZI_TRACE=2` directly from the
 kernel-provided initial stack (Windows `mainCRTStartup` uses
 `GetEnvironmentVariableA`; NetBSD `_start` scans `ps_strings`'s environment).
-Panic backtraces on NetBSD write through libc `write` (a NetBSD executable
-makes no raw system calls); NetBSD has no signal crash handler yet.
+On NetBSD the crash handler (installed with libc `sigaltstack` and
+`__sigaction_siginfo`) and the backtraces write through libc `write` (a
+NetBSD executable makes no raw system calls); only the main thread has the
+alternate signal stack, so another thread's stack overflow is not reported.
 Backtraces name each frame's function through a
 table of emitted functions in `.rodata`; `2` also prints crash registers. The full generated startup and crash handler therefore do not need
 `getenv` or a dynamic loader.

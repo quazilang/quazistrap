@@ -53,8 +53,20 @@ impl StartStub {
     /// each frame through `__quazi_fn_table`, writing with libc `write` (a
     /// NetBSD executable makes no raw system calls). `QUAZI_TRACE=1` (or `2`)
     /// in the initial environment enables it. With `no_crash` (no function
-    /// table) the hook stays a no-op. A NetBSD signal crash handler (sigaction
-    /// and ucontext) is still missing.
+    /// table) the hook stays a no-op.
+    ///
+    /// Unless `no_crash`, `_start` also installs `__quazi_crash_handler` for
+    /// SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGABRT on an alternate signal
+    /// stack (libc `sigaltstack` and `__sigaction_siginfo`). It reports a
+    /// stack overflow (status 134) when a SIGSEGV hits just below the
+    /// interrupted stack pointer (the main thread's LWP id is its process id),
+    /// and otherwise the Linux crash report:
+    /// signal, fault address, `rip` with its function, the registers with
+    /// QUAZI_TRACE=2, the backtrace or the hint; then `_exit(101)`. Offsets
+    /// are NetBSD/amd64's: `siginfo_t.si_addr` at 16, `uc_mcontext.__gregs`
+    /// at 56 (`_REG_RIP` 21, `_REG_RSP` 24, ...). Only the main thread has
+    /// the alternate stack, so another thread's stack overflow is not
+    /// reported.
     pub fn generate_netbsd(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
@@ -87,6 +99,8 @@ impl StartStub {
         }
 
         let bt_idx = asm.instructions().len();
+        let mut bt_label = asm.create_label();
+        asm.set_label(&mut bt_label).expect("backtrace label");
         if no_crash {
             asm.ret().expect("emit backtrace stub");
         } else {
@@ -173,6 +187,153 @@ impl StartStub {
             }
             asm.ret().expect("return");
         }
+
+        // __quazi_crash_handler(sig, siginfo, ucontext): never returns.
+        let mut crash_label = asm.create_label();
+        if !no_crash {
+            use crate::backend::x86_64::sections as text;
+            // NetBSD `_REG_*` index of each CRASH_REGISTERS label.
+            const GREGS: [i32; 18] = [4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 12, 13, 2, 14, 3, 24, 21, 23];
+            const GREGS_OFFSET: i32 = 56;
+            debug_assert_eq!(GREGS.len(), text::CRASH_REGISTERS.len());
+            // Write rbx as `$digits` hex digits to stderr.
+            macro_rules! write_hex {
+                ($digits:expr) => {{
+                    let mut digit = asm.create_label();
+                    let mut decimal = asm.create_label();
+                    asm.mov(ecx, $digits as i32).expect("digits");
+                    lea_data!(r8, "__quazi_hex_buf");
+                    asm.add(r8, ($digits - 1) as i32).expect("last digit");
+                    asm.set_label(&mut digit).expect("digit label");
+                    asm.mov(rax, rbx).expect("nibble");
+                    asm.and(eax, 0x0Fi32).expect("nibble");
+                    asm.cmp(al, 10i32).expect("decimal digit");
+                    asm.jb(decimal).expect("branch");
+                    asm.add(al, 7i32).expect("hex letter");
+                    asm.set_label(&mut decimal).expect("decimal label");
+                    asm.add(al, '0' as i32).expect("ascii");
+                    asm.mov(byte_ptr(r8), al).expect("store digit");
+                    asm.dec(r8).expect("previous digit");
+                    asm.shr(rbx, 4i32).expect("next nibble");
+                    asm.dec(ecx).expect("count");
+                    asm.jne(digit).expect("loop");
+                    write_stderr!("__quazi_hex_buf", $digits);
+                }};
+            }
+            asm.set_label(&mut crash_label).expect("crash handler label");
+            asm.mov(r12, rdi).expect("signal");
+            asm.mov(r13, rsi).expect("siginfo");
+            asm.mov(r14, rdx).expect("ucontext");
+            // The handler ends the process: align for libc and never return.
+            asm.and(rsp, -16i32).expect("align for libc");
+
+            // A SIGSEGV within 64 KiB below (or one page above) the
+            // interrupted stack pointer hit the stack guard: an overflow.
+            let mut not_overflow = asm.create_label();
+            let mut overflow_named = asm.create_label();
+            asm.cmp(r12d, 11i32).expect("SIGSEGV");
+            asm.jne(not_overflow).expect("branch");
+            asm.mov(rax, qword_ptr(r13 + 16)).expect("si_addr");
+            asm.mov(rcx, qword_ptr(r14 + (GREGS_OFFSET + 24 * 8))).expect("interrupted rsp");
+            asm.sub(rcx, 0x10000i32).expect("guard window");
+            asm.sub(rax, rcx).expect("distance");
+            asm.cmp(rax, 0x11000i32).expect("inside window");
+            asm.jae(not_overflow).expect("branch");
+            call_external!("_lwp_self");
+            asm.mov(r15d, eax).expect("thread id");
+            call_external!("getpid");
+            asm.mov(ebx, eax).expect("process id");
+            asm.mov(edi, 2i32).expect("stderr");
+            lea_data!(rsi, "__quazi_stack_overflow");
+            asm.mov(edx, text::STACK_OVERFLOW_MESSAGE.len() as i32).expect("length");
+            // The main thread's LWP id equals the process id.
+            asm.cmp(r15d, ebx).expect("main thread");
+            asm.je(overflow_named).expect("branch");
+            lea_data!(rsi, "__quazi_thread_stack_overflow");
+            asm.mov(edx, text::THREAD_STACK_OVERFLOW_MESSAGE.len() as i32).expect("length");
+            asm.set_label(&mut overflow_named).expect("overflow label");
+            call_external!("write");
+            asm.mov(edi, 134i32).expect("status");
+            call_external!("_exit");
+            asm.set_label(&mut not_overflow).expect("not overflow label");
+
+            write_stderr!("__quazi_crash_header", 14);
+            write_stderr!("__quazi_fatal_sig", 16);
+            asm.mov(rbx, r12).expect("signal");
+            write_hex!(8);
+            write_stderr!("__quazi_nl", 1);
+            write_stderr!("__quazi_fault", 9);
+            asm.mov(rbx, qword_ptr(r13 + 16)).expect("si_addr");
+            write_hex!(16);
+            write_stderr!("__quazi_nl", 1);
+            write_stderr!("__quazi_rip", 7);
+            asm.mov(rbx, qword_ptr(r14 + (GREGS_OFFSET + 21 * 8))).expect("rip");
+            write_hex!(16);
+            // Name the faulting function.
+            {
+                let mut lookup = asm.create_label();
+                let mut found = asm.create_label();
+                let mut unknown = asm.create_label();
+                asm.mov(r15, qword_ptr(r14 + (GREGS_OFFSET + 21 * 8))).expect("rip");
+                lea_data!(r9, "__quazi_fn_table");
+                asm.mov(r10, qword_ptr(r9)).expect("entry count");
+                asm.add(r9, 8i32).expect("first entry");
+                asm.set_label(&mut lookup).expect("lookup label");
+                asm.test(r10, r10).expect("entries left");
+                asm.je(unknown).expect("branch");
+                asm.mov(rax, r15).expect("address");
+                asm.sub(rax, qword_ptr(r9)).expect("offset in entry");
+                asm.mov(ecx, dword_ptr(r9 + 8)).expect("entry size");
+                asm.cmp(rax, rcx).expect("inside entry");
+                asm.jb(found).expect("branch");
+                asm.add(r9, 24i32).expect("next entry");
+                asm.dec(r10).expect("count");
+                asm.jmp(lookup).expect("loop");
+                asm.set_label(&mut found).expect("found label");
+                asm.mov(rbx, r9).expect("keep entry across calls");
+                write_stderr!("__quazi_bt_in", text::FUNCTION_SEPARATOR.len());
+                asm.mov(edi, 2i32).expect("stderr");
+                asm.mov(rsi, qword_ptr(rbx + 16)).expect("name");
+                asm.mov(edx, dword_ptr(rbx + 12)).expect("name length");
+                call_external!("write");
+                asm.set_label(&mut unknown).expect("unknown label");
+            }
+            write_stderr!("__quazi_nl", 1);
+
+            // Registers at the fault with QUAZI_TRACE=2.
+            let mut skip_registers = asm.create_label();
+            lea_data!(rax, "__quazi_trace_enabled");
+            asm.cmp(byte_ptr(rax), 2i32).expect("trace level");
+            asm.jb(skip_registers).expect("branch");
+            write_stderr!("__quazi_regs_header", text::REGISTERS_HEADER.len());
+            for (index, register) in GREGS.iter().enumerate() {
+                asm.mov(edi, 2i32).expect("stderr");
+                lea_data!(rsi, "__quazi_reg_names");
+                asm.add(rsi, (index * text::REGISTER_LABEL_STRIDE) as i32).expect("label");
+                asm.mov(edx, text::REGISTER_LABEL_LEN as i32).expect("length");
+                call_external!("write");
+                asm.mov(rbx, qword_ptr(r14 + (GREGS_OFFSET + register * 8))).expect("register");
+                write_hex!(16);
+                write_stderr!("__quazi_nl", 1);
+            }
+            asm.set_label(&mut skip_registers).expect("skip registers label");
+
+            // The backtrace (from the interrupted frame chain) or the hint.
+            let mut hint = asm.create_label();
+            let mut finish = asm.create_label();
+            lea_data!(rax, "__quazi_trace_enabled");
+            asm.cmp(byte_ptr(rax), 0i32).expect("trace flag");
+            asm.je(hint).expect("branch");
+            asm.mov(rbp, qword_ptr(r14 + (GREGS_OFFSET + 12 * 8))).expect("interrupted rbp");
+            asm.call(bt_label).expect("backtrace");
+            asm.jmp(finish).expect("branch");
+            asm.set_label(&mut hint).expect("hint label");
+            write_stderr!("__quazi_trace_hint", text::TRACE_HINT.len());
+            asm.set_label(&mut finish).expect("finish label");
+            asm.mov(edi, 101i32).expect("status");
+            call_external!("_exit");
+            asm.ud2().expect("_exit does not return");
+        }
         let start_idx = asm.instructions().len();
         asm.xor(ebp, ebp).expect("emit");
         asm.mov(r12, rbx).expect("keep NetBSD ps_strings");
@@ -220,6 +381,36 @@ impl StartStub {
             asm.add(rsi, 8i32).expect("next entry");
             asm.jmp(scan).expect("loop");
             asm.set_label(&mut scanned).expect("scanned label");
+
+            // An alternate signal stack, so a stack overflow can be reported.
+            let mut no_alternate = asm.create_label();
+            asm.mov(edi, 0x10000i32).expect("alternate stack size");
+            call_external!("malloc");
+            asm.test(rax, rax).expect("allocation check");
+            asm.je(no_alternate).expect("branch");
+            asm.sub(rsp, 32i32).expect("stack_t");
+            asm.mov(qword_ptr(rsp), rax).expect("ss_sp");
+            asm.mov(qword_ptr(rsp + 8), 0x10000i32).expect("ss_size");
+            asm.mov(qword_ptr(rsp + 16), 0i32).expect("ss_flags");
+            asm.mov(rdi, rsp).expect("stack_t");
+            asm.xor(esi, esi).expect("no old stack");
+            call_external!("sigaltstack");
+            asm.add(rsp, 32i32).expect("drop stack_t");
+            asm.set_label(&mut no_alternate).expect("no alternate label");
+            // struct sigaction: handler, empty mask, SA_SIGINFO | SA_ONSTACK.
+            asm.sub(rsp, 32i32).expect("sigaction");
+            asm.lea(rax, qword_ptr(crash_label)).expect("handler");
+            asm.mov(qword_ptr(rsp), rax).expect("sa_sigaction");
+            asm.mov(qword_ptr(rsp + 8), 0i32).expect("sa_mask");
+            asm.mov(qword_ptr(rsp + 16), 0i32).expect("sa_mask");
+            asm.mov(qword_ptr(rsp + 24), 0x41i32).expect("sa_flags");
+            for signal in [11i32, 10, 4, 8, 6] {
+                asm.mov(edi, signal).expect("signal");
+                asm.mov(rsi, rsp).expect("sigaction");
+                asm.xor(edx, edx).expect("no old action");
+                call_external!("__sigaction_siginfo");
+            }
+            asm.add(rsp, 32i32).expect("drop sigaction");
         }
 
         if main_takes_args {
