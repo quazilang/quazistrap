@@ -470,7 +470,7 @@ Fast binaries, small output, zero runtime waste. No LLVM, no GCC, no libc. `@int
 |-----------|--------|
 | LSP improvements | Partial — see [src/lsp/AGENTS.md](src/lsp/AGENTS.md) |
 | `qz doc` | ✅ Done — `src/apidoc.rs`: one Markdown page per source with public signatures and their `//` comments, plus an index |
-| JIT | Experimental — `src/jit.rs`: `qz run --jit` links into memory, maps the static ELF at its link address and enters `_start` in-process (Linux x86-64, built-in linker; D-019 round 2). Dynamic import/load API is future work |
+| JIT | Experimental — `src/jit.rs`: `qz run --jit` links into memory, maps the static ELF at its link address and enters `_start` in-process (Linux x86-64 static ELF; NetBSD x86-64 dynamic ELF linked at `jit::NETBSD_JIT_BASE` with the GOT filled by `dlsym`; built-in linker; D-019 round 2). Dynamic import/load API is future work |
 
 ---
 

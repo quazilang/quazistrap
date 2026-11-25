@@ -287,7 +287,7 @@ qz build [source.qz|program.qzi|native.o ...] [-o out] [-i] [-c] [-r] [-s]
          [--static-lib|--shared-lib] [--no-incremental]
          [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...]  # build and run; project if omitted
-qz run --jit [...]        # experimental: link in memory and run inside qz (Linux)
+qz run --jit [...]        # experimental: link in memory and run inside qz (Linux, NetBSD)
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check every artifact without compiling
 qz doc                    # Markdown API pages for public declarations (build/doc)

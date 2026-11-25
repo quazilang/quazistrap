@@ -5,12 +5,19 @@
 //! Experimental `qz run --jit` (D-019): execute a freshly linked program from
 //! memory inside the `qz` process instead of writing an executable to disk.
 //!
-//! The built-in linker produces a static x86-64 ELF image linked at fixed
-//! addresses (no dynamic loader, no libc). This loader maps each `PT_LOAD`
-//! segment at its link address with `MAP_FIXED_NOREPLACE`, builds the initial
-//! process stack the program's `_start` expects, and jumps to the entry point.
-//! The program ends the process with its own `exit_group` system call, so its
-//! exit status becomes `qz`'s. Only Linux x86-64 is supported.
+//! Linux x86-64: the built-in linker produces a static ELF image linked at
+//! fixed addresses (no dynamic loader, no libc). This loader maps each
+//! `PT_LOAD` segment at its link address with `MAP_FIXED_NOREPLACE`, builds
+//! the initial process stack the program's `_start` expects, and jumps to the
+//! entry point. The program ends the process with its own `exit_group` system
+//! call, so its exit status becomes `qz`'s.
+//!
+//! NetBSD x86-64 (`qz` built for NetBSD): the built-in NetBSD linker links the
+//! dynamic image at `NETBSD_JIT_BASE` (0x400000 may belong to `qz`, a PIE).
+//! The loader maps its segments (declaring `PROT_MPROTECT` for PaX W^X),
+//! fills the GOT from this process's libc with `dlsym` (`_libc_init` becomes
+//! a no-op: libc is initialized), and enters `_start` with `rbx` pointing at
+//! a `ps_strings` block, as `ld.elf_so` would. The program ends with `exit`.
 //!
 //! Linking stores the image (`store_image`) instead of writing a file; the
 //! build then finishes normally (temporary objects are removed) and the run
@@ -288,22 +295,436 @@ mod linux {
     }
 }
 
+/// Link address of NetBSD images run by `qz run --jit`: inside the `qz`
+/// process 0x400000 may belong to `qz` itself (a PIE placed by ASLR), while
+/// this range is far from the executable, its heap and top-down mappings.
+pub const NETBSD_JIT_BASE: u64 = 0x1000_0000_0000;
+
+/// The pieces of a NetBSD executable from the built-in NetBSD linker that an
+/// in-process loader needs: entry, `PT_LOAD` segments and the
+/// `R_X86_64_GLOB_DAT` relocations (GOT slot address, imported name).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(all(target_os = "netbsd", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+pub struct DynamicImage {
+    pub entry: u64,
+    pub segments: Vec<Segment>,
+    pub imports: Vec<(u64, String)>,
+}
+
+#[cfg_attr(
+    not(all(target_os = "netbsd", target_arch = "x86_64")),
+    allow(dead_code)
+)]
+pub fn parse_dynamic_image(image: &[u8]) -> Result<DynamicImage, String> {
+    // Malformed images are errors, never panics or wrapped offsets.
+    let truncated = || "JIT: truncated ELF image".to_string();
+    let read = |offset: u64, width: usize| -> Result<u64, String> {
+        let offset = usize::try_from(offset).map_err(|_| truncated())?;
+        let bytes = image
+            .get(offset..offset.checked_add(width).ok_or_else(truncated)?)
+            .ok_or_else(truncated)?;
+        Ok(bytes.iter().enumerate().fold(0u64, |value, (index, byte)| {
+            value | (*byte as u64) << (index * 8)
+        }))
+    };
+    let add = |left: u64, right: u64| left.checked_add(right).ok_or_else(truncated);
+    if image.get(0..4) != Some(b"\x7fELF".as_slice())
+        || image.get(4) != Some(&2)
+        || image.get(5) != Some(&1)
+        || read(16, 2)? != 2
+        || read(18, 2)? != 62
+    {
+        return Err("JIT: not an x86-64 ELF executable".into());
+    }
+    let entry = read(24, 8)?;
+    let header_offset = read(32, 8)?;
+    let header_size = read(54, 2)?;
+    let mut segments = Vec::new();
+    let mut dynamic = None;
+    for index in 0..read(56, 2)? {
+        let base = add(header_offset, index * header_size)?;
+        match read(base, 4)? {
+            1 => {
+                let segment = Segment {
+                    flags: read(base + 4, 4)? as u32,
+                    offset: read(base + 8, 8)?,
+                    address: read(base + 16, 8)?,
+                    file_size: read(base + 32, 8)?,
+                    memory_size: read(base + 40, 8)?,
+                };
+                add(segment.offset, segment.file_size)?;
+                add(segment.address, segment.memory_size)?;
+                if segment.file_size > segment.memory_size {
+                    return Err("JIT: segment file size exceeds its memory size".into());
+                }
+                segments.push(segment);
+            }
+            2 => dynamic = Some((read(base + 8, 8)?, read(base + 32, 8)?)),
+            _ => {}
+        }
+    }
+    if segments.is_empty() {
+        return Err("JIT: the image has no loadable segments".into());
+    }
+    // Dynamic-section addresses are virtual: find their file offsets.
+    let file_offset = |address: u64| -> Result<u64, String> {
+        segments
+            .iter()
+            .find(|segment| {
+                address >= segment.address && address < segment.address + segment.file_size
+            })
+            .map(|segment| address - segment.address + segment.offset)
+            .ok_or_else(|| format!("JIT: address {address:#x} is not in the file"))
+    };
+    let mut imports = Vec::new();
+    if let Some((offset, size)) = dynamic {
+        let (mut strtab, mut symtab, mut rela, mut rela_size) = (None, None, None, 0);
+        for entry in 0..size / 16 {
+            let at = add(offset, entry * 16)?;
+            let tag = read(at, 8)?;
+            let value = read(add(at, 8)?, 8)?;
+            match tag {
+                5 => strtab = Some(value),
+                6 => symtab = Some(value),
+                7 => rela = Some(value),
+                8 => rela_size = value,
+                _ => {}
+            }
+        }
+        if let (Some(strtab), Some(symtab), Some(rela)) = (strtab, symtab, rela) {
+            let (strtab, symtab, rela) = (
+                file_offset(strtab)?,
+                file_offset(symtab)?,
+                file_offset(rela)?,
+            );
+            for index in 0..rela_size / 24 {
+                let at = add(rela, index * 24)?;
+                let place = read(at, 8)?;
+                let info = read(add(at, 8)?, 8)?;
+                if info & 0xffff_ffff != 6 {
+                    return Err(format!(
+                        "JIT: unsupported dynamic relocation type {}",
+                        info & 0xffff_ffff
+                    ));
+                }
+                let name_offset = read(add(symtab, (info >> 32) * 24)?, 4)?;
+                let start = usize::try_from(add(strtab, name_offset)?).map_err(|_| truncated())?;
+                let text = image.get(start..).ok_or_else(truncated)?;
+                let end = text
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .ok_or_else(|| "JIT: unterminated symbol name".to_string())?;
+                let name = String::from_utf8_lossy(&text[..end]).into_owned();
+                imports.push((place, name));
+            }
+        }
+    }
+    Ok(DynamicImage {
+        entry,
+        segments,
+        imports,
+    })
+}
+
+#[cfg(all(target_os = "netbsd", target_arch = "x86_64"))]
+mod netbsd {
+    use super::{DynamicImage, Segment, parse_dynamic_image};
+    use std::ffi::{CString, c_char, c_int, c_void};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    unsafe extern "C" {
+        fn mmap(
+            address: *mut c_void,
+            length: usize,
+            protection: c_int,
+            flags: c_int,
+            fd: c_int,
+            offset: i64,
+        ) -> *mut c_void;
+        fn mprotect(address: *mut c_void, length: usize, protection: c_int) -> c_int;
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+
+    const PROT_READ: c_int = 1;
+    const PROT_WRITE: c_int = 2;
+    const PROT_EXEC: c_int = 4;
+    const MAP_PRIVATE: c_int = 0x0002;
+    const MAP_ANON: c_int = 0x1000;
+    /// Use the hint address when it is free, even within the break.
+    const MAP_TRYFIXED: c_int = 0x0400;
+    /// PaX MPROTECT (W^X) only lets a mapping later become what its
+    /// `PROT_MPROTECT` maximum allowed when it was created.
+    const fn prot_mprotect(maximum: c_int) -> c_int {
+        maximum << 3
+    }
+    const MAP_FAILED: *mut c_void = !0usize as *mut c_void;
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    const PAGE: u64 = 4096;
+
+    /// libc is already initialized in this process: the program's `_start`
+    /// calls this instead of `_libc_init`.
+    extern "C" fn libc_already_initialized() {}
+
+    fn page_range(segment: &Segment) -> (u64, u64) {
+        let start = segment.address & !(PAGE - 1);
+        let end = (segment.address + segment.memory_size + PAGE - 1) & !(PAGE - 1);
+        (start, end)
+    }
+
+    fn map_segment(image: &[u8], segment: &Segment) -> Result<(), String> {
+        let (start, end) = page_range(segment);
+        if end <= start {
+            return Ok(());
+        }
+        // A hint, not MAP_FIXED: an occupied range must not be replaced.
+        // Written now, executable later: declare the maximum for PaX.
+        let mapped = unsafe {
+            mmap(
+                start as *mut c_void,
+                (end - start) as usize,
+                PROT_READ | PROT_WRITE | prot_mprotect(PROT_READ | PROT_WRITE | PROT_EXEC),
+                MAP_PRIVATE | MAP_ANON | MAP_TRYFIXED,
+                -1,
+                0,
+            )
+        };
+        if mapped == MAP_FAILED {
+            return Err(format!(
+                "JIT: cannot map {start:#x}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if mapped as u64 != start {
+            return Err(format!(
+                "JIT: segment {start:#x} is occupied in this process"
+            ));
+        }
+        let data = image
+            .get(segment.offset as usize..(segment.offset + segment.file_size) as usize)
+            .ok_or_else(|| "JIT: segment data lies outside the image".to_string())?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), segment.address as *mut u8, data.len());
+        }
+        Ok(())
+    }
+
+    fn protect_segment(segment: &Segment) -> Result<(), String> {
+        let (start, end) = page_range(segment);
+        let mut protection = 0;
+        if segment.flags & 4 != 0 {
+            protection |= PROT_READ;
+        }
+        if segment.flags & 2 != 0 {
+            protection |= PROT_WRITE;
+        }
+        if segment.flags & 1 != 0 {
+            protection |= PROT_EXEC;
+        }
+        if end > start
+            && unsafe { mprotect(start as *mut c_void, (end - start) as usize, protection) } != 0
+        {
+            return Err(format!("JIT: cannot protect {start:#x}"));
+        }
+        Ok(())
+    }
+
+    /// A leaked, null-terminated array of C strings.
+    fn c_strings(texts: &[Vec<u8>]) -> *const *const c_char {
+        let mut pointers: Vec<*const c_char> = texts
+            .iter()
+            .map(|text| {
+                let bytes: Vec<u8> = text.iter().copied().filter(|byte| *byte != 0).collect();
+                CString::new(bytes).expect("no NUL").into_raw() as *const c_char
+            })
+            .collect();
+        pointers.push(std::ptr::null());
+        Box::leak(pointers.into_boxed_slice()).as_ptr()
+    }
+
+    pub fn execute(image: &[u8], args: &[Vec<u8>]) -> Result<std::convert::Infallible, String> {
+        let DynamicImage {
+            entry,
+            segments,
+            imports,
+        } = parse_dynamic_image(image)?;
+        for segment in &segments {
+            map_segment(image, segment)?;
+        }
+        // Resolve the GOT like ld.elf_so would, from this process's libc.
+        for (slot, name) in &imports {
+            let address = if name == "_libc_init" {
+                libc_already_initialized as *const () as u64
+            } else {
+                let symbol = CString::new(name.as_str()).map_err(|_| "JIT: bad symbol name")?;
+                let address = unsafe { dlsym(RTLD_DEFAULT, symbol.as_ptr()) };
+                if address.is_null() {
+                    return Err(format!("JIT: unresolved symbol `{name}`"));
+                }
+                address as u64
+            };
+            unsafe { (*slot as *mut u64).write_unaligned(address) };
+        }
+        for segment in &segments {
+            protect_segment(segment)?;
+        }
+        let env: Vec<Vec<u8>> = std::env::vars_os()
+            .map(|(key, value)| {
+                let mut entry = key.into_vec();
+                entry.push(b'=');
+                entry.extend_from_slice(value.as_bytes());
+                entry
+            })
+            .collect();
+        // struct ps_strings { char **argv; int argc; char **envp; int envc; }
+        let ps_strings: &'static mut [u64; 4] = Box::leak(Box::new([
+            c_strings(args) as u64,
+            args.len() as u64,
+            c_strings(&env) as u64,
+            env.len() as u64,
+        ]));
+        unsafe {
+            // Enter `_start` as ld.elf_so would: rbx = ps_strings, rbp = 0.
+            // It aligns its own stack and ends the process with exit().
+            core::arch::asm!(
+                // rbx cannot be an asm operand; set it last (no return).
+                "mov rbx, rdi",
+                "xor ebp, ebp",
+                "jmp rax",
+                in("rdi") ps_strings.as_mut_ptr() as u64,
+                in("rax") entry,
+                options(noreturn),
+            );
+        }
+    }
+}
+
 /// Run `image` in this process. Returns only on a loading error.
 pub fn execute(image: &[u8], args: &[Vec<u8>]) -> Result<std::convert::Infallible, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         linux::execute(image, args)
     }
-    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    #[cfg(all(target_os = "netbsd", target_arch = "x86_64"))]
+    {
+        netbsd::execute(image, args)
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "netbsd", target_arch = "x86_64")
+    )))]
     {
         let _ = (image, args);
-        Err("qz run --jit currently supports Linux x86-64 hosts only".into())
+        Err("qz run --jit currently supports Linux and NetBSD x86-64 hosts only".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netbsd_images_list_their_segments_and_got_imports() {
+        use object::write::{Object as WriteObject, Relocation, Symbol, SymbolSection};
+        use object::{
+            Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags,
+            RelocationKind, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+        };
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        // call write; call _libc_init; ret
+        obj.append_section_data(text, &[0xe8, 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3], 16);
+        obj.add_symbol(Symbol {
+            name: b"_start".to_vec(),
+            value: 0,
+            size: 11,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Linkage,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        for (offset, name) in [(1u64, "write"), (6, "_libc_init")] {
+            let symbol = obj.add_symbol(Symbol {
+                name: name.as_bytes().to_vec(),
+                value: 0,
+                size: 0,
+                kind: SymbolKind::Text,
+                scope: SymbolScope::Dynamic,
+                weak: false,
+                section: SymbolSection::Undefined,
+                flags: SymbolFlags::None,
+            });
+            obj.add_relocation(
+                text,
+                Relocation {
+                    offset,
+                    symbol,
+                    addend: -4,
+                    flags: RelocationFlags::Generic {
+                        kind: RelocationKind::PltRelative,
+                        encoding: RelocationEncoding::Generic,
+                        size: 32,
+                    },
+                },
+            )
+            .unwrap();
+        }
+        let source = obj.write().unwrap();
+        let image =
+            crate::backend::builtin_netbsd_linker::link_netbsd_image(&[source.as_slice()]).unwrap();
+        let parsed = parse_dynamic_image(&image).unwrap();
+        let mut names: Vec<&str> = parsed
+            .imports
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["_libc_init", "write"]);
+        let inside = |address: u64| {
+            parsed.segments.iter().any(|segment| {
+                address >= segment.address && address < segment.address + segment.memory_size
+            })
+        };
+        assert!(inside(parsed.entry));
+        // Damaged images are errors, not panics.
+        for length in [16, 64, image.len() / 2] {
+            assert!(parse_dynamic_image(&image[..length]).is_err(), "{length}");
+        }
+        let mut corrupt = image.clone();
+        for byte in corrupt.iter_mut().skip(64).step_by(7) {
+            *byte = 0xff;
+        }
+        let _ = parse_dynamic_image(&corrupt);
+        // The JIT links at its own base; nothing refers to 0x400000 then.
+        let high = crate::backend::builtin_netbsd_linker::link_netbsd_image_at(
+            &[source.as_slice()],
+            NETBSD_JIT_BASE,
+        )
+        .unwrap();
+        let moved = parse_dynamic_image(&high).unwrap();
+        assert!(
+            moved
+                .segments
+                .iter()
+                .all(|segment| segment.address >= NETBSD_JIT_BASE)
+        );
+        assert!(moved.entry - NETBSD_JIT_BASE == parsed.entry - 0x400000);
+        assert!(
+            moved
+                .imports
+                .iter()
+                .all(|(slot, _)| *slot >= NETBSD_JIT_BASE)
+        );
+        for (slot, _) in &parsed.imports {
+            // GOT slots lie in a writable segment.
+            assert!(parsed.segments.iter().any(|segment| segment.flags & 2 != 0
+                && *slot >= segment.address
+                && *slot + 8 <= segment.address + segment.memory_size));
+        }
+    }
 
     #[test]
     fn initial_stack_lays_out_argc_argv_envp_and_auxv() {

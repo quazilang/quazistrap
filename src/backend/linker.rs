@@ -76,11 +76,16 @@ pub fn link_object(
         let members = super::archive::select_members(&objects, &archives)?;
         objects.extend(members.iter().map(Vec::as_slice));
         if crate::jit::requested() {
-            if target.os != Os::Linux {
-                return Err("qz run --jit supports Linux targets only".into());
-            }
             // The run step executes the stored image; nothing is written.
-            crate::jit::store_image(super::builtin_linker::link_elf_image(&objects)?);
+            let image = match target.os {
+                Os::Linux => super::builtin_linker::link_elf_image(&objects)?,
+                Os::NetBsd => super::builtin_netbsd_linker::link_netbsd_image_at(
+                    &objects,
+                    crate::jit::NETBSD_JIT_BASE,
+                )?,
+                _ => return Err("qz run --jit supports Linux and NetBSD targets only".into()),
+            };
+            crate::jit::store_image(image);
             return Ok(());
         }
         return match target.os {

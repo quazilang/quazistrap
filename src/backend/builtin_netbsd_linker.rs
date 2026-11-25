@@ -17,6 +17,7 @@ use std::path::Path;
 use object::{Object as _, ObjectSection as _, ObjectSymbol as _, RelocationKind, RelocationTarget,
     SectionFlags, SectionIndex, SectionKind, SymbolIndex, SymbolSection};
 
+/// Link address of an executable written to a file (the NetBSD default).
 const BASE: u64 = 0x400000;
 const PAGE: u64 = 0x1000;
 const EH: usize = 64;
@@ -42,6 +43,27 @@ struct InputSection { object: usize, index: SectionIndex, kind: SectionKind,
 struct SectionLayout { offset: u64, address: u64 }
 
 pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> {
+    let image = link_netbsd_image(objects)?;
+    std::fs::write(output, &image).map_err(|e| format!("NetBSD linker: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(output).map_err(|e| e.to_string())?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(output, permissions).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The executable image `link_netbsd_objects` writes.
+pub fn link_netbsd_image(objects: &[&[u8]]) -> Result<Vec<u8>, String> {
+    link_netbsd_image_at(objects, BASE)
+}
+
+/// The same image linked at `base` (page aligned): `qz run --jit` on a
+/// NetBSD host loads it into its own process, where 0x400000 may be taken.
+pub fn link_netbsd_image_at(objects: &[&[u8]], base: u64) -> Result<Vec<u8>, String> {
+    if base % PAGE != 0 { return Err("NetBSD linker: unaligned base address".into()); }
     if objects.is_empty() { return Err("NetBSD linker: no objects".into()); }
     let files = objects.iter().map(|raw| object::File::parse(*raw)
         .map_err(|e| format!("NetBSD linker: invalid ELF object: {e}")))
@@ -136,7 +158,7 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     let mut image = vec![0u8; usize::try_from(text_start).map_err(|_| "NetBSD metadata too large")?];
 
     let mut layout: HashMap<(usize, SectionIndex), SectionLayout> = HashMap::new();
-    let mut text_end = place(&mut image, text_start, &text, &mut layout)?;
+    let mut text_end = place(&mut image, base, text_start, &text, &mut layout)?;
     // Each imported function gets 6 bytes: jmp qword ptr [rip+rel32].
     let trampoline_start = text_end;
     text_end = text_end.checked_add((6 * imports.len()) as u64)
@@ -144,10 +166,10 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     grow(&mut image, text_end)?;
     let ro_start = align(text_end, PAGE)?;
     grow(&mut image, ro_start)?;
-    let ro_end = place(&mut image, ro_start, &rodata, &mut layout)?;
+    let ro_end = place(&mut image, base, ro_start, &rodata, &mut layout)?;
     let data_start = align(ro_end, PAGE)?;
     grow(&mut image, data_start)?;
-    let mut data_end = place(&mut image, data_start, &data, &mut layout)?;
+    let mut data_end = place(&mut image, base, data_start, &data, &mut layout)?;
 
     let mut symbols: HashMap<(usize, SymbolIndex), u64> = HashMap::new();
     let mut globals: HashMap<String, (u64, bool)> = HashMap::new();
@@ -159,7 +181,7 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
                 SymbolSection::Absolute => Some(symbol.address()),
                 SymbolSection::Common => {
                     data_end = align(data_end, symbol.address().max(1))?;
-                    let address = BASE + data_end;
+                    let address = base + data_end;
                     data_end = data_end.checked_add(symbol.size()).ok_or("common symbol overflow")?;
                     grow(&mut image, data_end)?;
                     Some(address)
@@ -194,14 +216,14 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     for (i, name) in imports.iter().enumerate() {
         let trampoline = trampoline_start + (6 * i) as u64;
         let got = got_start + (8 * i) as u64;
-        let displacement = i32::try_from((BASE + got) as i128 - (BASE + trampoline + 6) as i128)
+        let displacement = i32::try_from((base + got) as i128 - (base + trampoline + 6) as i128)
             .map_err(|_| "NetBSD linker: GOT out of trampoline range")?;
         let pos = trampoline as usize;
         image[pos..pos + 2].copy_from_slice(&[0xff, 0x25]);
         image[pos + 2..pos + 6].copy_from_slice(&displacement.to_le_bytes());
         // No code relocation directly points into libc. Calls go through
         // these trampolines after the NetBSD loader has patched GOT slots.
-        globals.insert(name.clone(), (BASE + trampoline, false));
+        globals.insert(name.clone(), (base + trampoline, false));
     }
     for (file_index, file) in files.iter().enumerate() {
         for section in file.sections() {
@@ -254,15 +276,15 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     write(&mut image, note_off as usize, &NETBSD_NOTE)?;
     for (i, _) in imports.iter().enumerate() {
         let off = rela_off as usize + 24 * i;
-        put64(&mut image, off, BASE + got_start + 8 * i as u64);
+        put64(&mut image, off, base + got_start + 8 * i as u64);
         put64(&mut image, off + 8, (((i + 1) as u64) << 32) | 6); // GLOB_DAT
         put64(&mut image, off + 16, 0);
     }
     let dyn_entries: Vec<(u64, u64)> = needed.iter().map(|&offset| (1, offset))
         .chain([
-            (4, BASE + hash_off), (5, BASE + dynstr_off),
-            (6, BASE + dynsym_off), (10, dynstr.len() as u64), (11, 24),
-            (7, BASE + rela_off), (8, reloc_len as u64), (9, 24), (0, 0),
+            (4, base + hash_off), (5, base + dynstr_off),
+            (6, base + dynsym_off), (10, dynstr.len() as u64), (11, 24),
+            (7, base + rela_off), (8, reloc_len as u64), (9, 24), (0, 0),
         ]).collect();
     for (i, (tag, value)) in dyn_entries.iter().enumerate() {
         put64(&mut image, dynamic_start as usize + i * 16, *tag);
@@ -276,33 +298,26 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     put_elf_header(&mut image, entry);
     let mut phdr = 0usize;
     // PT_PHDR covers its own table within the first load segment.
-    ph(&mut image, phdr, 6, 4, EH as u64, BASE + EH as u64,
+    ph(&mut image, phdr, 6, 4, EH as u64, base + EH as u64,
         (PH * PH_COUNT) as u64, (PH * PH_COUNT) as u64, 8); phdr += 1;
-    ph(&mut image, phdr, 3, 4, interp_off, BASE + interp_off,
+    ph(&mut image, phdr, 3, 4, interp_off, base + interp_off,
         INTERPRETER.len() as u64, INTERPRETER.len() as u64, 1); phdr += 1;
-    ph(&mut image, phdr, 1, 4, 0, BASE, text_start, text_start, PAGE); phdr += 1;
-    ph(&mut image, phdr, 1, 5, text_start, BASE + text_start,
+    ph(&mut image, phdr, 1, 4, 0, base, text_start, text_start, PAGE); phdr += 1;
+    ph(&mut image, phdr, 1, 5, text_start, base + text_start,
         text_end - text_start, text_end - text_start, PAGE); phdr += 1;
-    ph(&mut image, phdr, 1, 4, ro_start, BASE + ro_start,
+    ph(&mut image, phdr, 1, 4, ro_start, base + ro_start,
         ro_end - ro_start, ro_end - ro_start, PAGE); phdr += 1;
-    ph(&mut image, phdr, 1, 6, data_start, BASE + data_start,
+    ph(&mut image, phdr, 1, 6, data_start, base + data_start,
         data_final - data_start, data_final - data_start, PAGE); phdr += 1;
-    ph(&mut image, phdr, 2, 6, dynamic_start, BASE + dynamic_start,
+    ph(&mut image, phdr, 2, 6, dynamic_start, base + dynamic_start,
         dynamic_size, dynamic_size, 8); phdr += 1;
-    ph(&mut image, phdr, 4, 4, note_off, BASE + note_off,
+    ph(&mut image, phdr, 4, 4, note_off, base + note_off,
         NETBSD_NOTE.len() as u64, NETBSD_NOTE.len() as u64, 4);
 
-    std::fs::write(output, &image).map_err(|e| format!("NetBSD linker: {e}"))?;
-    #[cfg(unix)] {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(output).map_err(|e| e.to_string())?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(output, permissions).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    Ok(image)
 }
 
-fn place(image: &mut Vec<u8>, start: u64, sections: &[&InputSection],
+fn place(image: &mut Vec<u8>, base: u64, start: u64, sections: &[&InputSection],
     layouts: &mut HashMap<(usize, SectionIndex), SectionLayout>) -> Result<u64, String> {
     let mut at = start;
     for section in sections {
@@ -310,7 +325,7 @@ fn place(image: &mut Vec<u8>, start: u64, sections: &[&InputSection],
         grow(image, at)?;
         let offset = at;
         image.extend_from_slice(&section.data);
-        layouts.insert((section.object, section.index), SectionLayout { offset, address: BASE + offset });
+        layouts.insert((section.object, section.index), SectionLayout { offset, address: base + offset });
         at = at.checked_add(section.size.max(section.data.len() as u64))
             .ok_or("NetBSD linker: output overflow")?;
         grow(image, at)?;
