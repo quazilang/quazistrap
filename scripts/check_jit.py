@@ -85,7 +85,19 @@ def check(qz, root):
     assert (root / "hello").exists()
     result = run([str(qz), "run", *common, "hello.qz", "--", "a"], root)
     assert result.stdout.startswith("hello from jit\nargc 2\n"), result.stdout
-    print("jit: in-memory run, exit status, `--` arguments, raw environment, SIGPIPE, panic status, linker guard pass")
+
+    # A QZI input runs the same way, and build status never reaches the
+    # program's stdout (it used to print `built  hello` there).
+    result = run([str(qz), "build", "-i", *common, "-o", "hello.qzi", "hello.qz"], root)
+    assert result.returncode == 0, result.stderr
+    for mode in (["--jit"], []):
+        result = run([str(qz), "run", *mode, *common, "hello.qzi"], root)
+        assert result.returncode == 7, (mode, result.returncode, result.stderr)
+        assert result.stdout == "hello from jit\nargc 1\ntotal 499500\n", (mode, result.stdout)
+        result = run([str(qz), "run", *mode, *common, "--silent", "hello.qzi"], root)
+        assert result.stderr == "", (mode, result.stderr)
+    print("jit: in-memory run, exit status, `--` arguments, raw environment, SIGPIPE, panic status, "
+          "linker guard, QZI input pass")
 
 
 def main():

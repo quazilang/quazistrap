@@ -18,6 +18,11 @@ static OUTPUT_NO_COLOR: AtomicBool = AtomicBool::new(false);
 static OUTPUT_NO_UNICODE: AtomicBool = AtomicBool::new(false);
 static OUTPUT_NO_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// `--silent`: successful build output is suppressed.
+pub fn output_silent() -> bool {
+    OUTPUT_SILENT.load(Ordering::Relaxed)
+}
+
 pub fn configure_output(silent: bool, no_color: bool, no_unicode: bool, no_progress: bool) {
     OUTPUT_SILENT.store(silent, Ordering::Relaxed);
     OUTPUT_NO_COLOR.store(no_color, Ordering::Relaxed);

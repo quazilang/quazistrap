@@ -335,8 +335,8 @@ fn emit_chunks(
                     .filter_map(|chunk| chunk.export.as_ref().map(|export| export.symbol.clone()))
                     .collect::<Vec<_>>(),
             );
-            if announce {
-                println!(
+            if announce && !package::output_silent() {
+                eprintln!(
                     "\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m  \x1b[2m[object]\x1b[0m"
                 );
             }
@@ -363,8 +363,10 @@ fn emit_chunks(
                 eprintln!("\x1b[31;1merror:\x1b[0m {}", e);
                 fail_build();
             });
-            if announce {
-                println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
+            // Build status goes to stderr, as in project builds, so that
+            // `qz run file.qzi` leaves the program's stdout untouched.
+            if announce && !package::output_silent() {
+                eprintln!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{output_file_name}\x1b[0m");
             }
         }
     }
@@ -2105,7 +2107,9 @@ fn main() {
                     if do_strip {
                         strip_binary(Path::new(&out));
                     }
-                    println!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{out}\x1b[0m");
+                    if !package::output_silent() {
+                        eprintln!("\x1b[1;32mbuilt\x1b[0m  \x1b[1m{out}\x1b[0m");
+                    }
                     if run {
                         run_artifact(&out);
                     }
