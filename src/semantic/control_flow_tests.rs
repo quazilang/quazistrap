@@ -2528,3 +2528,43 @@ fn main() void {
         .unwrap();
     assert!(noted.writes_globals, "{noted:?}");
 }
+
+#[test]
+fn field_paths_of_names_are_modeled_reads() {
+    let source = r#"
+struct Inner { x: i32 }
+struct Pair { left: i32, inner: Inner }
+fn make() Pair { ret Pair { left: 1, inner: Inner { x: 2 } }; }
+fn left(pair: &Pair) i32 { ret pair.left; }
+fn nested(pair: &Pair) i32 { const x = (pair.inner).x; ret x; }
+fn field_ref(pair: &Pair) &i32 { ret &pair.inner.x; }
+fn through(pair: &Pair) i32 { ret left(pair); }
+fn of_call() i32 { ret make().left; }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    for name in ["left", "nested", "field_ref"] {
+        let effects = effects(name);
+        assert_eq!(effects.unmodeled, 0, "{name}: {effects:?}");
+    }
+    assert!(effects("left").read.contains(&0));
+    assert!(effects("nested").read.contains(&0));
+    assert!(effects("field_ref").returned_borrow.contains(&0));
+    let through = effects("through");
+    assert!(!through.callee_unmodeled, "{through:?}");
+    // A field of a call result is lowered as the call, then the field read.
+    let of_call = effects("of_call");
+    assert_eq!(of_call.unmodeled, 0, "{of_call:?}");
+    assert!(!of_call.callee_unmodeled, "{of_call:?}");
+}

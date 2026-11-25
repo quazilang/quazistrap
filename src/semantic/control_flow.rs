@@ -96,8 +96,9 @@ pub enum OwnershipFlowEvent {
     Evaluate {
         spans: Vec<Span>,
         kind: OwnershipEvaluationKind,
-        /// Every expression of the region is a name or literal (possibly
-        /// grouped): it calls nothing and changes no storage.
+        /// Every expression of the region is a name, a literal or a field
+        /// path rooted at a name (possibly grouped): it calls nothing and
+        /// changes no storage.
         effect_free: bool,
     },
     /// Result identity after the scheduled operands. Physical operations,
@@ -344,11 +345,23 @@ enum ValidationError {
     Invalid(String),
 }
 
-/// A name or literal, possibly grouped: evaluating it has no effects.
-fn is_name_or_literal(expression: &Expr) -> bool {
+/// A name, a literal, or a field path rooted at a name (`p.left.x`), possibly
+/// grouped: evaluating it calls nothing and changes no storage. Reading such
+/// a place is recorded separately as its `PlaceAccess`.
+fn is_effect_free_operand(expression: &Expr) -> bool {
     match &expression.node {
-        ExprKind::Ident(_) | ExprKind::Literal(_) => true,
-        ExprKind::Group(inner) => is_name_or_literal(inner),
+        ExprKind::Literal(_) => true,
+        ExprKind::Group(inner) => is_effect_free_operand(inner),
+        _ => is_name_path(expression),
+    }
+}
+
+/// A name or a chain of field projections of one, possibly grouped.
+fn is_name_path(expression: &Expr) -> bool {
+    match &expression.node {
+        ExprKind::Ident(_) => true,
+        ExprKind::Group(inner) => is_name_path(inner),
+        ExprKind::Field { object, .. } => is_name_path(object),
         _ => false,
     }
 }
@@ -2376,7 +2389,7 @@ where
                 kind,
                 effect_free: expressions
                     .iter()
-                    .all(|expression| is_name_or_literal(expression)),
+                    .all(|expression| is_effect_free_operand(expression)),
             });
         // A region that is itself a place read as a value reads it here.
         for expression in expressions {

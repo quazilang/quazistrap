@@ -64,7 +64,8 @@ from its graph and deferred closure graphs: parameter slots read, written
 (and written through a dereference, which the caller observes), moved into
 `Move` parameters, borrowed (shared or exclusive), returned by value or as a
 borrow, and captured by closures, plus whether it writes globals. `unmodeled`
-counts opaque regions (except effect-free name/literal regions) and indirect,
+counts opaque regions (except effect-free regions of names, literals and
+field paths rooted at a name, whose reads are recorded as place accesses) and indirect,
 foreign and format calls whose effects the sets omit; zero means every source
 effect of the body is modeled.
 
