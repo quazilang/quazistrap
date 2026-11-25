@@ -176,6 +176,9 @@ pub struct Analyzer {
     pub(super) result_retention: std::collections::BTreeMap<String, BTreeSet<usize>>,
     pub(super) fresh_result_intrinsics: HashSet<String>,
     retention_intrinsics: HashMap<String, retention::RetentionIntrinsic>,
+    /// Declared intrinsics whose call only reads its arguments and returns a
+    /// fresh value (`control_flow::pure_value_intrinsic`), by canonical name.
+    pure_value_intrinsics: HashSet<String>,
     /// Last type-check annotation per source span; stable through ownership passes.
     pub(super) retention_annotation_index: HashMap<(usize, usize), usize>,
     /// Source-body call facts for the conservative ownership shortcut. Unlike
@@ -2598,6 +2601,7 @@ impl Analyzer {
             result_retention: std::collections::BTreeMap::new(),
             fresh_result_intrinsics: HashSet::new(),
             retention_intrinsics: HashMap::new(),
+            pure_value_intrinsics: HashSet::new(),
             retention_annotation_index: HashMap::new(),
             source_call_effects: HashMap::new(),
             ownership_call_sites: HashMap::new(),
@@ -3130,6 +3134,14 @@ impl Analyzer {
             callable.control_flow = source_control_flow.get(&callable.id.callable).cloned();
             callable.parameter_effects = match callable.control_flow.as_deref() {
                 Some(control_flow) => Some(control_flow.parameter_effects()),
+                None if self.pure_value_intrinsics.contains(&callable.id.callable) => {
+                    // Reads every argument; writes, returns and stores nothing
+                    // of the caller's.
+                    Some(OwnershipParameterEffects {
+                        read: (0..callable.signature.parameters.len()).collect(),
+                        ..Default::default()
+                    })
+                }
                 None => self.certified_parameter_effects(callable),
             };
         }
@@ -3498,6 +3510,7 @@ impl Analyzer {
         self.result_retention.clear();
         self.fresh_result_intrinsics.clear();
         self.retention_intrinsics.clear();
+        self.pure_value_intrinsics.clear();
         self.retention_annotation_index.clear();
         self.source_call_effects.clear();
         self.ownership_call_sites.clear();

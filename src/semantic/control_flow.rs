@@ -366,6 +366,63 @@ fn is_name_path(expression: &Expr) -> bool {
     }
 }
 
+/// A declared intrinsic whose call only reads its arguments (values, or the
+/// bytes of a `str` view) and returns a fresh scalar: it writes no storage,
+/// keeps no argument and touches no runtime state. Identified by the declared
+/// intrinsic identity, never by the wrapper's name, and only for a
+/// non-generic signature of scalars (plus the `str` operand of `strlen` and
+/// `str.byte_at`): `quazi.f64.to_bits` emits no code, so a declaration that
+/// passes a reference through it would return its argument.
+pub(super) fn pure_value_intrinsic(
+    attributes: &[Attribute],
+    generic_params: &[String],
+    params: &[Param],
+    return_ty: &Type,
+) -> bool {
+    let Some(AttrArg::Positional(AttrVal::Str(name))) = attributes
+        .iter()
+        .find(|attribute| attribute.name == "intrinsic")
+        .and_then(|attribute| attribute.args.first())
+    else {
+        return false;
+    };
+    let reads_text = match name.as_str() {
+        "quazi.str.byte_at" | "quazi.strlen" => true,
+        "quazi.int.wrapping_add"
+        | "quazi.int.wrapping_sub"
+        | "quazi.int.wrapping_mul"
+        | "quazi.f64.to_bits"
+        | "quazi.f64.from_bits"
+        | "quazi.f64.sqrt" => false,
+        _ => return false,
+    };
+    let scalar = |ty: &TypeKind| {
+        matches!(
+            ty,
+            TypeKind::Int8
+                | TypeKind::Int16
+                | TypeKind::Int32
+                | TypeKind::Int64
+                | TypeKind::Uint8
+                | TypeKind::Uint16
+                | TypeKind::Uint32
+                | TypeKind::Uint64
+                | TypeKind::Isize
+                | TypeKind::Usize
+                | TypeKind::Float32
+                | TypeKind::Float64
+                | TypeKind::Bool
+        )
+    };
+    generic_params.is_empty()
+        && scalar(&return_ty.node)
+        && params.iter().enumerate().all(|(index, param)| {
+            !param.variadic
+                && (scalar(&param.ty.node)
+                    || (reads_text && index == 0 && matches!(param.ty.node, TypeKind::Str)))
+        })
+}
+
 /// The parameter slot a place is rooted at, with the place.
 fn slot_of(place: &OwnershipArgumentValue) -> Option<(usize, &super::OwnershipPlace)> {
     match place {
@@ -1485,15 +1542,19 @@ where
         let (name, _) = site.target.as_ref()?;
         let signature = self.analyzer.ownership_signature_index.get(name)?;
         let symbol = self.analyzer.resolve_symbol(name)?;
-        if !signature.has_body
+        // A pure value intrinsic is lowered as an ordinary call of its chunk.
+        let pure_intrinsic = self.analyzer.pure_value_intrinsics.contains(name);
+        if !(signature.has_body || pure_intrinsic)
             || signature.receiver.is_some() != receiver
             || signature.variadic.is_some()
             // These spellings still have a separate dispatch path in lowering.
             || self.analyzer.is_runtime_panic(&symbol)
             || name == "fmt.format"
-            || symbol.attributes.iter().any(|attr| matches!(
-                attr.as_str(), "api" | "intrinsic" | "syscall" | "str_variadic"
-            ))
+            || symbol.attributes.iter().any(|attr| match attr.as_str() {
+                "intrinsic" => !pure_intrinsic,
+                "api" | "syscall" | "str_variadic" => true,
+                _ => false,
+            })
         {
             return None;
         }

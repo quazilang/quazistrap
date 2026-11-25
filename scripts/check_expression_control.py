@@ -167,8 +167,18 @@ fn check_places() i32 {
         if combiner.combine(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 45; }
     }
     if log != 12 { ret 46; }
+    log = 0;
+    unsafe {
+        // A pure value intrinsic is an ordinary call: arguments run in
+        // declared parameter order, also when named in another order.
+        const sum = wrapping(right = stamp(&log, 2, 2) as u64, left = stamp(&log, 1, 1) as u64);
+        if sum != 3 { ret 47; }
+    }
+    if log != 12 { ret 48; }
     ret 0;
 }
+@intrinsic("quazi.int.wrapping_add")
+fn wrapping(left: u64, right: u64) u64;
 fn main() i32 {
     var result0 = check_booleans();
     if result0 != 0 { ret result0; }
@@ -227,7 +237,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 46 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 48 checks, native, QZI-only, Windows COFF")
 
 
 def main():

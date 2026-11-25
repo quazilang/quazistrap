@@ -2568,3 +2568,53 @@ fn main() void {}
     assert_eq!(of_call.unmodeled, 0, "{of_call:?}");
     assert!(!of_call.callee_unmodeled, "{of_call:?}");
 }
+
+#[test]
+fn pure_value_intrinsic_calls_are_modeled() {
+    let source = r#"
+@intrinsic("quazi.int.wrapping_add")
+fn wadd(left: u64, right: u64) u64;
+@intrinsic("quazi.str.byte_at")
+fn byte_at(text: str, index: usize) u8;
+@intrinsic("quazi.int_to_str")
+fn int_text(value: usize) str;
+@intrinsic("quazi.f64.from_bits")
+fn launder(value: &Buffer) &Buffer;
+struct Buffer { size: i32 }
+fn sum(left: u64, right: u64) u64 { ret wadd(left, right); }
+fn first(text: str) u8 { ret byte_at(text, 0); }
+fn calls_sum(value: u64) u64 { ret sum(value, 1); }
+fn render(value: usize) str { ret int_text(value); }
+fn leak(buffer: &Buffer) &Buffer { ret launder(buffer); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+    };
+    let wadd = effects("wadd").expect("a pure intrinsic has a summary");
+    assert_eq!(wadd.read, [0, 1].into_iter().collect(), "{wadd:?}");
+    assert!(
+        wadd.written.is_empty() && wadd.returned.is_empty(),
+        "{wadd:?}"
+    );
+    for name in ["sum", "first", "calls_sum"] {
+        let effects = effects(name).unwrap();
+        assert_eq!(effects.unmodeled, 0, "{name}: {effects:?}");
+        assert!(!effects.callee_unmodeled, "{name}: {effects:?}");
+    }
+    // `quazi.int_to_str` writes runtime scratch storage: not a pure value.
+    assert!(effects("int_text").is_none());
+    assert!(effects("render").unwrap().callee_unmodeled);
+    // A pure identity used with a non-scalar signature may return its
+    // argument (`f64.from_bits` emits no code): it gets no summary.
+    let leak = effects("leak").unwrap();
+    assert!(leak.callee_unmodeled, "{leak:?}");
+}

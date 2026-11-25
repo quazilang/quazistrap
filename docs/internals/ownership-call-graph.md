@@ -77,7 +77,18 @@ rooted at a caller parameter inherits the callee's write through a reference
 for that slot when the argument itself refers into the caller's memory (a
 reference-typed root or a dereference projection); borrowing a by-value
 parameter only changes the callee's own copy. A callee that writes globals
-makes its callers write globals. `bytecode::effects` checks this
+makes its callers write globals.
+
+A declared intrinsic whose call only reads its arguments and returns a fresh
+scalar (`quazi.int.wrapping_add/sub/mul`, `quazi.f64.to_bits/from_bits/sqrt`,
+`quazi.str.byte_at`, `quazi.strlen`; identified by the declared intrinsic, not
+the wrapper's name, and only for a non-generic signature of scalars plus the
+`str` operand of the two text reads, since `f64.to_bits` emits no code and
+would otherwise pass a reference through) is lowered as an ordinary call of
+its chunk. Its calls are
+scheduled like direct source calls and its summary reads every parameter and
+nothing else. Other intrinsics (allocation, raw memory, I/O, runtime state)
+stay without a summary, so their callers remain `callee_unmodeled`. `bytecode::effects` checks this
 differentially, including on the tutorial programs with std, and a callee with unmodeled effects or without a source
 summary marks its callers `callee_unmodeled`. A call whose result a `ret`
 hands out directly (`ret callee(p)`) also passes on what the callee returns:

@@ -379,6 +379,7 @@ impl Analyzer {
         self.result_retention.clear();
         self.fresh_result_intrinsics.clear();
         self.retention_intrinsics.clear();
+        self.pure_value_intrinsics.clear();
         let mut annotations = HashMap::with_capacity(self.annotated_exprs.len());
         for (index, annotation) in self.annotated_exprs.iter().enumerate() {
             if index % 256 == 0 {
@@ -403,13 +404,28 @@ impl Analyzer {
                 self.fresh_result_intrinsics.insert(canonical);
             }
             if let ItemKind::Fn {
-                name, attributes, ..
+                name,
+                attributes,
+                generic_params,
+                params,
+                return_ty,
+                ..
             } = &item.node
                 && super::item_should_include(attributes)
-                && let Some(effect) = retention_intrinsic(attributes)
             {
-                let canonical = self.retention_source_name(name, attributes, item.span);
-                self.retention_intrinsics.insert(canonical, effect);
+                if let Some(effect) = retention_intrinsic(attributes) {
+                    let canonical = self.retention_source_name(name, attributes, item.span);
+                    self.retention_intrinsics.insert(canonical, effect);
+                }
+                if super::control_flow::pure_value_intrinsic(
+                    attributes,
+                    generic_params,
+                    params,
+                    return_ty,
+                ) {
+                    let canonical = self.retention_source_name(name, attributes, item.span);
+                    self.pure_value_intrinsics.insert(canonical);
+                }
             }
             match &item.node {
                 ItemKind::Fn {

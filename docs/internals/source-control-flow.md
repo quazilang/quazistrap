@@ -129,7 +129,8 @@ Success records payload extraction; failure returns from the current callable
 and retains its active scope exits. Typed wrapper compatibility and emitted
 cleanup effects remain unverified by this graph.
 
-For a resolved ordinary direct call with a fixed signature and a source body,
+For a resolved ordinary direct call with a fixed signature and a source body
+(or a pure value intrinsic, which lowers as an ordinary call of its chunk),
 the graph uses lowering's declaration-slot schedule for its actual arguments.
 The call gets an `Invoke` event keyed by the source call span only after the
 actuals complete. A `?` in an earlier argument can bypass later arguments and
@@ -175,7 +176,7 @@ A call of the prelude-selected runtime panic evaluates a literal message as a
 format template (when `fmt.format` exists, using the same expansion rounds)
 or its message and extra values in order, then records a `PanicInvoke` whose
 block stops with every active scope exited: the panic never returns.
-Intrinsics keep
+Other intrinsics keep
 their special lowering and stay opaque, as do other variadic calls, as do the runtime panic and calls
 with special lowering such as layout queries.
 
