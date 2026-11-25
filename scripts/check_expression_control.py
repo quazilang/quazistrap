@@ -175,8 +175,16 @@ fn check_places() i32 {
         if sum != 3 { ret 47; }
     }
     if log != 12 { ret 48; }
+    log = 0;
+    unsafe {
+        // A qualified variant constructor runs its payloads left to right.
+        const both = Twin.Both(stamp(&log, 1, 1), stamp(&log, 2, 2));
+        if match both { Twin.Both(left, right) => left * 10 + right != 12, _ => true, } { ret 49; }
+    }
+    if log != 12 { ret 50; }
     ret 0;
 }
+enum Twin { Both(i32, i32), Neither }
 @intrinsic("quazi.int.wrapping_add")
 fn wrapping(left: u64, right: u64) u64;
 fn main() i32 {
@@ -237,7 +245,7 @@ def check(qz, root, before=None):
     run([str(qz), "build", str(artifact), *common, "-c", "--target",
          "x86_64-windows", "-o", str(coff)], root)
     assert coff.read_bytes()[:2] == b"\x64\x86", "expected x86-64 COFF"
-    print("PASS expression control: 48 checks, native, QZI-only, Windows COFF")
+    print("PASS expression control: 50 checks, native, QZI-only, Windows COFF")
 
 
 def main():

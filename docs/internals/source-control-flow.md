@@ -216,6 +216,10 @@ positional payloads in source order, as lowering does, and records a
 `VariantConstructor` result. It is recognized like the borrow checker does:
 analysis types the call as an enum with that variant and the callee resolves
 to no function; a callee bound to a local value or parameter stays a call.
+A qualified constructor (`Shape.Circle(r)`) is scheduled the same way when its
+object names an enum type (not a local), the variant exists, the call has no
+named or explicit type arguments, and no associated function of that spelling
+takes it, matching lowering's enum-namespace path.
 Allocation and payload moves are unmodeled.
 
 A struct initializer evaluates its field values in the struct's declaration

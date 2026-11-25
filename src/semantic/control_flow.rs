@@ -1415,6 +1415,50 @@ where
         .then_some(variant.as_str())
     }
 
+    /// `Enum.Variant(payloads...)`: the object names an enum type (not a
+    /// local), the variant exists and no associated function of that name
+    /// takes the call. Lowering's enum-namespace path evaluates the
+    /// positional payloads in source order.
+    fn qualified_variant_constructor<'e>(
+        &self,
+        object: &Expr,
+        method: &'e str,
+        type_args: &[Type],
+        named_args: &[(String, Expr)],
+    ) -> Option<&'e str> {
+        let ExprKind::Ident(type_name) = &object.node else {
+            return None;
+        };
+        let local = self
+            .analyzer
+            .retention_annotation(object)
+            .and_then(|annotation| annotation.resolved_binding.as_ref())
+            .is_some_and(|binding| {
+                matches!(
+                    binding.kind,
+                    SymbolKind::Variable { .. } | SymbolKind::Parameter
+                )
+            });
+        let is_type = self
+            .analyzer
+            .resolve_symbol(type_name)
+            .is_some_and(|symbol| symbol.kind == SymbolKind::TypeName);
+        (named_args.is_empty()
+            && type_args.is_empty()
+            && !local
+            && is_type
+            && self
+                .analyzer
+                .enums
+                .get(type_name.as_str())
+                .is_some_and(|info| info.variants.contains_key(method))
+            && self
+                .analyzer
+                .resolve_symbol(&format!("{type_name}.{method}"))
+                .is_none())
+        .then_some(method)
+    }
+
     /// A struct initializer's values in the declaration order lowering uses,
     /// with the canonical struct name; `None` when the declaration is unknown.
     fn struct_init_order<'e>(
@@ -1601,6 +1645,36 @@ where
                         &mut pending,
                         current,
                         payloads,
+                        complete,
+                        scopes,
+                        expression.span,
+                    )?;
+                }
+                ExpressionControl::Opaque
+                    if let ExprKind::MethodCall {
+                        object,
+                        method,
+                        type_args,
+                        args,
+                        named_args,
+                    } = &expression.node
+                        && let Some(variant) = self.qualified_variant_constructor(
+                            object, method, type_args, named_args,
+                        ) =>
+                {
+                    let complete = self.expression_result(
+                        expression.span,
+                        OwnershipExpressionResult::VariantConstructor {
+                            variant: variant.to_string(),
+                        },
+                        normal,
+                        scopes,
+                    )?;
+                    self.budget.charge(args.len() * 3, expression.span)?;
+                    self.schedule_sequence(
+                        &mut pending,
+                        current,
+                        args.iter().collect(),
                         complete,
                         scopes,
                         expression.span,

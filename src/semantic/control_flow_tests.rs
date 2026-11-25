@@ -2618,3 +2618,41 @@ fn main() void {}
     let leak = effects("leak").unwrap();
     assert!(leak.callee_unmodeled, "{leak:?}");
 }
+
+#[test]
+fn qualified_variant_constructors_schedule_their_payloads() {
+    let source = r#"
+enum Failure { Digit(usize), Pair(i32, i32), Empty }
+fn digit(index: usize) Failure { ret Failure.Digit(index); }
+fn pair(left: i32, right: i32) Failure { ret Failure.Pair(left + 1, right); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let callable = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+    };
+    for name in ["digit", "pair"] {
+        let effects = callable(name).parameter_effects.clone().unwrap();
+        assert_eq!(effects.unmodeled, 0, "{name}: {effects:?}");
+        let graph = callable(name).control_flow.clone().unwrap();
+        assert!(
+            graph
+                .blocks
+                .iter()
+                .flat_map(|block| &block.events)
+                .any(|event| matches!(
+                    event,
+                    OwnershipFlowEvent::ExpressionResult {
+                        value: OwnershipExpressionResult::VariantConstructor { .. },
+                        ..
+                    }
+                )),
+            "{name}"
+        );
+    }
+}

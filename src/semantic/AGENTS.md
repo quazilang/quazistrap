@@ -98,8 +98,8 @@ operand control shared with codegen for unary/eager-binary/short-circuit/try
 forms, plain/compound assignments and `++`/`--` of a bare (grouped) name, and
 updates of dereference, field and single-index places (address operands, then
 value, then `PlaceUpdate`), single-index reads (object, index, `Index`) and
-field reads of non-name objects (object, `Field`) and enum variant constructors
-(payloads, `VariantConstructor`), calls through local function values
+field reads of non-name objects (object, `Field`) and enum variant constructors,
+bare or qualified `Enum.Variant(...)` (payloads, `VariantConstructor`), calls through local function values
 and `dyn` methods (receiver, arguments, `IndirectInvoke`), and format calls
 (expanded template arguments, `FormatInvoke`; expansions are made outside the
 builder and the family is rebuilt), `@api`/`@syscall` calls (arguments,
