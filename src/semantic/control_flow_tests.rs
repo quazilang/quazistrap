@@ -2413,3 +2413,118 @@ fn main() void {}
     // `reset` passes a reference it received: the caller sees the write.
     assert!(effects("reset").written_through_reference.contains(&0));
 }
+
+#[test]
+fn callee_global_writes_compose_into_callers() {
+    let source = r#"
+@api("counter") var counter: i32;
+fn bump() void { unsafe { counter = 1; } }
+fn relay() void { bump(); }
+fn outer(value: i32) i32 { relay(); ret value; }
+fn pure(value: i32) i32 { ret value + 1; }
+fn calls_pure(value: i32) i32 { ret pure(value); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    for name in ["bump", "relay", "outer"] {
+        assert!(effects(name).writes_globals, "{name}: {:?}", effects(name));
+    }
+    assert!(!effects("calls_pure").writes_globals);
+}
+
+#[test]
+fn generic_specialization_effects_compose_into_callers() {
+    let source = r#"
+struct Pair { left: i32, right: i32 }
+struct Cell[T] { value: T }
+fn put[T](cell: &Cell[T]!, value: T) void { cell.value = value; }
+fn look[T](cell: &Cell[T]) &T { ret &cell.value; }
+fn store_int(cell: &Cell[i32]!) void { put(cell, 1); }
+fn store_pair(cell: &Cell[Pair]!) void { put(cell, Pair { left: 1, right: 2 }); }
+fn peek(cell: &Cell[i32]) &i32 { ret look(cell); }
+fn peek_pair(other: i32, cell: &Cell[Pair]) &Pair { ret look(cell); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    for name in ["store_int", "store_pair"] {
+        let effects = effects(name);
+        assert!(
+            effects.written_through_reference.contains(&0),
+            "{name}: {effects:?}"
+        );
+        assert!(!effects.callee_unmodeled, "{name}: {effects:?}");
+    }
+    // Two specializations of `look`: each caller composes its own.
+    let peek = effects("peek");
+    assert!(peek.returned_borrow.contains(&0), "{peek:?}");
+    let peek_pair = effects("peek_pair");
+    assert!(peek_pair.returned_borrow.contains(&1), "{peek_pair:?}");
+    assert!(!peek_pair.returned_borrow.contains(&0), "{peek_pair:?}");
+}
+
+#[test]
+fn generic_callers_compose_their_own_specializations() {
+    let source = r#"
+@api("counter") var counter: i32;
+struct Pair { left: i32, right: i32 }
+struct Cell[T] { value: T }
+fn put[T](cell: &Cell[T]!, value: T) void { cell.value = value; }
+fn wrap[T](cell: &Cell[T]!, value: T) void { put(cell, value); }
+fn note[T](value: T) T { unsafe { counter = 1; } ret value; }
+fn noted(value: i32) i32 { ret note(value); }
+fn main() void {
+    var a = Cell { value: 1 };
+    wrap(&a!, 2);
+    var b = Cell { value: Pair { left: 1, right: 2 } };
+    wrap(&b!, Pair { left: 3, right: 4 });
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let instances = report
+        .ownership_call_graph
+        .iter()
+        .filter(|callable| callable.id.callable == "wrap")
+        .collect::<Vec<_>>();
+    assert_eq!(instances.len(), 2, "{instances:?}");
+    for wrap in instances {
+        let effects = wrap.parameter_effects.as_ref().unwrap();
+        assert!(
+            effects.written_through_reference.contains(&0),
+            "{:?}: {effects:?}",
+            wrap.id
+        );
+        assert!(!effects.callee_unmodeled, "{:?}: {effects:?}", wrap.id);
+    }
+    let noted = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "noted")
+        .unwrap()
+        .parameter_effects
+        .clone()
+        .unwrap();
+    assert!(noted.writes_globals, "{noted:?}");
+}

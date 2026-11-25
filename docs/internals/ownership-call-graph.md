@@ -68,11 +68,15 @@ counts opaque regions (except effect-free name/literal regions) and indirect,
 foreign and format calls whose effects the sets omit; zero means every source
 effect of the body is modeled.
 
-Callee effects compose to a fixed point over resolved calls: an argument
+Callee effects compose to a fixed point over resolved calls. Each caller
+instance composes the concrete specializations its own call sites resolved
+to, with argument places typed under its substitution; a call whose target or
+arguments are unresolved makes the caller `callee_unmodeled`. An argument
 rooted at a caller parameter inherits the callee's write through a reference
 for that slot when the argument itself refers into the caller's memory (a
 reference-typed root or a dereference projection); borrowing a by-value
-parameter only changes the callee's own copy. `bytecode::effects` checks this
+parameter only changes the callee's own copy. A callee that writes globals
+makes its callers write globals. `bytecode::effects` checks this
 differentially, including on the tutorial programs with std, and a callee with unmodeled effects or without a source
 summary marks its callers `callee_unmodeled`. A call whose result a `ret`
 hands out directly (`ret callee(p)`) also passes on what the callee returns:

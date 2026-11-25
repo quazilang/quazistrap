@@ -2699,8 +2699,12 @@ impl Analyzer {
 
     /// Compose callee parameter effects into callers to a fixed point: an
     /// argument rooted at a caller parameter inherits the callee's write
-    /// through a reference for that slot, and a callee with unmodeled effects
-    /// (or no source summary) marks its callers `callee_unmodeled`.
+    /// through a reference for that slot, a callee's global writes are the
+    /// caller's, and a callee with unmodeled effects (or no source summary)
+    /// marks its callers `callee_unmodeled`. Each caller instance composes
+    /// the concrete specializations its own call sites resolved to, with
+    /// argument places typed under its substitution; a call whose target or
+    /// arguments are unresolved leaves the caller `callee_unmodeled`.
     fn compose_parameter_effects<F>(
         &self,
         graph: &mut [OwnershipCallable],
@@ -2709,25 +2713,18 @@ impl Analyzer {
     where
         F: FnMut() -> Result<(), crate::cancel::Cancelled>,
     {
-        let mut by_name: HashMap<&str, Option<usize>> = HashMap::new();
-        for (index, callable) in graph.iter().enumerate() {
-            by_name
-                .entry(callable.id.callable.as_str())
-                .and_modify(|unique| *unique = None)
-                .or_insert(Some(index));
-        }
-        let by_name: HashMap<String, usize> = by_name
-            .into_iter()
-            .filter_map(|(name, index)| index.map(|index| (name.to_string(), index)))
+        let by_id: std::collections::BTreeMap<OwnershipCallableId, usize> = graph
+            .iter()
+            .enumerate()
+            .map(|(index, callable)| (callable.id.clone(), index))
             .collect();
-        // Every round only adds facts, so at most one round per callable.
-        for _ in 0..=graph.len() {
+        // Every round only adds facts to finite per-callable sets, so the
+        // iteration reaches a fixed point; recursion through permuted
+        // arguments may take one round per parameter slot.
+        loop {
             checkpoint()?;
             let mut changed = false;
             for caller in 0..graph.len() {
-                let Some(sites) = self.ownership_call_sites.get(&graph[caller].id.callable) else {
-                    continue;
-                };
                 let mut inherited = Vec::new();
                 let mut returned_borrows = Vec::new();
                 let mut returned_values = Vec::new();
@@ -2737,22 +2734,28 @@ impl Analyzer {
                     .get(&graph[caller].id.callable)
                     .unwrap_or(&no_returns);
                 let mut callee_unmodeled = false;
-                for site in sites.values() {
-                    let Some((name, _)) = &site.target else {
-                        continue;
+                let mut callee_writes_globals = false;
+                for site in &graph[caller].calls {
+                    let callee = match &site.target {
+                        OwnershipCallTarget::Direct(id) => by_id.get(id).copied(),
+                        OwnershipCallTarget::Unresolved(_) => None,
+                        // Indirect, foreign and format calls are counted in the
+                        // caller's own `unmodeled`; a bodiless callable's
+                        // placeholder site has no callee.
+                        OwnershipCallTarget::Opaque | OwnershipCallTarget::Unavailable => {
+                            continue;
+                        }
                     };
-                    let callee_effects = by_name
-                        .get(name)
-                        .and_then(|&callee| graph[callee].parameter_effects.as_ref());
-                    let Some(callee_effects) = callee_effects else {
+                    let callee_effects =
+                        callee.and_then(|callee| graph[callee].parameter_effects.as_ref());
+                    let (Some(callee_effects), Some(arguments)) = (callee_effects, &site.arguments)
+                    else {
                         callee_unmodeled = true;
                         continue;
                     };
                     callee_unmodeled |=
                         callee_effects.unmodeled > 0 || callee_effects.callee_unmodeled;
-                    let Some(arguments) = &site.arguments else {
-                        continue;
-                    };
+                    callee_writes_globals |= callee_effects.writes_globals;
                     for actual in &arguments.actuals {
                         let (Some(slot), OwnershipArgumentValue::Place(place)) =
                             (actual.parameter_slot, &actual.value)
@@ -2803,6 +2806,10 @@ impl Analyzer {
                 }
                 if callee_unmodeled && !effects.callee_unmodeled {
                     effects.callee_unmodeled = true;
+                    changed = true;
+                }
+                if callee_writes_globals && !effects.writes_globals {
+                    effects.writes_globals = true;
                     changed = true;
                 }
             }
