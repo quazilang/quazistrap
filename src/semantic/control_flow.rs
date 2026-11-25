@@ -96,9 +96,9 @@ pub enum OwnershipFlowEvent {
     Evaluate {
         spans: Vec<Span>,
         kind: OwnershipEvaluationKind,
-        /// Every expression of the region is a name, a literal or a field
-        /// path rooted at a name (possibly grouped): it calls nothing and
-        /// changes no storage.
+        /// Every expression of the region is a name, a literal, a field path
+        /// rooted at a name or a closure literal (possibly grouped): it calls
+        /// nothing and changes no storage.
         effect_free: bool,
     },
     /// Result identity after the scheduled operands. Physical operations,
@@ -131,6 +131,16 @@ pub enum OwnershipFlowEvent {
     /// positional arguments complete in source order. The target and its
     /// effects are unknown.
     IndirectInvoke {
+        span: Span,
+    },
+    /// A call of a closure literal bound to an immutable local of this
+    /// callable (`const f: fn(i32) i32 = |x| ...`), reached after its
+    /// positional arguments complete in source order. The target is closed:
+    /// its body is one of this callable's deferred graphs (whose events and
+    /// call sites are already this callable's), its parameters and result
+    /// are plain scalars, and captures are never references. The body runs
+    /// here: a flow-sensitive consumer must not treat this as effect-free.
+    ClosureInvoke {
         span: Span,
     },
     /// The place an assignment or increment target reads or writes: its
@@ -345,12 +355,14 @@ enum ValidationError {
     Invalid(String),
 }
 
-/// A name, a literal, or a field path rooted at a name (`p.left.x`), possibly
-/// grouped: evaluating it calls nothing and changes no storage. Reading such
-/// a place is recorded separately as its `PlaceAccess`.
+/// A name, a literal, a field path rooted at a name (`p.left.x`) or a
+/// closure literal, possibly grouped: evaluating it calls nothing and changes
+/// no storage. Reading such a place is recorded separately as its
+/// `PlaceAccess`; a closure's captures are `Capture` events and its body is a
+/// deferred graph.
 fn is_effect_free_operand(expression: &Expr) -> bool {
     match &expression.node {
-        ExprKind::Literal(_) => true,
+        ExprKind::Literal(_) | ExprKind::Closure { .. } => true,
         ExprKind::Group(inner) => is_effect_free_operand(inner),
         _ => is_name_path(expression),
     }
@@ -396,31 +408,33 @@ pub(super) fn pure_value_intrinsic(
         | "quazi.f64.sqrt" => false,
         _ => return false,
     };
-    let scalar = |ty: &TypeKind| {
-        matches!(
-            ty,
-            TypeKind::Int8
-                | TypeKind::Int16
-                | TypeKind::Int32
-                | TypeKind::Int64
-                | TypeKind::Uint8
-                | TypeKind::Uint16
-                | TypeKind::Uint32
-                | TypeKind::Uint64
-                | TypeKind::Isize
-                | TypeKind::Usize
-                | TypeKind::Float32
-                | TypeKind::Float64
-                | TypeKind::Bool
-        )
-    };
     generic_params.is_empty()
-        && scalar(&return_ty.node)
+        && is_plain_scalar(&return_ty.node)
         && params.iter().enumerate().all(|(index, param)| {
             !param.variadic
-                && (scalar(&param.ty.node)
+                && (is_plain_scalar(&param.ty.node)
                     || (reads_text && index == 0 && matches!(param.ty.node, TypeKind::Str)))
         })
+}
+
+/// An integer, floating or boolean value type.
+fn is_plain_scalar(ty: &TypeKind) -> bool {
+    matches!(
+        ty,
+        TypeKind::Int8
+            | TypeKind::Int16
+            | TypeKind::Int32
+            | TypeKind::Int64
+            | TypeKind::Uint8
+            | TypeKind::Uint16
+            | TypeKind::Uint32
+            | TypeKind::Uint64
+            | TypeKind::Isize
+            | TypeKind::Usize
+            | TypeKind::Float32
+            | TypeKind::Float64
+            | TypeKind::Bool
+    )
 }
 
 /// The parameter slot a place is rooted at, with the place.
@@ -874,6 +888,9 @@ struct Builder<'a, 'b, F> {
     finished: Vec<bool>,
     analyzer: &'b Analyzer,
     sites: Option<&'b BTreeMap<(usize, usize), SourceOwnershipCall>>,
+    /// Declaration spans of immutable locals bound to plain-scalar closure
+    /// literals, shared by the builders of one callable's graph family.
+    closed_closures: &'b mut BTreeSet<(usize, usize)>,
     budget: &'b mut Budget,
     checkpoint: &'b mut F,
 }
@@ -907,6 +924,9 @@ where
     }]);
     let mut drafts = Vec::<(OwnershipControlFlow, Vec<(Span, usize)>)>::new();
     let mut format_requests = Vec::new();
+    // Roots run in breadth-first order, so a closure body is built after the
+    // statements that bind the closures it can see.
+    let mut closed_closures = BTreeSet::new();
     while let Some(RootTask {
         root,
         depth,
@@ -936,6 +956,7 @@ where
             finished: Vec::new(),
             analyzer,
             sites: analyzer.ownership_call_sites.get(caller),
+            closed_closures: &mut closed_closures,
             budget,
             checkpoint,
         };
@@ -1339,8 +1360,53 @@ where
                 })
     }
 
+    /// Record `const name = |..| ...` when the closure's declared type takes
+    /// and returns only plain scalars. Captures need no check: they are
+    /// plain copies or owners moved into the environment, never references,
+    /// and the body's effects on them are recorded in its deferred graph.
+    fn note_closed_closure(&mut self, declaration: Span, value: &Expr) {
+        let mut literal = value;
+        while let ExprKind::Group(inner) = &literal.node {
+            literal = inner;
+        }
+        if !matches!(literal.node, ExprKind::Closure { once: false, .. }) {
+            return;
+        }
+        let scalar_signature = self
+            .analyzer
+            .retention_annotation(value)
+            .and_then(|annotation| annotation.ty.as_ref())
+            .map(|ty| self.analyzer.resolve_type_aliases(ty))
+            .is_some_and(|ty| match ty {
+                TypeKind::Fn { params, return_ty } => {
+                    params.iter().all(|param| is_plain_scalar(&param.node))
+                        && (is_plain_scalar(&return_ty.node)
+                            || matches!(return_ty.node, TypeKind::Void))
+                }
+                _ => false,
+            });
+        if scalar_signature {
+            self.closed_closures
+                .insert((declaration.start, declaration.end));
+        }
+    }
+
+    /// The callee is an immutable local bound to a recorded closure literal.
+    fn closed_closure_call(&self, callee: &Expr) -> bool {
+        self.analyzer
+            .retention_annotation(callee)
+            .and_then(|annotation| annotation.resolved_binding.as_ref())
+            .is_some_and(|binding| {
+                matches!(binding.kind, SymbolKind::Variable { mutable: false })
+                    && self
+                        .closed_closures
+                        .contains(&(binding.span.start, binding.span.end))
+            })
+    }
+
     /// Evaluate `operands` in order, then an `IndirectInvoke` whose target
-    /// and effects are unknown, then continue at `normal`.
+    /// and effects are unknown (or a `ClosureInvoke` of a closed local
+    /// closure), then continue at `normal`.
     fn indirect_call(
         &mut self,
         pending: &mut Vec<(usize, &'a Expr, usize)>,
@@ -1351,10 +1417,16 @@ where
         scopes: &[usize],
     ) -> FlowResult<()> {
         let span = expression.span;
+        let closed = matches!(
+            &expression.node,
+            ExprKind::Call { callee, .. } if self.closed_closure_call(callee)
+        );
         let invocation = self.block(scopes, span)?;
-        self.graph.blocks[invocation]
-            .events
-            .push(OwnershipFlowEvent::IndirectInvoke { span });
+        self.graph.blocks[invocation].events.push(if closed {
+            OwnershipFlowEvent::ClosureInvoke { span }
+        } else {
+            OwnershipFlowEvent::IndirectInvoke { span }
+        });
         self.terminate(
             invocation,
             OwnershipFlowTerminator::Opaque {
@@ -2653,13 +2725,18 @@ where
                         )?;
                     }
                 }
-                StmtKind::Const { value, .. } | StmtKind::ExprStmt(value) => self.evaluate(
-                    current,
-                    &[value],
-                    OwnershipEvaluationKind::Statement,
-                    next,
-                    &task.scopes,
-                )?,
+                StmtKind::Const { value, .. } | StmtKind::ExprStmt(value) => {
+                    if matches!(statement.node, StmtKind::Const { .. }) {
+                        self.note_closed_closure(statement.span, value);
+                    }
+                    self.evaluate(
+                        current,
+                        &[value],
+                        OwnershipEvaluationKind::Statement,
+                        next,
+                        &task.scopes,
+                    )?
+                }
                 StmtKind::Break | StmtKind::Continue => {
                     if let Some(context) = task.loops.last() {
                         let is_break = matches!(statement.node, StmtKind::Break);

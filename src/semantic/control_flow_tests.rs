@@ -2656,3 +2656,59 @@ fn main() void {}
         );
     }
 }
+
+#[test]
+fn calls_of_immutable_local_closures_are_closed() {
+    let source = r#"
+fn run(value: i32) i32 {
+    const add: fn(i32) i32 = |x| x + value;
+    ret add(2);
+}
+fn nested(value: i32) i32 {
+    const twice: fn(i32) i32 = |x| x * 2;
+    const inc: fn(i32) i32 = |x| x + 1;
+    ret inc(twice(value));
+}
+fn mutable(value: i32) i32 {
+    var add: fn(i32) i32 = |x| x + 1;
+    ret add(value);
+}
+fn callback(apply: fn(i32) i32) i32 { ret apply(1); }
+fn main() void {}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let callable = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+    };
+    let invokes = |name: &str| {
+        let mut closed = 0;
+        let mut open = 0;
+        let mut pending = vec![callable(name).control_flow.clone().unwrap()];
+        while let Some(graph) = pending.pop() {
+            pending.extend(graph.deferred.iter().map(|deferred| deferred.graph.clone()));
+            for event in graph.blocks.iter().flat_map(|block| &block.events) {
+                match event {
+                    OwnershipFlowEvent::ClosureInvoke { .. } => closed += 1,
+                    OwnershipFlowEvent::IndirectInvoke { .. } => open += 1,
+                    _ => {}
+                }
+            }
+        }
+        (closed, open)
+    };
+    assert_eq!(invokes("run"), (1, 0));
+    assert_eq!(invokes("nested"), (2, 0));
+    assert_eq!(invokes("mutable"), (0, 1));
+    assert_eq!(invokes("callback"), (0, 1));
+    for name in ["run", "nested"] {
+        let effects = callable(name).parameter_effects.clone().unwrap();
+        assert_eq!(effects.unmodeled, 0, "{name}: {effects:?}");
+    }
+    let mutable = callable("mutable").parameter_effects.clone().unwrap();
+    assert!(mutable.unmodeled > 0, "{mutable:?}");
+}

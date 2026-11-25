@@ -100,7 +100,8 @@ updates of dereference, field and single-index places (address operands, then
 value, then `PlaceUpdate`), single-index reads (object, index, `Index`) and
 field reads of non-name objects (object, `Field`) and enum variant constructors,
 bare or qualified `Enum.Variant(...)` (payloads, `VariantConstructor`), calls through local function values
-and `dyn` methods (receiver, arguments, `IndirectInvoke`), and format calls
+and `dyn` methods (receiver, arguments, `IndirectInvoke`; a `const` local bound
+to a plain-scalar closure literal is a closed `ClosureInvoke`), and format calls
 (expanded template arguments, `FormatInvoke`; expansions are made outside the
 builder and the family is rebuilt), `@api`/`@syscall` calls (arguments,
 `ForeignInvoke`) and the runtime panic (message arguments, `PanicInvoke`, stop) and struct initializers (values in declaration

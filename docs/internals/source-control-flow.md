@@ -151,7 +151,17 @@ permission). A call whose callee has the never type `!` ends its path: the
 `Invoke` block stops with every active scope exited. A call through a local
 or parameter holding a function value or closure (`callback(a, b)`)
 evaluates its positional arguments in source order and records an
-`IndirectInvoke`: the target and its effects are unknown. A method call on a
+`IndirectInvoke`: the target and its effects are unknown. When the callee is
+an immutable local bound to a closure literal whose declared type takes and
+returns only plain scalars (`const add: fn(i32) i32 = |x| x + n;`), the target
+is closed and the event is a `ClosureInvoke`: the closure's body is one of
+this callable's deferred graphs, whose events and call sites already belong to
+this callable, and closures never capture references (only plain copies and
+owners moved into the environment), so its effects are already this
+callable's. The body runs at the invocation; a flow-sensitive consumer must
+not treat the event as effect-free. Creating a closure
+evaluates nothing (its captures are `Capture` events), so a closure literal is
+an effect-free region. A method call on a
 `dyn Trait` receiver evaluates the receiver, then its positional arguments,
 then records an `IndirectInvoke` for the vtable call.
 
