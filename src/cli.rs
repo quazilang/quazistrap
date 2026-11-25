@@ -178,6 +178,12 @@ pub enum Command {
         /// use ASCII-only status markers
         #[arg(long)]
         no_unicode: bool,
+        /// build the test runners for this target (other targets need --no-run)
+        #[arg(long, value_enum)]
+        target: Option<TargetTriple>,
+        /// build the test runners without running them
+        #[arg(long)]
+        no_run: bool,
     },
     /// Download, verify, and lock project dependencies
     Fetch,

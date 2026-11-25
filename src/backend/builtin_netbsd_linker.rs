@@ -24,6 +24,9 @@ const PH: usize = 56;
 const PH_COUNT: usize = 8;
 const INTERPRETER: &[u8] = b"/usr/libexec/ld.elf_so\0";
 const LIBC: &[u8] = b"libc.so.12\0";
+// NetBSD keeps the POSIX thread functions out of libc; a program that calls
+// any of them needs libpthread loaded too (before libc, as `cc -pthread`).
+const LIBPTHREAD: &[u8] = b"libpthread.so.1\0";
 // From NetBSD 11.0 amd64 .note.netbsd.ident: namesz=7, descsz=4,
 // type=NT_NETBSD_VERSION, vendor=NetBSD, version 1100000000.
 pub(super) const NETBSD_NOTE: [u8; 24] = [
@@ -96,10 +99,16 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
         .filter(|name| !name.is_empty() && !definitions.contains(name))
         .collect::<BTreeSet<_>>().into_iter().collect();
 
-    // All non-linker imports must be provided by the NetBSD 11 libc. Do not
-    // silently turn unknown native dependencies into Linux-host dependencies.
+    // All non-linker imports must be provided by the NetBSD 11 libc (and
+    // libpthread for `pthread_*`). Do not silently turn unknown native
+    // dependencies into Linux-host dependencies.
     let mut dynstr = vec![0u8];
-    let libc_offset = dynstr.len() as u32;
+    let mut needed = Vec::new();
+    if imports.iter().any(|name| name.starts_with("pthread_")) {
+        needed.push(dynstr.len() as u64);
+        dynstr.extend_from_slice(LIBPTHREAD);
+    }
+    needed.push(dynstr.len() as u64);
     dynstr.extend_from_slice(LIBC);
     let mut name_offsets = Vec::new();
     for name in &imports {
@@ -177,9 +186,9 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
     let got_end = got_start + 8 * imports.len() as u64;
     grow(&mut image, got_end)?;
     let dynamic_start = align(got_end, 8)?;
-    // DT_NEEDED, HASH, STRTAB, SYMTAB, STRSZ, SYMENT,
+    // DT_NEEDED (one per library), HASH, STRTAB, SYMTAB, STRSZ, SYMENT,
     // RELA, RELASZ, RELAENT, NULL.
-    let dynamic_size = 10 * 16u64;
+    let dynamic_size = (9 + needed.len() as u64) * 16;
     let data_final = dynamic_start + dynamic_size;
     grow(&mut image, data_final)?;
     for (i, name) in imports.iter().enumerate() {
@@ -249,11 +258,12 @@ pub fn link_netbsd_objects(objects: &[&[u8]], output: &Path) -> Result<(), Strin
         put64(&mut image, off + 8, (((i + 1) as u64) << 32) | 6); // GLOB_DAT
         put64(&mut image, off + 16, 0);
     }
-    let dyn_entries: &[(u64, u64)] = &[
-        (1, libc_offset as u64), (4, BASE + hash_off), (5, BASE + dynstr_off),
-        (6, BASE + dynsym_off), (10, dynstr.len() as u64), (11, 24),
-        (7, BASE + rela_off), (8, reloc_len as u64), (9, 24), (0, 0),
-    ];
+    let dyn_entries: Vec<(u64, u64)> = needed.iter().map(|&offset| (1, offset))
+        .chain([
+            (4, BASE + hash_off), (5, BASE + dynstr_off),
+            (6, BASE + dynsym_off), (10, dynstr.len() as u64), (11, 24),
+            (7, BASE + rela_off), (8, reloc_len as u64), (9, 24), (0, 0),
+        ]).collect();
     for (i, (tag, value)) in dyn_entries.iter().enumerate() {
         put64(&mut image, dynamic_start as usize + i * 16, *tag);
         put64(&mut image, dynamic_start as usize + i * 16 + 8, *value);
@@ -385,6 +395,41 @@ mod tests {
         assert_eq!(u16::from_le_bytes([bytes[18], bytes[19]]), 62); // AMD64
         assert!(bytes.windows(INTERPRETER.len()).any(|window| window == INTERPRETER));
         assert!(bytes.windows(LIBC.len()).any(|window| window == LIBC));
+        assert!(!bytes.windows(LIBPTHREAD.len()).any(|window| window == LIBPTHREAD));
         assert_eq!(u16::from_le_bytes([bytes[56], bytes[57]]), PH_COUNT as u16);
+    }
+
+    #[test]
+    fn pthread_imports_load_libpthread() {
+        let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+        let text_section = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        // call pthread_create (rel32), ret
+        obj.append_section_data(text_section, &[0xe8, 0, 0, 0, 0, 0xc3], 16);
+        obj.add_symbol(Symbol {
+            name: b"_start".to_vec(), value: 0, size: 6,
+            kind: SymbolKind::Text, scope: SymbolScope::Linkage,
+            weak: false, section: SymbolSection::Section(text_section),
+            flags: SymbolFlags::None,
+        });
+        let pthread = obj.add_symbol(Symbol {
+            name: b"pthread_create".to_vec(), value: 0, size: 0,
+            kind: SymbolKind::Text, scope: SymbolScope::Dynamic,
+            weak: false, section: SymbolSection::Undefined,
+            flags: SymbolFlags::None,
+        });
+        obj.add_relocation(text_section, object::write::Relocation {
+            offset: 1, symbol: pthread, addend: -4,
+            flags: object::RelocationFlags::Generic {
+                kind: object::RelocationKind::PltRelative,
+                encoding: object::RelocationEncoding::Generic, size: 32,
+            },
+        }).expect("relocation");
+        let source = obj.write().expect("make amd64 object");
+        let dest = std::env::temp_dir().join(format!("qz_netbsd_pthread_{}", std::process::id()));
+        link_netbsd_objects(&[source.as_slice()], &dest).expect("link NetBSD ELF with pthreads");
+        let bytes = std::fs::read(&dest).expect("read generated NetBSD executable");
+        std::fs::remove_file(&dest).ok();
+        assert!(bytes.windows(LIBPTHREAD.len()).any(|window| window == LIBPTHREAD));
+        assert!(bytes.windows(LIBC.len()).any(|window| window == LIBC));
     }
 }

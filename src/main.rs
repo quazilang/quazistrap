@@ -419,6 +419,17 @@ fn fail_build() -> ! {
     std::process::exit(1)
 }
 
+/// The native target a `--target` option selects (the host by default).
+fn target_spec(target: Option<cli::TargetTriple>) -> TargetSpec {
+    match target {
+        Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
+        Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
+        Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
+        Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
+        None => TargetSpec::host(),
+    }
+}
+
 fn target_os_name(target: &TargetSpec) -> &'static str {
     match target.os {
         backend::target::Os::Windows => "windows",
@@ -1580,13 +1591,7 @@ fn main() {
             no_progress,
         } => {
             package::configure_output(silent, no_color, no_unicode, no_progress);
-            let target = match target {
-                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
-                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
-                Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
-                Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
-                None => TargetSpec::host(),
-            };
+            let target = target_spec(target);
             bytecode::select_qzi_target(target_os_name(&target));
             if run && target.triple() != TargetSpec::host().triple() {
                 eprintln!(
@@ -2301,13 +2306,7 @@ fn main() {
             bin, lib, target, ..
         } => {
             let mut ctx = load_project_context();
-            let target = match target {
-                Some(cli::TargetTriple::X86_64Linux) => TargetSpec::x86_64_linux(),
-                Some(cli::TargetTriple::X86_64Windows) => TargetSpec::x86_64_windows(),
-                Some(cli::TargetTriple::X86_64NetBsd) => TargetSpec::x86_64_netbsd(),
-                Some(cli::TargetTriple::X86_64None) => TargetSpec::x86_64_none(),
-                None => TargetSpec::host(),
-            };
+            let target = target_spec(target);
             // Without --bin/--lib, check every artifact: a binary may load
             // modules that the default entry never imports.
             let mut entries = Vec::new();
@@ -2334,8 +2333,19 @@ fn main() {
             filter,
             no_color,
             no_unicode,
+            target,
+            no_run,
         } => {
-            let success = test_runner::run(filter.as_deref(), no_color, no_unicode)
+            let target = target_spec(target);
+            bytecode::select_qzi_target(target_os_name(&target));
+            let options = test_runner::TestOptions {
+                filter: filter.as_deref(),
+                no_color,
+                no_unicode,
+                target,
+                no_run,
+            };
+            let success = test_runner::run(&options)
                 .unwrap_or_else(|error| {
                     eprintln!("\x1b[31;1merror:\x1b[0m {error}");
                     fail_build();

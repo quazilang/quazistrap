@@ -22,6 +22,14 @@ when its process exits successfully; `panic` and nonzero/crash termination fail
 it. The optional filter matches the module-qualified test name. `--no-color`
 and `--no-unicode` provide plain output.
 
+`--target <target>` builds the runners for another native target (as
+`qz build --target`); since they cannot run on the host, it requires
+`--no-run`, which builds every selected runner without running it and reports
+`built` per test. Runners for a non-host target go to
+`<out_dir>/tests/<target>` (for example `build/tests/x86_64-netbsd`), one
+executable per test, to be copied to and run on that system; a runner's exit
+status is its result. `--no-run` also works for the host target.
+
 Files under `tests/` use module names rooted at `tests`, so
 `tests/http/client.qz` contains tests such as `tests.http.client.connects` and
 cannot collide with `src/http/client.qz`. Nested `src/` modules keep their path,

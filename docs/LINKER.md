@@ -250,7 +250,8 @@ rejected because Quazi passes linker flags and provides its own entry point.
 ## Current limitations
 
 - x86-64 only: static Linux ELF, dynamic NetBSD ELF (against the system
-  libc) and Windows PE32+ executables;
+  libc, plus `libpthread.so.1` when the program calls a `pthread_*` function,
+  which NetBSD keeps out of libc) and Windows PE32+ executables;
 - no Mach-O linker;
 - no shared-library handling inside the built-in linker, and no Windows `.lib`
   archives (ELF `.a` archives are supported);

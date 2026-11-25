@@ -149,6 +149,20 @@ fn run_test_binary(
     link_flags: &[String],
     report: &crate::semantic::SemanticReport,
 ) -> Result<std::process::ExitStatus, String> {
+    build_test_binary(chunks, test_index, output, target, no_crash, link_flags, report)?;
+    retry_text_file_busy(|| std::process::Command::new(output).status())
+        .map_err(|error| format!("cannot run '{}': {error}", output.display()))
+}
+
+fn build_test_binary(
+    chunks: &[Chunk],
+    test_index: usize,
+    output: &Path,
+    target: &TargetSpec,
+    no_crash: bool,
+    link_flags: &[String],
+    report: &crate::semantic::SemanticReport,
+) -> Result<(), String> {
     let harness = harness_for(chunks, test_index)?;
     let executable_target = target.clone().linking(link_flags);
     let object = crate::try_compile_to_object(
@@ -159,9 +173,7 @@ fn run_test_binary(
         false,
         &executable_target,
     )?;
-    link_object(&object, output, target.clone(), link_flags, None)?;
-    retry_text_file_busy(|| std::process::Command::new(output).status())
-        .map_err(|error| format!("cannot run '{}': {error}", output.display()))
+    link_object(&object, output, target.clone(), link_flags, None)
 }
 
 /// Retry `attempt` while it fails with ETXTBSY. Another thread forking while
@@ -183,21 +195,68 @@ fn retry_text_file_busy<T>(
     attempt()
 }
 
-pub fn run(filter: Option<&str>, no_color: bool, no_unicode: bool) -> Result<bool, String> {
+/// What `qz test` builds and runs.
+pub struct TestOptions<'a> {
+    pub filter: Option<&'a str>,
+    pub no_color: bool,
+    pub no_unicode: bool,
+    /// Runners are built for this target; one that is not the host can only
+    /// be built (`no_run`), for example to run them in a NetBSD machine.
+    pub target: TargetSpec,
+    pub no_run: bool,
+}
+
+pub fn run(options: &TestOptions) -> Result<bool, String> {
     use std::io::IsTerminal;
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
     // Results go to stdout; color only an interactive terminal.
-    let no_color =
-        no_color || std::env::var_os("NO_COLOR").is_some() || !std::io::stdout().is_terminal();
-    run_project(&cwd, filter, no_color, no_unicode)
+    let no_color = options.no_color
+        || std::env::var_os("NO_COLOR").is_some()
+        || !std::io::stdout().is_terminal();
+    run_project_with(
+        &cwd,
+        &TestOptions {
+            no_color,
+            target: options.target.clone(),
+            ..*options
+        },
+    )
 }
 
+#[cfg(test)]
 fn run_project(
     start: &Path,
     filter: Option<&str>,
     no_color: bool,
     no_unicode: bool,
 ) -> Result<bool, String> {
+    run_project_with(
+        start,
+        &TestOptions {
+            filter,
+            no_color,
+            no_unicode,
+            target: TargetSpec::host(),
+            no_run: false,
+        },
+    )
+}
+
+fn run_project_with(start: &Path, options: &TestOptions) -> Result<bool, String> {
+    let TestOptions {
+        filter,
+        no_color,
+        no_unicode,
+        no_run,
+        ..
+    } = *options;
+    let host = options.target.triple() == TargetSpec::host().triple();
+    if !host && !no_run {
+        return Err(format!(
+            "test runners for {} cannot run on this host; build them with --no-run",
+            options.target.triple()
+        ));
+    }
     let mut context = ProjectContext::load(start)?;
     context.ensure_lockfile()?;
 
@@ -244,8 +303,7 @@ fn run_project(
             .is_ok_and(|path| path != entry && seen.insert(path))
     });
 
-    let target =
-        crate::apply_package_settings(crate::backend::TargetSpec::host(), context.config.package);
+    let target = crate::apply_package_settings(options.target.clone(), context.config.package);
     let mut loaded = crate::loader::load_programs_configured_for_target(
         std::slice::from_ref(&entry),
         Some(&context.resolver),
@@ -334,7 +392,13 @@ fn run_project(
     }
     let chunks = link_qzi_modules(&modules)?;
     let link_flags = crate::native_link_flags(&context)?;
-    let output_dir = context.config.out_dir.join("tests");
+    // Host runners keep their historical place; others get a directory per
+    // target so a cross build never replaces them.
+    let output_dir = if host {
+        context.config.out_dir.join("tests")
+    } else {
+        context.config.out_dir.join("tests").join(target.triple())
+    };
     std::fs::create_dir_all(&output_dir)
         .map_err(|error| format!("cannot create '{}': {error}", output_dir.display()))?;
 
@@ -350,6 +414,24 @@ fn run_project(
             test,
             target.os == crate::backend::target::Os::Windows,
         ));
+        if no_run {
+            match build_test_binary(
+                &chunks,
+                test_index,
+                &output,
+                &target,
+                !context.config.package.crash_handler,
+                &link_flags,
+                &report,
+            ) {
+                Ok(()) => {
+                    passed += 1;
+                    println!("built");
+                }
+                Err(error) => report_failure(no_color, Some(&error)),
+            }
+            continue;
+        }
         match run_test_binary(
             &chunks,
             test_index,
@@ -376,6 +458,14 @@ fn run_project(
 
     let failed = tests.len() - passed;
     println!();
+    if no_run {
+        println!(
+            "test result: {}. {passed} built in {}; {failed} failed",
+            if failed == 0 { "ok" } else { "FAILED" },
+            output_dir.display()
+        );
+        return Ok(failed == 0);
+    }
     println!(
         "test result: {}. {passed} passed; {failed} failed",
         if failed == 0 { "ok" } else { "FAILED" }
@@ -528,6 +618,37 @@ mod tests {
             file_name("tests.http.connects", true),
             "tests_http_connects.exe"
         );
+    }
+
+    #[test]
+    fn builds_runners_for_another_target_without_running_them() {
+        let root = temp_dir("cross-target");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("quazi.toml"),
+            "[package]\nname = \"runner_cross\"\nstd = false\ncrash_handler = false\n\n\
+             [[bin]]\nname = \"runner_cross\"\npath = \"src/main.qz\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/main.qz"), "").unwrap();
+        std::fs::write(root.join("tests/basic.qz"), "@test\nfn passes() void { ret; }\n").unwrap();
+        let options = |no_run| TestOptions {
+            filter: None,
+            no_color: true,
+            no_unicode: true,
+            target: TargetSpec::x86_64_netbsd(),
+            no_run,
+        };
+
+        let refused = run_project_with(&root, &options(false)).unwrap_err();
+        assert!(refused.contains("--no-run"), "{refused}");
+        assert!(run_project_with(&root, &options(true)).unwrap());
+        let runner = root.join("build/tests/x86_64-netbsd/tests_basic_passes");
+        let bytes = std::fs::read(&runner).unwrap();
+        assert!(bytes.windows(22).any(|window| window == b"/usr/libexec/ld.elf_so"));
+        assert!(!root.join("build/tests/tests_basic_passes").exists());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

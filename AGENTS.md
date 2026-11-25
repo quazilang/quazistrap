@@ -18,7 +18,7 @@ CLI (dep: `clap 4.6`):
 ```bash
 qz build [source.qz|program.qzi|native.o ...] [-i|-c] [-o out] [-r] [-s] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode]
 qz run [source.qz|program.qzi|native.o ...] [--jit] [--linker builtin|path] [--silent|--no-progress] [--no-color] [--no-unicode] / qz check / qz fetch / qz deps / qz fmt / qz clean
-qz test [filter] [--no-color] [--no-unicode]
+qz test [filter] [--no-color] [--no-unicode] [--target T --no-run]
 qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz new <name> [--lib] / qz init [--lib]
 qz add <path-or-url> [--alias name] [--type git|archive|source|qzi] [--version tag|hash|latest] / qz remove <name>

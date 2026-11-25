@@ -292,6 +292,7 @@ qz header [file ...] [-o quazi.h] [--target x86_64-linux|x86_64-windows]
 qz check                  # type-check every artifact without compiling
 qz doc                    # Markdown API pages for public declarations (build/doc)
 qz test [filter]          # run @test functions from src/ and tests/
+qz test --target x86_64-netbsd --no-run  # build the runners for another OS
 qz fetch                  # download, verify, and lock dependencies
 qz deps                   # show resolved dependency sources
 qz add <path-or-url> [--alias name]  # infer package name and add dependency
