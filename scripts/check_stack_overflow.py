@@ -3,10 +3,15 @@
 handler on an alternate signal stack, Windows vectored handler; exit status
 134) instead of dying with a bare SIGSEGV, and that other faults keep the generic crash report
 (exit status 101). A custom panic handler runs once, for fatal panics only.
-Native and QZI; with `--wine`, also Windows executables under Wine."""
+Native and QZI; with `--wine`, also Windows executables under Wine. With
+`--netbsd-run CMD` (a command prefix that runs a NetBSD executable; it must
+pass QUAZI_* environment variables on) the panic cases run on NetBSD: named
+backtraces with QUAZI_TRACE=1, nested panics and the custom handler (NetBSD
+has no signal crash handler yet)."""
 
 import argparse
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -83,6 +88,37 @@ fn main() i32 { ret middle(5); }
 """
 
 
+def run_netbsd(qz, root, source, netbsd_run, environment=None):
+    """Build `source` for NetBSD and run it through `netbsd_run`."""
+    (root / "src/main.qz").write_text(source)
+    binary = root / "program-netbsd"
+    built = subprocess.run([str(qz), "build", "--no-incremental", "--no-color", "--no-unicode",
+                            "--silent", "--target", "x86_64-netbsd", "-o", str(binary)],
+                           cwd=root, text=True, capture_output=True, timeout=300)
+    assert built.returncode == 0, built.stdout + built.stderr
+    env = dict(os.environ)
+    env.pop("QUAZI_TRACE", None)
+    env.update(environment or {})
+    return subprocess.run([*netbsd_run, str(binary)], cwd=root, text=True, capture_output=True,
+                          timeout=300, env=env)
+
+
+def check_netbsd(qz, root, netbsd_run):
+    frames = run_netbsd(qz, root, NAMED_FRAMES, netbsd_run, {"QUAZI_TRACE": "1"})
+    assert frames.returncode == 101, (frames.returncode, frames.stderr)
+    names = [line.rsplit(" in ", 1)[1] for line in frames.stderr.splitlines() if " in " in line]
+    assert names[-3:] == ["inner", "middle", "main"], frames.stderr
+    quiet = run_netbsd(qz, root, NAMED_FRAMES, netbsd_run)
+    assert quiet.returncode == 101 and "stack backtrace:" not in quiet.stderr, quiet.stderr
+    nested = run_netbsd(qz, root, NESTED_PANIC, netbsd_run)
+    assert nested.returncode == 101, (nested.returncode, nested.stderr)
+    assert "panicked while processing a panic: 'inner failure'" in nested.stderr, nested.stderr
+    lifecycle = run_netbsd(qz, root, HANDLER_LIFECYCLE, netbsd_run)
+    assert lifecycle.returncode == 42, (lifecycle.returncode, lifecycle.stderr)
+    assert lifecycle.stdout == "task panic reached join\n", lifecycle.stdout
+    assert lifecycle.stderr.count("handled: ") == 1, lifecycle.stderr
+
+
 def build(qz, root, source, qzi, environment=None, wine=None):
     """Build and run `source`: natively, through a QZI, or (with `wine`) as a
     Windows executable under Wine."""
@@ -115,6 +151,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
     parser.add_argument("--wine", type=Path, help="Wine executable for the Windows column")
+    parser.add_argument("--netbsd-run", help="command prefix that runs a NetBSD executable")
     args = parser.parse_args()
     qz = args.qz.resolve()
     variants = [(False, None), (True, None)]
@@ -168,11 +205,14 @@ def main():
             assert "qoroutine panicked at 'task failed 5'" in lifecycle.stderr, lifecycle.stderr
             assert lifecycle.stderr.count("handled: ") == 1, lifecycle.stderr
             assert "handled: main failed at src/main.qz:19" in lifecycle.stderr, lifecycle.stderr
+        if args.netbsd_run:
+            check_netbsd(qz, root, shlex.split(args.netbsd_run))
     print("PASS stack overflow: recursion reports overflow (134, also in a qoroutine and a thread), null read keeps crash report (101) "
           "with named frames and QUAZI_TRACE=2 registers (also from qoroutine and thread "
           "faults), panic in panic handler aborts (101), "
           "custom handler runs once for the fatal panic while a qoroutine panic reaches join; "
-          "native and QZI" + (", Windows under Wine" if args.wine else ""))
+          "native and QZI" + (", Windows under Wine" if args.wine else "")
+          + (", NetBSD panics with named backtraces" if args.netbsd_run else ""))
 
 
 if __name__ == "__main__":

@@ -65,7 +65,8 @@ runs once, the stack is not unwound, local destructors are not guaranteed,
 the default exits 101 and a qoroutine panic reaches `join()` (D-019). The
 maintainer asked for readable diagnostics: backtraces name their functions
 and `QUAZI_TRACE=2` adds crash registers (Linux implemented; Windows on
-2026-11-19, verified under Wine; NetBSD still prints raw addresses).
+2026-11-19, verified under Wine; NetBSD panic backtraces with names on
+2026-11-25, verified on NetBSD 11.1 — NetBSD has no signal crash handler yet).
 
 ## D-007: concurrency model and terminology
 

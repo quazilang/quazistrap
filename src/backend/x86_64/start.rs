@@ -49,9 +49,13 @@ impl StartStub {
     /// Linux's initial stack ABI. libc's startup hook is invoked before
     /// any Quazi allocation or stdlib operations.
     ///
-    /// The NetBSD crash handler still needs platform-specific sigaction and
-    /// ucontext support; the backtrace symbol is a deliberate no-op here.
-    pub fn generate_netbsd(fn_offset: usize, main_takes_args: bool) -> Self {
+    /// `__quazi_print_backtrace` walks the RBP chain like Linux and names
+    /// each frame through `__quazi_fn_table`, writing with libc `write` (a
+    /// NetBSD executable makes no raw system calls). `QUAZI_TRACE=1` (or `2`)
+    /// in the initial environment enables it. With `no_crash` (no function
+    /// table) the hook stays a no-op. A NetBSD signal crash handler (sigaction
+    /// and ucontext) is still missing.
+    pub fn generate_netbsd(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
         let mut asm = CodeAssembler::new(64).expect("asm");
@@ -65,10 +69,110 @@ impl StartStub {
             }};
         }
 
-        // This hook remains safe to call from Quazi's panic handler. A
-        // NetBSD-specific symbolizer can replace it in a later revision.
+        macro_rules! lea_data {
+            ($register:expr, $name:expr) => {{
+                let index = asm.instructions().len();
+                asm.lea($register, qword_ptr(placeholder)).expect("emit RIP-relative lea");
+                pending.push((index, 3, RelocKind::Pc32, $name.into(), -4));
+            }};
+        }
+        // write(2, buffer, length) through libc; the stack is 16-aligned.
+        macro_rules! write_stderr {
+            ($buffer:expr, $length:expr) => {{
+                asm.mov(edi, 2i32).expect("stderr");
+                lea_data!(rsi, $buffer);
+                asm.mov(edx, $length as i32).expect("length");
+                call_external!("write");
+            }};
+        }
+
         let bt_idx = asm.instructions().len();
-        asm.ret().expect("emit backtrace stub");
+        if no_crash {
+            asm.ret().expect("emit backtrace stub");
+        } else {
+            let mut done = asm.create_label();
+            let mut restore = asm.create_label();
+            let mut frames = asm.create_label();
+            let mut digit = asm.create_label();
+            let mut decimal = asm.create_label();
+            let mut lookup = asm.create_label();
+            let mut found = asm.create_label();
+            let mut newline = asm.create_label();
+            for register in [rbx, r12, r13, r14, r15] {
+                asm.push(register).expect("save callee-saved register");
+            }
+            lea_data!(rax, "__quazi_trace_enabled");
+            asm.cmp(byte_ptr(rax), 0i32).expect("trace flag");
+            asm.je(done).expect("branch");
+            asm.mov(r14, rsp).expect("keep stack");
+            asm.and(rsp, -16i32).expect("align for libc");
+            write_stderr!("__quazi_bt_prefix", 17);
+            asm.mov(r12, rbp).expect("first frame");
+            asm.mov(r13d, 16i32).expect("frame limit");
+            asm.set_label(&mut frames).expect("frames label");
+            asm.test(r12, r12).expect("end of chain");
+            asm.je(restore).expect("branch");
+            asm.test(r13, r13).expect("frame limit");
+            asm.je(restore).expect("branch");
+            write_stderr!("__quazi_at_0x", 7);
+            asm.mov(rbx, qword_ptr(r12 + 8)).expect("return address");
+            asm.mov(r15, rbx).expect("keep address");
+            asm.mov(ecx, 16i32).expect("digits");
+            lea_data!(r8, "__quazi_hex_buf");
+            asm.add(r8, 15i32).expect("last digit");
+            asm.set_label(&mut digit).expect("digit label");
+            asm.mov(rax, rbx).expect("nibble");
+            asm.and(eax, 0x0Fi32).expect("nibble");
+            asm.cmp(al, 10i32).expect("decimal digit");
+            asm.jb(decimal).expect("branch");
+            asm.add(al, 7i32).expect("hex letter");
+            asm.set_label(&mut decimal).expect("decimal label");
+            asm.add(al, '0' as i32).expect("ascii");
+            asm.mov(byte_ptr(r8), al).expect("store digit");
+            asm.dec(r8).expect("previous digit");
+            asm.shr(rbx, 4i32).expect("next nibble");
+            asm.dec(ecx).expect("count");
+            asm.jne(digit).expect("loop");
+            write_stderr!("__quazi_hex_buf", 16);
+            // A return address follows its call: name the calling function.
+            asm.lea(r15, qword_ptr(r15 - 1)).expect("call site");
+            lea_data!(r9, "__quazi_fn_table");
+            asm.mov(r10, qword_ptr(r9)).expect("entry count");
+            asm.add(r9, 8i32).expect("first entry");
+            asm.set_label(&mut lookup).expect("lookup label");
+            asm.test(r10, r10).expect("entries left");
+            asm.je(newline).expect("branch");
+            asm.mov(rax, r15).expect("address");
+            asm.sub(rax, qword_ptr(r9)).expect("offset in entry");
+            asm.mov(ecx, dword_ptr(r9 + 8)).expect("entry size");
+            asm.cmp(rax, rcx).expect("inside entry");
+            asm.jb(found).expect("branch");
+            asm.add(r9, 24i32).expect("next entry");
+            asm.dec(r10).expect("count");
+            asm.jmp(lookup).expect("loop");
+            asm.set_label(&mut found).expect("found label");
+            asm.mov(rbx, r9).expect("keep entry across calls");
+            write_stderr!(
+                "__quazi_bt_in",
+                crate::backend::x86_64::sections::FUNCTION_SEPARATOR.len()
+            );
+            asm.mov(edi, 2i32).expect("stderr");
+            asm.mov(rsi, qword_ptr(rbx + 16)).expect("name");
+            asm.mov(edx, dword_ptr(rbx + 12)).expect("name length");
+            call_external!("write");
+            asm.set_label(&mut newline).expect("newline label");
+            write_stderr!("__quazi_nl", 1);
+            asm.mov(r12, qword_ptr(r12)).expect("caller frame");
+            asm.dec(r13).expect("frame limit");
+            asm.jmp(frames).expect("loop");
+            asm.set_label(&mut restore).expect("restore label");
+            asm.mov(rsp, r14).expect("restore stack");
+            asm.set_label(&mut done).expect("done label");
+            for register in [r15, r14, r13, r12, rbx] {
+                asm.pop(register).expect("restore callee-saved register");
+            }
+            asm.ret().expect("return");
+        }
         let start_idx = asm.instructions().len();
         asm.xor(ebp, ebp).expect("emit");
         asm.mov(r12, rbx).expect("keep NetBSD ps_strings");
@@ -87,6 +191,36 @@ impl StartStub {
         // `ps_strings` itself at runtime state +96 (envp - 16): std.os.args
         // reads argv/argc from it.
         asm.mov(qword_ptr(rcx - 16), r12).expect("store ps_strings");
+        if !no_crash {
+            // QUAZI_TRACE=1 enables panic backtraces (2 as on Linux).
+            let mut scan = asm.create_label();
+            let mut next = asm.create_label();
+            let mut scanned = asm.create_label();
+            asm.mov(rsi, qword_ptr(r12 + 16)).expect("envp");
+            asm.set_label(&mut scan).expect("scan label");
+            asm.mov(rax, qword_ptr(rsi)).expect("entry");
+            asm.test(rax, rax).expect("end of envp");
+            asm.je(scanned).expect("branch");
+            asm.mov(rdx, 0x5254_5f49_5a41_5551u64).expect("\"QUAZI_TR\"");
+            asm.cmp(qword_ptr(rax), rdx).expect("name");
+            asm.jne(next).expect("branch");
+            asm.cmp(dword_ptr(rax + 8), 0x3d45_4341u32 as i32).expect("\"ACE=\"");
+            asm.jne(next).expect("branch");
+            asm.cmp(byte_ptr(rax + 13), 0i32).expect("one character");
+            asm.jne(next).expect("branch");
+            asm.movzx(ecx, byte_ptr(rax + 12)).expect("value");
+            asm.sub(ecx, '1' as i32).expect("value");
+            asm.cmp(ecx, 1i32).expect("1 or 2");
+            asm.ja(next).expect("branch");
+            asm.inc(ecx).expect("flag");
+            lea_data!(rax, "__quazi_trace_enabled");
+            asm.mov(byte_ptr(rax), cl).expect("store flag");
+            asm.jmp(scanned).expect("branch");
+            asm.set_label(&mut next).expect("next label");
+            asm.add(rsi, 8i32).expect("next entry");
+            asm.jmp(scan).expect("loop");
+            asm.set_label(&mut scanned).expect("scanned label");
+        }
 
         if main_takes_args {
             asm.mov(r13, qword_ptr(r12)).expect("argv");

@@ -222,11 +222,11 @@ fn emit_native_object(
         text_bytes.extend_from_slice(&fn_bytes);
     }
 
-    // The Linux and Windows crash handlers and backtraces name addresses through a table of
-    // emitted bodies (folded copies share their canonical body's entry).
+    // The Linux and Windows crash handlers and the backtraces name addresses through a
+    // table of emitted bodies (folded copies share their canonical body's entry).
     if target.emit_start
         && !target.no_crash
-        && matches!(target.os, target::Os::Linux | target::Os::Windows)
+        && matches!(target.os, target::Os::Linux | target::Os::Windows | target::Os::NetBsd)
     {
         let functions: Vec<(&str, &str, u64)> = chunks
             .iter()
@@ -249,7 +249,7 @@ fn emit_native_object(
         let stub = if target.os == target::Os::Windows {
             StartStub::generate_windows(stub_offset, no_crash, main_takes_args)
         } else if target.os == target::Os::NetBsd {
-            StartStub::generate_netbsd(stub_offset, main_takes_args)
+            StartStub::generate_netbsd(stub_offset, no_crash, main_takes_args)
         } else {
             StartStub::generate(stub_offset, no_crash, main_takes_args, target.libc)
         };
