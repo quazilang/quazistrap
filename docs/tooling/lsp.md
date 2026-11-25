@@ -108,8 +108,11 @@ than a name-resolution guarantee.
   client's UTF-16 indexes and formatting with `qz fmt`.
   `../helix-quazi/tests/lsp-runtime.py` runs Helix 25.07 in a pseudo-terminal
   with the shipped `languages.toml` and requires hover, definition and
-  completion requests typed as keys to be answered. Zed runtime validation
-  remains open: Zed needs a GPU-backed display that this environment lacks.
+  completion requests typed as keys to be answered.
+  `../zed-quazi/tests/runtime-smoke.py` does the same for Zed 1.28 without a
+  GPU (Xvfb and Mesa's software Vulkan driver): it installs the extension as
+  a dev extension, so Zed builds it and the grammar, and requires hover,
+  definition and completion requests from the editor to be answered.
 
 ## Verification
 

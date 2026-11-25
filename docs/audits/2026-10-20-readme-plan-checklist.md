@@ -5,7 +5,14 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 98.9%. Remaining: 1.1%.**
+**Complete: 99.1%. Remaining: 0.9%.**
+
+On 2026-11-25 reproducible Zed runtime validation was credited (LSP 20/20,
+99.1%): `../zed-quazi/tests/runtime-smoke.py` runs Zed 1.28 on Xvfb with Mesa's
+software Vulkan driver, installs the extension through the command palette
+(Zed compiles the extension and grammar to WebAssembly), and requires hover,
+go-to-definition and completion requests from the editor to be answered by
+`qz lsp` (fails with a broken server). Helix was already covered.
 
 On 2026-11-19 safe provenance-tracked dense-element borrowing (D-015) was
 credited (Ownership 13/16, 98.9%): `Array.get_ref` lowers to the checked
@@ -248,7 +255,7 @@ and recursive destruction. No requirement credit changes: **73.2% complete /
 | Atomic opcodes | 2/2 | 100.0% | 0.0% |
 | Format string literals | 1/1 | 100.0% | 0.0% |
 | Nested struct patterns | 1/1 | 100.0% | 0.0% |
-| LSP improvements | 19/20 | 95.0% | 5.0% |
+| LSP improvements | 20/20 | 100.0% | 0.0% |
 | qz doc | 1/1 | 100.0% | 0.0% |
 | Experimental JIT (`qz run --jit`) | 1/1 | 100.0% | 0.0% |
 
@@ -484,8 +491,10 @@ Evidence: [docs/tooling/lsp.md](../tooling/lsp.md).
   `scripts/check_lsp_performance.py`: release cold <= 1000 ms, warm median <= 20 ms).
 - [x] Real-client Unicode/formatting protocol suite (Neovim client:
   `../vim-quazi/tests/lsp-unicode.lua`; stdio: `scripts/check_lsp_*.py`).
-- [ ] Reproducible Zed/Helix feature-request runtime validation (Helix done:
-  `../helix-quazi/tests/lsp-runtime.py`; Zed open, asks.txt В12).
+- [x] Reproducible Zed/Helix feature-request runtime validation
+  (`../helix-quazi/tests/lsp-runtime.py`, Helix 25.07 in a pseudo-terminal;
+  `../zed-quazi/tests/runtime-smoke.py`, Zed 1.28 on Xvfb with lavapipe,
+  2026-11-25).
 - [x] Loader-backed go-to-definition with passing current-checkout regressions.
 - [x] Workspace symbols with passing current-checkout regressions.
 - [x] Cross-file references with passing current-checkout regressions.

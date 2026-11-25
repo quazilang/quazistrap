@@ -10,11 +10,11 @@ attributes.
 
 | Editor | Project | Integration type | Local verification |
 |---|---|---|---|
-| VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | lifecycle test, `npm pack --dry-run`, and real-client hover smoke (VSCodium 1.126 under Xvfb) |
-| Neovim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12 |
-| Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check and runtime LSP validation in a pseudo-terminal (Helix 25.07) |
-| Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `cargo check`, and formatting check |
-| Emacs | `../emacs-quazi/` | major mode with Eglot integration | headless Eglot real-client smoke (hover, definition) on Emacs 31.1 |
+| VS Code | `../vscode-quazi/` | extension with language registration and LSP launcher | lifecycle test, real-client hover smoke, and VSIX package/install smoke (`vsce package`, install, hover from the packaged files; VSCodium 1.143 under Xvfb) |
+| Neovim / Vim | `../vim-quazi/` | native Neovim 0.11+ LSP configuration; Vim 8+ through vim-lsp | headless configuration, real-client LSP smoke and Unicode/formatting protocol check on Neovim 0.12; package install smokes for Neovim and for Vim 9.2 + vim-lsp |
+| Helix | `../helix-quazi/` | configuration/runtime query package | canonical grammar-asset check, install smoke (`hx --grammar fetch/build`, `hx --health`), and runtime LSP validation in a pseudo-terminal (Helix 25.07) |
+| Zed | `../zed-quazi/` | Zed language extension | canonical grammar-asset check, `wasm32-wasip2` build, and runtime validation (dev-extension install, hover, definition, completion) on Zed 1.28 under Xvfb with software Vulkan |
+| Emacs | `../emacs-quazi/` | major mode with Eglot integration | headless Eglot real-client smoke (hover, definition) and `package-install-file` install smoke on Emacs 31.1 |
 
 The canonical grammar is the separate [`tree-sitter`](../../../tree-sitter/)
 repository. Its immutable grammar revision is pinned by integrations that need
