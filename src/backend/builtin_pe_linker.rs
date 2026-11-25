@@ -185,6 +185,17 @@ fn dll_for(symbol: &str) -> Option<&'static str> {
 }
 
 pub fn link_coff_objects(objects: &[&[u8]], output: &Path) -> Result<(), String> {
+    let image = link_pe_image_at(objects, IMAGE_BASE)?;
+    std::fs::write(output, image).map_err(|e| format!("cannot write '{}': {e}", output.display()))
+}
+
+/// The PE32+ image linked at `base` (64 KiB aligned): `qz run --jit` on a
+/// Windows host loads it into its own process, where `qz.exe` itself may
+/// occupy the default 0x140000000.
+pub fn link_pe_image_at(objects: &[&[u8]], base: u64) -> Result<Vec<u8>, String> {
+    if base % 0x10000 != 0 {
+        return Err("built-in PE linker: unaligned image base".into());
+    }
     let files = objects
         .iter()
         .enumerate()
@@ -406,7 +417,7 @@ pub fn link_coff_objects(objects: &[&[u8]], output: &Path) -> Result<(), String>
                         let implicit = u64::from_le_bytes(
                             section_data[bucket][at..at + 8].try_into().unwrap(),
                         );
-                        let value = (IMAGE_BASE + target_rva as u64)
+                        let value = (base + target_rva as u64)
                             .wrapping_add(relocation.addend() as u64)
                             .wrapping_add(implicit);
                         section_data[bucket][at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -433,7 +444,7 @@ pub fn link_coff_objects(objects: &[&[u8]], output: &Path) -> Result<(), String>
             .map_err(|e| e.to_string())?,
     )?;
     write_pe(
-        output,
+        base,
         &section_data,
         &idata,
         entry_rva,
@@ -445,7 +456,7 @@ pub fn link_coff_objects(objects: &[&[u8]], output: &Path) -> Result<(), String>
 }
 
 fn write_pe(
-    output: &Path,
+    base: u64,
     sections: &[Vec<u8>; 3],
     idata: &[u8],
     entry: u32,
@@ -453,7 +464,7 @@ fn write_pe(
     import_size: u32,
     iat_rva: u32,
     iat_size: u32,
-) -> Result<(), String> {
+) -> Result<Vec<u8>, String> {
     let rvas = [
         SECTION_ALIGN,
         align(SECTION_ALIGN + sections[0].len() as u32, SECTION_ALIGN)?,
@@ -491,7 +502,7 @@ fn write_pe(
     image[o + 8..o + 12].copy_from_slice(&initialized.to_le_bytes());
     image[o + 16..o + 20].copy_from_slice(&entry.to_le_bytes());
     image[o + 20..o + 24].copy_from_slice(&rvas[0].to_le_bytes());
-    image[o + 24..o + 32].copy_from_slice(&IMAGE_BASE.to_le_bytes());
+    image[o + 24..o + 32].copy_from_slice(&base.to_le_bytes());
     image[o + 32..o + 36].copy_from_slice(&SECTION_ALIGN.to_le_bytes());
     image[o + 36..o + 40].copy_from_slice(&FILE_ALIGN.to_le_bytes());
     image[o + 40..o + 42].copy_from_slice(&6u16.to_le_bytes());
@@ -524,5 +535,5 @@ fn write_pe(
         image[files[i] as usize..files[i] as usize + contents[i].len()]
             .copy_from_slice(contents[i]);
     }
-    std::fs::write(output, image).map_err(|e| format!("cannot write '{}': {e}", output.display()))
+    Ok(image)
 }

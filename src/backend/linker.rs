@@ -83,7 +83,11 @@ pub fn link_object(
                     &objects,
                     crate::jit::NETBSD_JIT_BASE,
                 )?,
-                _ => return Err("qz run --jit supports Linux and NetBSD targets only".into()),
+                Os::Windows => super::builtin_pe_linker::link_pe_image_at(
+                    &objects,
+                    crate::jit::WINDOWS_JIT_BASE,
+                )?,
+                _ => return Err("qz run --jit supports Linux, NetBSD and Windows targets only".into()),
             };
             crate::jit::store_image(image);
             return Ok(());

@@ -19,6 +19,14 @@
 //! a no-op: libc is initialized), and enters `_start` with `rbx` pointing at
 //! a `ps_strings` block, as `ld.elf_so` would. The program ends with `exit`.
 //!
+//! Windows x86-64 (`qz.exe`): the built-in PE linker links the image at
+//! `WINDOWS_JIT_BASE` (`qz.exe` may sit at 0x140000000). The loader reserves
+//! that range with `VirtualAlloc`, copies headers and sections, resolves the
+//! import table with `LoadLibraryA`/`GetProcAddress` (`GetCommandLineW`/`A`
+//! return the program's own command line, quoted for `CommandLineToArgvW`),
+//! applies section protections and calls the entry with a 16-aligned stack and
+//! shadow space. The program ends the process with `ExitProcess`.
+//!
 //! Linking stores the image (`store_image`) instead of writing a file; the
 //! build then finishes normally (temporary objects are removed) and the run
 //! step executes the stored image (`take_image` + `execute`).
@@ -601,6 +609,324 @@ mod netbsd {
     }
 }
 
+/// Image base of PE programs run by `qz run --jit` on Windows: `qz.exe`
+/// itself (MinGW default) sits at the usual 0x140000000.
+pub const WINDOWS_JIT_BASE: u64 = 0x0010_0000_0000;
+
+/// A PE32+ image from the built-in PE linker, as the Windows loader needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
+pub struct PeImage {
+    pub base: u64,
+    pub entry: u32,
+    pub image_size: u32,
+    pub headers_size: u32,
+    /// (rva, virtual size, file offset, file size, characteristics)
+    pub sections: Vec<(u32, u32, u32, u32, u32)>,
+    /// (dll, [(import address table slot rva, function name)])
+    pub imports: Vec<(String, Vec<(u32, String)>)>,
+}
+
+#[cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
+pub fn parse_pe_image(image: &[u8]) -> Result<PeImage, String> {
+    let truncated = || "JIT: truncated PE image".to_string();
+    let read = |offset: usize, width: usize| -> Result<u64, String> {
+        let bytes = image
+            .get(offset..offset.checked_add(width).ok_or_else(truncated)?)
+            .ok_or_else(truncated)?;
+        Ok(bytes.iter().enumerate().fold(0u64, |value, (index, byte)| {
+            value | (*byte as u64) << (index * 8)
+        }))
+    };
+    let text = |offset: usize| -> Result<String, String> {
+        let bytes = image.get(offset..).ok_or_else(truncated)?;
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(truncated)?;
+        Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
+    };
+    if image.get(0..2) != Some(b"MZ".as_slice()) {
+        return Err("JIT: not a PE image".into());
+    }
+    let pe = read(0x3c, 4)? as usize;
+    if image.get(pe..pe + 4) != Some(b"PE\0\0".as_slice()) || read(pe + 4, 2)? != 0x8664 {
+        return Err("JIT: not an x86-64 PE image".into());
+    }
+    let section_count = read(pe + 6, 2)? as usize;
+    let optional = pe + 24;
+    let optional_size = read(pe + 20, 2)? as usize;
+    if read(optional, 2)? != 0x20b {
+        return Err("JIT: not a PE32+ image".into());
+    }
+    let entry = read(optional + 16, 4)? as u32;
+    let base = read(optional + 24, 8)?;
+    let image_size = read(optional + 56, 4)? as u32;
+    let headers_size = read(optional + 60, 4)? as u32;
+    let (import_rva, import_size) = (read(optional + 120, 4)? as u32, read(optional + 124, 4)?);
+    let mut sections = Vec::new();
+    for index in 0..section_count {
+        let header = optional + optional_size + index * 40;
+        sections.push((
+            read(header + 12, 4)? as u32,
+            read(header + 8, 4)? as u32,
+            read(header + 20, 4)? as u32,
+            read(header + 16, 4)? as u32,
+            read(header + 36, 4)? as u32,
+        ));
+    }
+    // Import directory entries hold RVAs; find their file offsets.
+    // Sections must lie inside the image; RVAs are mapped in u64.
+    if headers_size > image_size {
+        return Err("JIT: PE headers exceed the image".into());
+    }
+    for (rva, virtual_size, _, raw_size, _) in &sections {
+        if *rva as u64 + (*virtual_size).max(*raw_size) as u64 > image_size as u64 {
+            return Err(format!("JIT: section at {rva:#x} exceeds the image"));
+        }
+    }
+    let file_offset = |rva: u32| -> Result<usize, String> {
+        let rva = rva as u64;
+        sections
+            .iter()
+            .find(|(start, size, _, raw, _)| {
+                rva >= *start as u64 && rva < *start as u64 + (*size).max(*raw) as u64
+            })
+            .map(|(start, _, file, _, _)| (rva - *start as u64 + *file as u64) as usize)
+            .ok_or_else(|| format!("JIT: RVA {rva:#x} is not in a section"))
+    };
+    let mut imports = Vec::new();
+    if import_rva != 0 && import_size != 0 {
+        let mut descriptor = file_offset(import_rva)?;
+        loop {
+            let lookup = read(descriptor, 4)? as u32;
+            let name = read(descriptor + 12, 4)? as u32;
+            let first_thunk = read(descriptor + 16, 4)? as u32;
+            if name == 0 && first_thunk == 0 {
+                break;
+            }
+            let dll = text(file_offset(name)?)?;
+            let mut functions = Vec::new();
+            let mut thunk = if lookup != 0 { lookup } else { first_thunk };
+            let mut slot = first_thunk;
+            loop {
+                let entry = read(file_offset(thunk)?, 8)?;
+                if entry == 0 {
+                    break;
+                }
+                if entry >> 63 != 0 {
+                    return Err(format!(
+                        "JIT: import by ordinal from {dll} is not supported"
+                    ));
+                }
+                if slot as u64 + 8 > image_size as u64 {
+                    return Err("JIT: import address table exceeds the image".into());
+                }
+                functions.push((slot, text(file_offset(entry as u32)? + 2)?));
+                thunk = thunk.checked_add(8).ok_or_else(truncated)?;
+                slot = slot.checked_add(8).ok_or_else(truncated)?;
+            }
+            imports.push((dll, functions));
+            descriptor += 20;
+        }
+    }
+    Ok(PeImage {
+        base,
+        entry,
+        image_size,
+        headers_size,
+        sections,
+        imports,
+    })
+}
+
+/// The program's command line in `CommandLineToArgvW` quoting.
+#[cfg_attr(not(all(windows, target_arch = "x86_64")), allow(dead_code))]
+pub fn windows_command_line(args: &[Vec<u8>]) -> String {
+    let mut line = String::new();
+    for (index, arg) in args.iter().enumerate() {
+        if index > 0 {
+            line.push(' ');
+        }
+        let arg = String::from_utf8_lossy(arg);
+        if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
+            line.push_str(&arg);
+            continue;
+        }
+        line.push('"');
+        let mut backslashes = 0;
+        for character in arg.chars() {
+            match character {
+                '\\' => backslashes += 1,
+                '"' => {
+                    line.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                    line.push('"');
+                    backslashes = 0;
+                }
+                _ => {
+                    line.extend(std::iter::repeat_n('\\', backslashes));
+                    line.push(character);
+                    backslashes = 0;
+                }
+            }
+        }
+        line.extend(std::iter::repeat_n('\\', backslashes * 2));
+        line.push('"');
+    }
+    line
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod windows {
+    use super::{PeImage, parse_pe_image, windows_command_line};
+    use std::ffi::{CString, c_char, c_void};
+    use std::sync::OnceLock;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
+        fn VirtualProtect(address: *mut c_void, size: usize, protect: u32, old: *mut u32) -> i32;
+        fn LoadLibraryA(name: *const c_char) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+        fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
+        fn GetCurrentProcess() -> *mut c_void;
+    }
+
+    const MEM_COMMIT_RESERVE: u32 = 0x3000;
+    const PAGE_READONLY: u32 = 0x02;
+    const PAGE_READWRITE: u32 = 0x04;
+    const PAGE_EXECUTE_READ: u32 = 0x20;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+    /// The program sees its own command line, not `qz`'s.
+    static WIDE: OnceLock<Vec<u16>> = OnceLock::new();
+    static NARROW: OnceLock<CString> = OnceLock::new();
+    extern "system" fn command_line_w() -> *const u16 {
+        WIDE.get().map_or(std::ptr::null(), |line| line.as_ptr())
+    }
+    extern "system" fn command_line_a() -> *const c_char {
+        NARROW.get().map_or(std::ptr::null(), |line| line.as_ptr())
+    }
+
+    fn protection(characteristics: u32) -> u32 {
+        let (execute, write) = (
+            characteristics & 0x2000_0000 != 0,
+            characteristics & 0x8000_0000 != 0,
+        );
+        match (execute, write) {
+            (true, true) => PAGE_EXECUTE_READWRITE,
+            (true, false) => PAGE_EXECUTE_READ,
+            (false, true) => PAGE_READWRITE,
+            (false, false) => PAGE_READONLY,
+        }
+    }
+
+    pub fn execute(image: &[u8], args: &[Vec<u8>]) -> Result<std::convert::Infallible, String> {
+        let PeImage {
+            base,
+            entry,
+            image_size,
+            headers_size,
+            sections,
+            imports,
+        } = parse_pe_image(image)?;
+        let memory = unsafe {
+            VirtualAlloc(
+                base as *mut c_void,
+                image_size as usize,
+                MEM_COMMIT_RESERVE,
+                PAGE_READWRITE,
+            )
+        };
+        if memory as u64 != base {
+            return Err(format!("JIT: cannot reserve the image at {base:#x}"));
+        }
+        let copy = |file: usize, rva: u32, size: usize| -> Result<(), String> {
+            let data = image
+                .get(file..file + size)
+                .ok_or("JIT: section data lies outside the image")?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    (base + rva as u64) as *mut u8,
+                    data.len(),
+                );
+            }
+            Ok(())
+        };
+        copy(0, 0, headers_size as usize)?;
+        for (rva, virtual_size, file, file_size, _) in &sections {
+            copy(
+                *file as usize,
+                *rva,
+                (*file_size).min(*virtual_size) as usize,
+            )?;
+        }
+        let line = windows_command_line(args);
+        let _ = WIDE.set(line.encode_utf16().chain([0]).collect());
+        let _ = NARROW.set(CString::new(line.replace('\0', "")).map_err(|_| "JIT: bad argument")?);
+        for (dll, functions) in &imports {
+            let library_name = CString::new(dll.as_str()).map_err(|_| "JIT: bad DLL name")?;
+            let library = unsafe { LoadLibraryA(library_name.as_ptr()) };
+            if library.is_null() {
+                return Err(format!("JIT: cannot load {dll}"));
+            }
+            for (slot, name) in functions {
+                let address = match name.as_str() {
+                    "GetCommandLineW" => command_line_w as *const () as u64,
+                    "GetCommandLineA" => command_line_a as *const () as u64,
+                    _ => {
+                        let symbol =
+                            CString::new(name.as_str()).map_err(|_| "JIT: bad symbol name")?;
+                        let address = unsafe { GetProcAddress(library, symbol.as_ptr()) };
+                        if address.is_null() {
+                            return Err(format!("JIT: unresolved import `{name}` from {dll}"));
+                        }
+                        address as u64
+                    }
+                };
+                unsafe { ((base + *slot as u64) as *mut u64).write_unaligned(address) };
+            }
+        }
+        for (rva, virtual_size, _, file_size, characteristics) in &sections {
+            let size = (*virtual_size).max(*file_size) as usize;
+            let mut old = 0u32;
+            if size > 0
+                && unsafe {
+                    VirtualProtect(
+                        (base + *rva as u64) as *mut c_void,
+                        size,
+                        protection(*characteristics),
+                        &mut old,
+                    )
+                } == 0
+            {
+                return Err(format!(
+                    "JIT: cannot protect section at {:#x}",
+                    base + *rva as u64
+                ));
+            }
+        }
+        unsafe {
+            FlushInstructionCache(
+                GetCurrentProcess(),
+                base as *const c_void,
+                image_size as usize,
+            );
+            // Call the entry like the Windows loader: 16-aligned stack with
+            // shadow space; the program ends the process with ExitProcess.
+            core::arch::asm!(
+                "and rsp, -16",
+                "sub rsp, 32",
+                "call rax",
+                "ud2",
+                in("rax") base + entry as u64,
+                options(noreturn),
+            );
+        }
+    }
+}
+
 /// Run `image` in this process. Returns only on a loading error.
 pub fn execute(image: &[u8], args: &[Vec<u8>]) -> Result<std::convert::Infallible, String> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -611,19 +937,109 @@ pub fn execute(image: &[u8], args: &[Vec<u8>]) -> Result<std::convert::Infallibl
     {
         netbsd::execute(image, args)
     }
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        windows::execute(image, args)
+    }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "netbsd", target_arch = "x86_64")
+        all(target_os = "netbsd", target_arch = "x86_64"),
+        all(windows, target_arch = "x86_64")
     )))]
     {
         let _ = (image, args);
-        Err("qz run --jit currently supports Linux and NetBSD x86-64 hosts only".into())
+        Err("qz run --jit currently supports Linux, NetBSD and Windows x86-64 hosts only".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pe_images_list_their_sections_and_imports() {
+        use object::write::{Object as WriteObject, Relocation, Symbol, SymbolSection};
+        use object::{
+            Architecture, BinaryFormat, Endianness, RelocationEncoding, RelocationFlags,
+            RelocationKind, SectionKind, SymbolFlags, SymbolKind, SymbolScope,
+        };
+        let mut obj =
+            WriteObject::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
+        let text = obj.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
+        // call ExitProcess; ret
+        obj.append_section_data(text, &[0xe8, 0, 0, 0, 0, 0xc3], 16);
+        obj.add_symbol(Symbol {
+            name: b"mainCRTStartup".to_vec(),
+            value: 0,
+            size: 6,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Dynamic,
+            weak: false,
+            section: SymbolSection::Section(text),
+            flags: SymbolFlags::None,
+        });
+        let exit = obj.add_symbol(Symbol {
+            name: b"ExitProcess".to_vec(),
+            value: 0,
+            size: 0,
+            kind: SymbolKind::Text,
+            scope: SymbolScope::Dynamic,
+            weak: false,
+            section: SymbolSection::Undefined,
+            flags: SymbolFlags::None,
+        });
+        obj.add_relocation(
+            text,
+            Relocation {
+                offset: 1,
+                symbol: exit,
+                addend: -4,
+                flags: RelocationFlags::Generic {
+                    kind: RelocationKind::Relative,
+                    encoding: RelocationEncoding::Generic,
+                    size: 32,
+                },
+            },
+        )
+        .unwrap();
+        let source = obj.write().unwrap();
+        let image = crate::backend::builtin_pe_linker::link_pe_image_at(
+            &[source.as_slice()],
+            WINDOWS_JIT_BASE,
+        )
+        .unwrap();
+        let parsed = parse_pe_image(&image).unwrap();
+        assert_eq!(parsed.base, WINDOWS_JIT_BASE);
+        assert!(
+            parsed
+                .sections
+                .iter()
+                .any(|section| section.0 <= parsed.entry
+                    && parsed.entry < section.0 + section.1
+                    && section.4 & 0x2000_0000 != 0)
+        );
+        let names: Vec<&str> = parsed
+            .imports
+            .iter()
+            .flat_map(|(_, functions)| functions.iter().map(|(_, name)| name.as_str()))
+            .collect();
+        assert!(names.contains(&"ExitProcess"), "{:?}", parsed.imports);
+        assert!(parse_pe_image(&image[..200]).is_err());
+    }
+
+    #[test]
+    fn windows_command_lines_round_trip_through_command_line_to_argv_rules() {
+        let line = windows_command_line(&[
+            b"C:\\prog.exe".to_vec(),
+            b"a".to_vec(),
+            b"b c".to_vec(),
+            b"".to_vec(),
+            b"say \"hi\"".to_vec(),
+            b"dir\\".to_vec(),
+            b"x\\ y\\".to_vec(),
+        ]);
+        assert_eq!(line, r#"C:\prog.exe a "b c" "" "say \"hi\"" dir\ "x\ y\\""#);
+    }
 
     #[test]
     fn netbsd_images_list_their_segments_and_got_imports() {
