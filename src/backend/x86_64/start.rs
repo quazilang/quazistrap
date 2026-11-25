@@ -57,16 +57,16 @@ impl StartStub {
     ///
     /// Unless `no_crash`, `_start` also installs `__quazi_crash_handler` for
     /// SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGABRT on an alternate signal
-    /// stack (libc `sigaltstack` and `__sigaction_siginfo`). It reports a
+    /// stack (libc `__sigaltstack14` and `__sigaction_siginfo`, the names
+    /// <signal.h> gives `sigaltstack` and `sigaction`). It reports a
     /// stack overflow (status 134) when a SIGSEGV hits just below the
     /// interrupted stack pointer (the main thread's LWP id is its process id),
     /// and otherwise the Linux crash report:
     /// signal, fault address, `rip` with its function, the registers with
     /// QUAZI_TRACE=2, the backtrace or the hint; then `_exit(101)`. Offsets
     /// are NetBSD/amd64's: `siginfo_t.si_addr` at 16, `uc_mcontext.__gregs`
-    /// at 56 (`_REG_RIP` 21, `_REG_RSP` 24, ...). Only the main thread has
-    /// the alternate stack, so another thread's stack overflow is not
-    /// reported.
+    /// at 56 (`_REG_RIP` 21, `_REG_RSP` 24, ...). Other threads install
+    /// their own alternate stacks in the prelude (`__qo_use_altstack`).
     pub fn generate_netbsd(fn_offset: usize, no_crash: bool, main_takes_args: bool) -> Self {
         use iced_x86::code_asm::*;
 
@@ -394,7 +394,8 @@ impl StartStub {
             asm.mov(qword_ptr(rsp + 16), 0i32).expect("ss_flags");
             asm.mov(rdi, rsp).expect("stack_t");
             asm.xor(esi, esi).expect("no old stack");
-            call_external!("sigaltstack");
+            // <signal.h> renames sigaltstack to __sigaltstack14.
+            call_external!("__sigaltstack14");
             asm.add(rsp, 32i32).expect("drop stack_t");
             asm.set_label(&mut no_alternate).expect("no alternate label");
             // struct sigaction: handler, empty mask, SA_SIGINFO | SA_ONSTACK.

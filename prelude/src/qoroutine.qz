@@ -161,12 +161,28 @@ unsafe fn __qo_guard_stacks(arena: *u8, slots: usize) void {
 }
 
 @cfg(target_os = "netbsd")
-unsafe fn __qo_guard_stacks(_arena: *u8, _slots: usize) void {}
+@api("mprotect")
+unsafe fn __qo_netbsd_mprotect(address: *u8, length: usize, protection: i32) i32;
+
+// <signal.h> renames `sigaltstack` to `__sigaltstack14` (the old symbol
+// converts a pre-1.4 stack_t and dereferences a null `ss`).
+@cfg(target_os = "netbsd")
+@api("__sigaltstack14")
+unsafe fn __qo_netbsd_sigaltstack(stack: *u8, old: *u8) i32;
+
+// NetBSD: the same PROT_NONE guard pages through libc.
+@cfg(target_os = "netbsd")
+unsafe fn __qo_guard_stacks(arena: *u8, slots: usize) void {
+    for i : 0..slots {
+        __qo_netbsd_mprotect(arena + i * __qo_stack_size() + 4096, 4096, 0);
+    }
+}
 
 // Give this OS thread an alternate signal stack if it has none, so the
 // crash handler (installed with SA_ONSTACK) can report a stack overflow;
-// returns the stack to pass to `__qo_drop_altstack`, or 0. Linux only.
-// stack_t: +0 ss_sp, +8 ss_flags (SS_DISABLE = 2), +16 ss_size.
+// returns the stack to pass to `__qo_drop_altstack`, or 0.
+// Linux stack_t: +0 ss_sp, +8 ss_flags (SS_DISABLE = 2), +16 ss_size.
+// NetBSD stack_t: +0 ss_sp, +8 ss_size, +16 ss_flags (SS_DISABLE = 4).
 @cfg(target_os = "linux")
 unsafe fn __qo_use_altstack() *u8 {
     const record: *u8 = __qo_malloc(24);
@@ -189,7 +205,22 @@ unsafe fn __qo_use_altstack() *u8 {
 unsafe fn __qo_use_altstack() *u8 { 0 }
 
 @cfg(target_os = "netbsd")
-unsafe fn __qo_use_altstack() *u8 { 0 }
+unsafe fn __qo_use_altstack() *u8 {
+    const record: *u8 = __qo_malloc(24);
+    if (record == 0) { ret 0; }
+    var installed: *u8 = 0;
+    if (__qo_netbsd_sigaltstack(0, record) == 0 && (*((record + 16) as *i32) & 4) != 0) {
+        const stack: *u8 = __qo_malloc(65536);
+        if (stack != 0) {
+            *(record as **u8) = stack;
+            *((record + 8) as *usize) = 65536;
+            *((record + 16) as *i64) = 0;
+            if (__qo_netbsd_sigaltstack(record, 0) == 0) { installed = stack; } else { __qo_free(stack); }
+        }
+    }
+    __qo_free(record);
+    installed
+}
 
 // Undo `__qo_use_altstack` before the thread's stack memory goes away.
 @cfg(target_os = "linux")
@@ -207,7 +238,15 @@ unsafe fn __qo_drop_altstack(stack: *u8) void {
 unsafe fn __qo_drop_altstack(_stack: *u8) void {}
 
 @cfg(target_os = "netbsd")
-unsafe fn __qo_drop_altstack(_stack: *u8) void {}
+unsafe fn __qo_drop_altstack(stack: *u8) void {
+    if (stack == 0) { ret; }
+    const record: *u8 = __qo_malloc(24);
+    if (record == 0) { ret; }
+    __qo_memset(record, 0, 24);
+    *((record + 16) as *i64) = 4;
+    if (__qo_netbsd_sigaltstack(record, 0) == 0) { __qo_free(stack); }
+    __qo_free(record);
+}
 
 fn __qo_preempt_signal() i32 { 23 }
 
