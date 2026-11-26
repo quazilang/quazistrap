@@ -286,6 +286,32 @@ fn main() i32 {
 }
 ```
 
+A value whose type is a generic parameter bounded by the trait converts the
+same way: in `fn keep[T: Show](item: T) { const object: dyn Show = item; }`
+each specialization builds a trait object of its concrete type (a primitive
+type argument is a compile error: trait objects hold named types).
+
+A call argument `&value` (or any `&Concrete`, including `&T` with
+`T: Trait`) is accepted where `&dyn Trait` is expected. The call borrows the
+value through a temporary trait object released at the end of the full
+expression; the value itself stays owned by the caller. Views the callee
+returns through it (a `str` from a trait method) point into the value and
+stay valid, but a result containing a `&dyn` is rejected (S10): bind the
+value as `dyn Trait` first when a `&dyn` must outlive the call. Only shared references
+convert; `&value!` for `&dyn Trait!` still needs a `dyn Trait` value.
+
+```quazi
+trait Readable { fn read(self: &Self) i32; }
+struct Counter { value: i32 }
+impl Readable for Counter { fn read(self: &Counter) i32 { ret self.value; } }
+
+fn describe(item: &dyn Readable) i32 { ret item.read(); }
+fn main() i32 {
+    const counter = Counter { value: 42 };
+    ret describe(&counter) - 42;   // counter is still owned here
+}
+```
+
 Through a reference, `&dyn Trait` calls the trait's `self: &Self` methods
 and `&dyn Trait!` also its `self: &Self!` methods (S07 otherwise). Because a
 trait object might hold views, an exclusive loan `&value!` passed inside a

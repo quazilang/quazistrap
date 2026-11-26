@@ -275,6 +275,17 @@ pub struct Analyzer {
     /// Trait bounds of generic parameters (`fn f[K: Hash]`, `struct Map[K: Eq]`):
     /// function or struct name -> (parameter, trait).
     pub(super) generic_bounds: HashMap<String, Vec<(String, String)>>,
+    /// Set while a call argument is checked against its parameter: only
+    /// there may `&Concrete` become `&dyn Trait` (the trait object block
+    /// lives until the end of the full expression).
+    pub(super) checking_call_argument: bool,
+    /// Arguments converted from `&Concrete` to `&dyn Trait` whose call has
+    /// not finished checking yet.
+    pub(super) borrowed_dyn_arguments: Vec<Span>,
+    /// Generic functions that build a trait object from a value of one of
+    /// their type parameters: function → (parameter, trait). Each concrete
+    /// specialization needs that type's vtable methods.
+    pub(super) generic_dyn_vtables: HashMap<String, BTreeSet<(String, String)>>,
     /// Methods called on bounded parameters: function -> (parameter, method).
     pub(super) bound_method_calls: HashMap<String, Vec<(String, String)>>,
     /// Spans of bounded calls whose trait method takes `self` by value; the
@@ -2660,6 +2671,9 @@ impl Analyzer {
             trait_impls: HashMap::new(),
             generic_trait_impls: Vec::new(),
             generic_bounds: HashMap::new(),
+            checking_call_argument: false,
+            borrowed_dyn_arguments: Vec::new(),
+            generic_dyn_vtables: HashMap::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
             bounded_trait_calls: std::collections::HashSet::new(),
@@ -3547,6 +3561,9 @@ impl Analyzer {
         self.trait_impls.clear();
         self.generic_trait_impls.clear();
         self.generic_bounds.clear();
+        self.generic_dyn_vtables.clear();
+        self.borrowed_dyn_arguments.clear();
+        self.checking_call_argument = false;
         self.bound_method_calls.clear();
         self.consuming_bound_calls.clear();
         self.bounded_trait_calls.clear();
@@ -3848,6 +3865,32 @@ impl Analyzer {
 
             for variant in target_variants.get(&source.fn_name).into_iter().flatten() {
                 specialized_targets.push((variant.clone(), source.type_args.clone()));
+            }
+            // Trait objects built from a type parameter use the concrete
+            // type's vtable methods.
+            let dyn_vtables = self
+                .generic_dyn_vtables
+                .get(&source.fn_name)
+                .cloned()
+                .unwrap_or_default();
+            for (param, trait_name) in dyn_vtables {
+                let Some(TypeKind::Named { name, type_args }) = substitution.get(&param) else {
+                    continue;
+                };
+                let type_args: Vec<TypeKind> =
+                    type_args.iter().map(|argument| argument.node.clone()).collect();
+                for method in self.trait_method_slots.get(&trait_name).cloned().unwrap_or_default() {
+                    let method_name = format!("{name}.{method}");
+                    if type_args.is_empty() {
+                        self.add_dependency_edge(
+                            DependencyKind::Call,
+                            &source.mangled_name,
+                            &method_name,
+                        );
+                    } else {
+                        specialized_targets.push((method_name, type_args.clone()));
+                    }
+                }
             }
             for (target_function, type_args) in specialized_targets {
                 checkpoint()?;

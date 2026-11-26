@@ -53,6 +53,56 @@ fn main() i32 {
 }
 """
 
+# `&Concrete` passed for `&dyn Trait` borrows the value through a trait object
+# released after the call (the value is not destroyed: a second destruction
+# of Res would fault), including `&T` with `T: Trait` and a generic type; a value of
+# a bounded type parameter converts to `dyn Trait`; variadic `&dyn` arguments,
+# a `str` result derived through the object, and two instantiations of one
+# generic type (separate vtables). Exit 0 checked.
+BORROWED = """trait Show { fn show(self: &Self) i32; }
+struct Res { id: i32 }
+impl Res { fn free(self: Res) void { self.id = 0; } }
+impl Show for Res { fn show(self: &Res) i32 { ret self.id; } }
+struct Wrap[T] { inner: T }
+impl Show for Wrap[T] { fn show(self: &Wrap[T]) i32 { ret 1000; } }
+fn describe(item: &dyn Show) i32 { ret item.show(); }
+fn both(a: &dyn Show, b: &dyn Show) i32 { ret a.show() + b.show(); }
+fn many(first: i32, ...rest: &dyn Show) i32 { var total: i32 = first; for item : rest { total = total + item.show(); } ret total; }
+trait Named { fn name(self: &Self) str; }
+impl Named for Res { fn name(self: &Res) str { ret "res"; } }
+fn title(item: &dyn Named) str { ret item.name(); }
+fn forward(item: &Res) i32 { ret describe(item); }
+fn via[T: Show](item: &T) i32 { ret describe(item); }
+fn owned[T: Show](item: T) i32 { const object: dyn Show = item; ret object.show(); }
+struct Printer { base: i32 }
+impl Printer { fn print(self: &Printer, item: &dyn Show) i32 { ret self.base + item.show(); } }
+fn main() i32 {
+    const res = Res { id: 1 };
+    const wrap: Wrap[i64] = Wrap { inner: 5 };
+    var total: i32 = 0;
+    for step : 0..100 { total = total + describe(&res); }
+    if (total != 100 || both(&res, &wrap) != 1001 || forward(&res) != 1) { ret 1; }
+    if (via(&res) != 1 || via(&wrap) != 1000) { ret 2; }
+    const narrow: Wrap[i32] = Wrap { inner: 6 };
+    if (describe(&wrap) + describe(&narrow) != 2000 || many(1, &res, &wrap) != 1002) { ret 5; }
+    const label: str = title(&res);
+    if (label != "res") { ret 6; }
+    const printer = Printer { base: 10 };
+    if (printer.print(&res) != 11) { ret 3; }
+    if (owned(Res { id: 7 }) != 7) { ret 4; }
+    ret res.show() - 1;
+}
+"""
+
+# The trait object of a borrowed argument is released after the full
+# expression, so a call result that may borrow from it is rejected.
+BORROWED_ESCAPE = """trait Show { fn show(self: &Self) i32; }
+struct Counter { value: i32 }
+impl Show for Counter { fn show(self: &Counter) i32 { ret self.value; } }
+fn same(item: &dyn Show) &dyn Show { ret item; }
+fn main() i32 { const counter = Counter { value: 3 }; const view = same(&counter); ret view.show(); }
+"""
+
 
 def project(root, name, source, *, unmangled=False, library=False):
     (root / "src").mkdir(parents=True)
@@ -106,6 +156,15 @@ def reference_dispatch(qz, root):
     project(root, "reference_dispatch", REFERENCES)
     portable_outputs(qz, root, "references")
     print("PASS dyn through references: &dyn shared and &dyn! exclusive methods, native, QZI-only, COFF")
+
+
+def borrowed_dispatch(qz, root):
+    project(root / "ok", "borrowed_dispatch", BORROWED)
+    portable_outputs(qz, root / "ok", "borrowed")
+    project(root / "escape", "borrowed_escape", BORROWED_ESCAPE)
+    output = run(qz, root / "escape", "build", "--no-incremental", expected=1)
+    assert "error[S10]" in output and "lives only for this call" in output, output
+    print("PASS borrowed &dyn arguments and generic dyn conversions; escaping result rejected")
 
 
 def incremental_dispatch(qz, root):
@@ -163,6 +222,7 @@ def main():
         imported_dispatch(qz, root / "imported")
         incremental_dispatch(qz, root / "incremental")
         reference_dispatch(qz, root / "references")
+        borrowed_dispatch(qz, root / "borrowed")
         aliased_library_dispatch(qz, root / "aliased")
 
 

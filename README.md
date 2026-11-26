@@ -67,6 +67,10 @@ A program without `main` compiles only concrete callables, so a missing
 entry point is reported instead of a generic-template layout error.
 QZI format 18 gives trait objects a destroy word, so a `dyn Trait` destroys
 its value; format 17 asks for a rebuild and QZC41 invalidates caches.
+A `&Concrete` call argument converts to `&dyn Trait` (a borrowed trait
+object released after the call) and a value of a bounded type parameter
+`T: Trait` converts to `dyn Trait` (В34А); each generic-type instantiation
+has its own vtable, and QZC42 invalidates caches.
 QZI format 17 introduced the D-014 ownership certificate: one record of bytecode
 parameter effects per function body (reads, writes through references,
 returned and stored slots, unknown uses), closed over direct calls. Readers

@@ -3192,6 +3192,14 @@ impl Analyzer {
     }
 
     pub(super) fn type_check_expr(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
+        let result = self.type_check_expr_inner(expr, reachable);
+        if matches!(expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
+            self.finish_borrowed_dyn_arguments(expr, &result);
+        }
+        result
+    }
+
+    fn type_check_expr_inner(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
         self.initialization_condition = None;
         let mut initialization_condition = None;
         let mut resolved_method: Option<String> = None;
@@ -4176,7 +4184,7 @@ impl Analyzer {
                             params.iter().zip(&arg_evals).zip(args).enumerate()
                         {
                             if let Some(actual) = &arg_eval.ty
-                                && !self.check_expr_compat(arg, &param.node, actual)
+                                && !self.check_argument_compat(arg, &param.node, actual)
                             {
                                 self.push_error(
                                     arg.span,
@@ -4246,7 +4254,7 @@ impl Analyzer {
                                 params.iter().zip(&arg_evals).zip(args).enumerate()
                             {
                                 if let Some(actual) = &arg_eval.ty
-                                    && !self.check_expr_compat(arg, &param.node, actual)
+                                    && !self.check_argument_compat(arg, &param.node, actual)
                                 {
                                     self.push_error(
                                         arg.span,
@@ -4490,7 +4498,7 @@ impl Analyzer {
                             for ((argument, eval), expected) in args.iter().zip(&evals).zip(&signature.params) {
                                 let expected = substitute_self_type(expected, &self_type);
                                 if let Some(actual) = &eval.ty
-                                    && !self.check_expr_compat(argument, &expected, actual)
+                                    && !self.check_argument_compat(argument, &expected, actual)
                                 {
                                     self.push_error(argument.span, "S08", format!("argument of `{param}.{method}`: expected {expected}, got {actual}"));
                                 }
@@ -5277,7 +5285,7 @@ impl Analyzer {
                                     {
                                         let arg_expr = args.get(i).unwrap_or(expr);
                                         self.complete_sum_argument(arg_expr, arg_ty, param_ty);
-                                        if !self.check_expr_compat(arg_expr, param_ty, arg_ty) {
+                                        if !self.check_argument_compat(arg_expr, param_ty, arg_ty) {
                                             self.push_error(
                                                 arg_expr.span,
                                                 "S08",
@@ -5336,7 +5344,7 @@ impl Analyzer {
                                         if let (Some(param_ty), Some(arg_ty)) =
                                             (method_params.get(pos), &arg_eval.ty)
                                         {
-                                            if !self.check_expr_compat(arg_expr, param_ty, arg_ty) {
+                                            if !self.check_argument_compat(arg_expr, param_ty, arg_ty) {
                                                 self.push_error(
                                                     expr.span,
                                                     "S09",
@@ -5522,7 +5530,7 @@ impl Analyzer {
                                         .enumerate()
                                     {
                                         if let Some(actual) = &eval.ty
-                                            && !self.check_expr_compat(arg, expected, actual)
+                                            && !self.check_argument_compat(arg, expected, actual)
                                         {
                                             self.push_error(
                                                 arg.span,
@@ -6614,6 +6622,56 @@ impl Analyzer {
         result
     }
 
+    /// A `&Concrete` argument converted to `&dyn Trait` borrows through a
+    /// trait object released at the end of the full expression. Views the
+    /// callee derives through it point into the caller's value, which lives
+    /// on; only a `&dyn` (the block's address) in the result could dangle.
+    fn finish_borrowed_dyn_arguments(&mut self, call: &Expr, result: &ExprEval) {
+        let inside = |span: &Span| span.start >= call.span.start && span.end <= call.span.end;
+        let finished: Vec<Span> = self.borrowed_dyn_arguments.iter().copied().filter(inside).collect();
+        if finished.is_empty() {
+            return;
+        }
+        self.borrowed_dyn_arguments.retain(|span| !inside(span));
+        if let Some(ty) = &result.ty
+            && self.may_hold_dyn_reference(ty, 0)
+        {
+            self.push_error(
+                finished[0],
+                "S10",
+                "a reference converted to `&dyn` here lives only for this call, but the call's result may contain a `&dyn` into it; pass a `dyn` value or a `&dyn` that outlives the result"
+                    .to_string(),
+            );
+        }
+    }
+
+    /// Whether a value of `ty` may contain a `&dyn` / `&dyn!` reference
+    /// (directly or in type arguments such as `Option[&dyn T]`); unknown
+    /// shapes count as may.
+    fn may_hold_dyn_reference(&self, ty: &TypeKind, depth: usize) -> bool {
+        if depth > 16 {
+            return true;
+        }
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } => {
+                match self.resolve_type_aliases(&inner.node) {
+                    TypeKind::Dyn { .. } | TypeKind::Any | TypeKind::Error => true,
+                    other => self.may_hold_dyn_reference(&other, depth + 1),
+                }
+            }
+            TypeKind::Named { type_args, .. } => type_args
+                .iter()
+                .any(|argument| self.may_hold_dyn_reference(&argument.node, depth + 1)),
+            TypeKind::Array { elem_ty, .. }
+            | TypeKind::Slice { elem_ty }
+            | TypeKind::FlexibleArray { elem_ty } => {
+                self.may_hold_dyn_reference(&elem_ty.node, depth + 1)
+            }
+            TypeKind::Any | TypeKind::Error => true,
+            _ => false,
+        }
+    }
+
     /// `qo f(args)` runs `f` on another stack, so its arguments must not
     /// borrow (expressions.md, "qo"): the qoroutine would borrow its own copy
     /// of the variable and a write through `&x!` would be lost, or a view
@@ -7115,7 +7173,7 @@ impl Analyzer {
                 }
             };
             if let Some(actual) = &eval.ty
-                && !self.check_expr_compat(arg, expected, actual)
+                && !self.check_argument_compat(arg, expected, actual)
             {
                 self.push_error(
                     arg.span,
@@ -7483,7 +7541,7 @@ impl Analyzer {
                 .enumerate()
             {
                 if let (Some(arg_ty), Some(arg_expr)) = (arg_ty, args.get(i))
-                    && !self.check_expr_compat(arg_expr, param_ty, arg_ty)
+                    && !self.check_argument_compat(arg_expr, param_ty, arg_ty)
                 {
                     self.push_error(
                         arg_expr.span,
@@ -7575,7 +7633,7 @@ impl Analyzer {
                     continue;
                 }
                 self.complete_sum_argument(arg_expr, at, param_ty);
-                if !self.check_expr_compat(arg_expr, param_ty, at) {
+                if !self.check_argument_compat(arg_expr, param_ty, at) {
                     self.push_error(
                         arg_expr.span,
                         "S08",
@@ -7608,7 +7666,7 @@ impl Analyzer {
                 else {
                     continue;
                 };
-                if !self.check_expr_compat(argument, param_ty, actual_ty) {
+                if !self.check_argument_compat(argument, param_ty, actual_ty) {
                     self.push_error(
                         argument.span,
                         "S08",
@@ -7630,7 +7688,7 @@ impl Analyzer {
                 for (i, arg_ty) in arg_evals[var_start..].iter().map(|e| &e.ty).enumerate() {
                     if let Some(at) = arg_ty {
                         if let Some(arg_expr) = args.get(var_start + i) {
-                            if !self.check_expr_compat(arg_expr, elem_ty, at) {
+                            if !self.check_argument_compat(arg_expr, elem_ty, at) {
                                 self.push_error(
                                     arg_expr.span,
                                     "S08",
@@ -8884,6 +8942,39 @@ impl Analyzer {
 
     /// A generic value coerced to `dyn Trait` dispatches to its specialized
     /// methods (`Holder.hash_code<P>`): request them and keep them reachable.
+    /// A trait object of `concrete` is built here: its vtable references
+    /// every trait method of `concrete`, so they are reachable.
+    fn request_dyn_vtable_methods(&mut self, trait_name: &str, concrete: &TypeKind) {
+        let TypeKind::Named { name, type_args } = concrete else {
+            return;
+        };
+        // A generic parameter: each specialization requests its own type
+        // (see `close_monomorphization_dependencies`).
+        if self.current_generic_params.iter().any(|params| params.contains(name)) {
+            if let Some(function) = self.current_function.last().cloned() {
+                self.generic_dyn_vtables
+                    .entry(function)
+                    .or_default()
+                    .insert((name.clone(), trait_name.to_string()));
+            }
+            return;
+        }
+        if !type_args.is_empty() {
+            let declared = TypeKind::Dyn { trait_name: trait_name.to_string() };
+            return self.request_dyn_vtable_specializations(&declared, concrete);
+        }
+        let from = self
+            .current_function
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "__program__".to_string());
+        for method in self.trait_method_slots.get(trait_name).cloned().unwrap_or_default() {
+            let fn_name = format!("{name}.{method}");
+            self.resolve_for_read(&fn_name);
+            self.add_dependency_edge(DependencyKind::Call, &from, &fn_name);
+        }
+    }
+
     fn request_dyn_vtable_specializations(&mut self, declared: &TypeKind, value: &TypeKind) {
         let TypeKind::Dyn { trait_name } = self.resolve_type_aliases(declared) else {
             return;
@@ -9066,7 +9157,43 @@ impl Analyzer {
         }
     }
 
+    /// Whether a value of `concrete` converts to `dyn trait_name`: a type
+    /// implementing the trait, or a generic parameter bounded by it.
+    fn converts_to_dyn(&self, trait_name: &str, concrete: &TypeKind) -> bool {
+        match concrete {
+            TypeKind::Named { name, type_args }
+                if type_args.is_empty() && self.is_bounded_generic_param(name, trait_name) =>
+            {
+                true
+            }
+            _ => self.types_compatible(
+                &TypeKind::Dyn { trait_name: trait_name.to_string() },
+                concrete,
+            ),
+        }
+    }
+
+    /// `name` is a generic parameter in scope with the bound `trait_name`.
+    fn is_bounded_generic_param(&self, name: &str, trait_name: &str) -> bool {
+        self.current_generic_params.iter().any(|params| params.iter().any(|param| param == name))
+            && self.current_generic_bounds().iter().any(|(param, bound)| {
+                param == name
+                    && (bound == trait_name
+                        || bound.rsplit('.').next() == trait_name.rsplit('.').next())
+            })
+    }
+
+    /// `check_expr_compat` for a call argument (see `checking_call_argument`).
+    fn check_argument_compat(&mut self, expr: &Expr, expected: &TypeKind, actual: &TypeKind) -> bool {
+        let previous = std::mem::replace(&mut self.checking_call_argument, true);
+        let compatible = self.check_expr_compat(expr, expected, actual);
+        self.checking_call_argument = previous;
+        compatible
+    }
+
     fn check_expr_compat(&mut self, expr: &Expr, expected: &TypeKind, actual: &TypeKind) -> bool {
+        // Only the argument itself converts, not values nested inside it.
+        let call_argument = std::mem::replace(&mut self.checking_call_argument, false);
         let expected_resolved = self.resolve_type_aliases(expected);
         let actual_resolved = self.resolve_type_aliases(actual);
         if Self::is_integer(&expected_resolved)
@@ -9171,10 +9298,49 @@ impl Analyzer {
             return false;
         }
         match (&expected_resolved, &actual_resolved) {
+            // `&Concrete` passed for `&dyn Trait`: codegen builds a trait
+            // object that borrows the value for the call (В34).
+            (TypeKind::Ref { inner: expected_inner }, TypeKind::Ref { inner: actual_inner })
+                if call_argument
+                    && let TypeKind::Dyn { trait_name } =
+                        self.resolve_type_aliases(&expected_inner.node)
+                    && let concrete @ TypeKind::Named { .. } =
+                        self.resolve_type_aliases(&actual_inner.node)
+                    && self.converts_to_dyn(&trait_name, &concrete) =>
+            {
+                if let Some(annotation) = self
+                    .annotated_exprs
+                    .iter_mut()
+                    .rev()
+                    .find(|annotation| annotation.span == expr.span)
+                {
+                    annotation.dyn_coercion = Some(trait_name.clone());
+                }
+                self.borrowed_dyn_arguments.push(expr.span);
+                self.request_dyn_vtable_methods(&trait_name, &concrete);
+                return true;
+            }
             (TypeKind::Dyn { trait_name }, TypeKind::Named { .. })
                 if self.types_compatible(&expected_resolved, &actual_resolved) =>
             {
                 let trait_name = trait_name.clone();
+                if let Some(annotation) = self
+                    .annotated_exprs
+                    .iter_mut()
+                    .rev()
+                    .find(|annotation| annotation.span == expr.span)
+                {
+                    annotation.dyn_coercion = Some(trait_name);
+                }
+                return true;
+            }
+            // A bounded generic parameter `T: Trait` becomes `dyn Trait`:
+            // each specialization converts its concrete type (В34).
+            (TypeKind::Dyn { trait_name }, TypeKind::Named { name, .. })
+                if self.is_bounded_generic_param(name, trait_name) =>
+            {
+                let trait_name = trait_name.clone();
+                self.request_dyn_vtable_methods(&trait_name, &actual_resolved);
                 if let Some(annotation) = self
                     .annotated_exprs
                     .iter_mut()

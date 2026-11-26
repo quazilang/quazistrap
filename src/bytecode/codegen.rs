@@ -2992,6 +2992,9 @@ struct ExpressionTemporary {
     produced: bool,
     value_reg: Option<u8>,
     synthetic_format: bool,
+    /// The trait-object block of a `&Concrete` argument passed as
+    /// `&dyn Trait`: it borrows the value, so only the block is released.
+    borrowed_dyn: bool,
 }
 
 #[derive(Clone)]
@@ -3484,7 +3487,13 @@ impl<'a> FnCompiler<'a> {
     /// The typechecker marked `expr` as a concrete value used where a trait
     /// object is expected. Nested expressions with the same span (a call and
     /// its callee) see the claim and are left alone.
-    fn claim_dyn_coercion(&mut self, expr: &Expr) -> Option<(String, Vec<TypeKind>, String)> {
+    /// A recorded `dyn` coercion of `expr`: the concrete type, its type
+    /// arguments, the trait, and whether `expr` is a `&Concrete` borrowed as
+    /// `&dyn Trait` (see `borrowed_dyn_reference`).
+    fn claim_dyn_coercion(
+        &mut self,
+        expr: &Expr,
+    ) -> Option<(String, Vec<TypeKind>, String, bool)> {
         let key = (expr.span.start, expr.span.end);
         if !self.dyn_coercions_in_progress.insert(key) {
             return None;
@@ -3501,12 +3510,84 @@ impl<'a> FnCompiler<'a> {
                 name,
                 type_args.into_iter().map(|argument| argument.node).collect(),
                 trait_name,
+                false,
             )),
+            (Some(trait_name), Some(TypeKind::Ref { inner }))
+                if let TypeKind::Named { name, type_args } = self.resolve_type(&inner.node) =>
+            {
+                Some((
+                    name,
+                    type_args.into_iter().map(|argument| argument.node).collect(),
+                    trait_name,
+                    true,
+                ))
+            }
+            // A generic `T: Trait` specialized with a type that has no
+            // trait-object representation (a primitive): never skip silently.
+            (Some(trait_name), Some(other)) => {
+                self.codegen_error.get_or_insert_with(|| {
+                    format!("`{other}` cannot become `dyn {trait_name}`: trait objects hold named types")
+                });
+                self.dyn_coercions_in_progress.remove(&key);
+                None
+            }
             _ => {
                 self.dyn_coercions_in_progress.remove(&key);
                 None
             }
         }
+    }
+
+    /// Whether the typechecker converted `expr`, a `&Concrete` call
+    /// argument, to `&dyn Trait`.
+    fn is_borrowed_dyn_coercion(&self, expr: &Expr) -> bool {
+        let key = (expr.span.start, expr.span.end);
+        self.annotated_exprs
+            .iter()
+            .rev()
+            .find(|annotation| (annotation.span.start, annotation.span.end) == key)
+            .is_some_and(|annotation| annotation.dyn_coercion.is_some())
+            && matches!(self.type_of_span(key), Some(TypeKind::Ref { .. }))
+    }
+
+    /// `&Concrete` passed as `&dyn Trait`: a trait object block whose value
+    /// word is the referenced value and whose destroy word is 0 (it borrows),
+    /// released by the full expression's cleanup; the argument is the
+    /// address of the block's slot, like any `&dyn` reference.
+    fn borrowed_dyn_reference(
+        &mut self,
+        expr: &Expr,
+        reference: u8,
+        type_name: &str,
+        type_args: &[TypeKind],
+        trait_name: &str,
+    ) -> u8 {
+        let value = self.alloc_reg();
+        self.chunk.emit(mem_load(reference, value, 0));
+        let block = self.coerce_to_dyn(value, type_name, type_args, trait_name);
+        let nothing = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, nothing, 0));
+        self.chunk.emit(rrr(Opcode::FieldStore, nothing, block, 16));
+        let key = (expr.span.start, expr.span.end);
+        match self
+            .expression_temporaries
+            .iter_mut()
+            .find(|temp| temp.borrowed_dyn && temp.span == key)
+        {
+            Some(temp) => {
+                self.chunk.emit(rrr(Opcode::Mov, temp.slot, block, 0));
+                temp.produced = true;
+                temp.value_reg = Some(block);
+            }
+            None => {
+                self.codegen_error.get_or_insert_with(|| {
+                    "a `&dyn` argument block has no full-expression owner slot".to_string()
+                });
+            }
+        }
+        let address = self.alloc_reg();
+        self.chunk.emit(mem_lea_block(block, address, 0, 1));
+        address
     }
 
     fn is_c_abi_function_span(&self, span: crate::parser::ast::Span) -> bool {
@@ -6645,7 +6726,7 @@ impl<'a> FnCompiler<'a> {
         expr: &Expr,
         root: bool,
         transfer: bool,
-        sites: &mut Vec<((usize, usize), DropAction, bool, bool)>,
+        sites: &mut Vec<((usize, usize), DropAction, bool, bool, bool)>,
     ) {
         let producer = matches!(
             expr.node,
@@ -6773,7 +6854,7 @@ impl<'a> FnCompiler<'a> {
             && let Some(ty) = &self.format_result_type
             && let Some(action) = self.drop_action_for_resolved_type(ty)
         {
-            sites.push(((expr.span.start, expr.span.end), action, true, true));
+            sites.push(((expr.span.start, expr.span.end), action, true, true, false));
         }
         if !root
             && (producer
@@ -6781,7 +6862,16 @@ impl<'a> FnCompiler<'a> {
             && let Some(ty @ TypeKind::Named { .. }) = self.type_of_expr(expr)
             && let Some(action) = self.drop_action_for_type(&ty)
         {
-            sites.push(((expr.span.start, expr.span.end), action, producer, false));
+            sites.push(((expr.span.start, expr.span.end), action, producer, false, false));
+        }
+        if self.is_borrowed_dyn_coercion(expr) {
+            sites.push((
+                (expr.span.start, expr.span.end),
+                DropAction::ReleaseStorage,
+                true,
+                false,
+                true,
+            ));
         }
     }
 
@@ -6789,8 +6879,8 @@ impl<'a> FnCompiler<'a> {
         let mut sites = Vec::new();
         self.expression_owner_sites(expr, true, false, &mut sites);
         let mut seen = HashSet::new();
-        for (span, action, producer, synthetic_format) in sites {
-            if !seen.insert((span, synthetic_format)) {
+        for (span, action, producer, synthetic_format, borrowed_dyn) in sites {
+            if !seen.insert((span, synthetic_format, borrowed_dyn)) {
                 continue;
             }
             let slot = self.alloc_reg();
@@ -6804,6 +6894,7 @@ impl<'a> FnCompiler<'a> {
                 produced: false,
                 value_reg: None,
                 synthetic_format,
+                borrowed_dyn,
             });
         }
     }
@@ -6847,7 +6938,7 @@ impl<'a> FnCompiler<'a> {
             .expression_temporaries
             .iter_mut()
             .filter_map(|temp| {
-                if !temp.produced {
+                if !temp.produced || temp.borrowed_dyn {
                     return None;
                 }
                 let direct = temp.value_reg == Some(owner);
@@ -6908,7 +6999,11 @@ impl<'a> FnCompiler<'a> {
         if let Some(temp) = self
             .expression_temporaries
             .iter_mut()
-            .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
+            .find(|temp| {
+                !temp.synthetic_format
+                    && !temp.borrowed_dyn
+                    && temp.span == (expr.span.start, expr.span.end)
+            })
         {
             temp.consumed = true;
         }
@@ -8219,7 +8314,7 @@ impl<'a> FnCompiler<'a> {
     fn compile_condition_jump(&mut self, expr: &Expr, jump_if_false: bool) -> usize {
         let mut owned_sites = Vec::new();
         self.expression_owner_sites(expr, true, false, &mut owned_sites);
-        if owned_sites.iter().any(|(_, _, producer, _)| *producer) {
+        if owned_sites.iter().any(|(_, _, producer, _, _)| *producer) {
             let condition = self.compile_expr(expr);
             let zero = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, zero, 0));
@@ -9318,8 +9413,14 @@ impl<'a> FnCompiler<'a> {
                 .get_or_insert_with(|| format!("missing vtable implementation `{missing}`"));
             return fat;
         }
+        // Each instantiation of a generic type has its own table.
+        let layout_type = if type_args.is_empty() {
+            type_name.to_string()
+        } else {
+            crate::semantic::typecheck::mangle_monomorphized(type_name, type_args)
+        };
         let layout = super::vtable::VtableLayout {
-            type_name: type_name.to_string(),
+            type_name: layout_type,
             trait_name: trait_name.to_string(),
             methods,
         };
@@ -9368,17 +9469,25 @@ impl<'a> FnCompiler<'a> {
         if let Some(temp) = self
             .expression_temporaries
             .iter_mut()
-            .find(|temp| !temp.synthetic_format && temp.span == (expr.span.start, expr.span.end))
+            .find(|temp| {
+                !temp.synthetic_format
+                    && !temp.borrowed_dyn
+                    && temp.span == (expr.span.start, expr.span.end)
+            })
             && (temp.producer || temp.consumed || consumed)
         {
             self.chunk.emit(rrr(Opcode::Mov, temp.slot, reg, 0));
             temp.produced = true;
             temp.value_reg = Some(reg);
         }
-        if let Some((name, type_args, trait_name)) = self.claim_dyn_coercion(expr) {
-            // The trait object owns the value from here on.
-            self.transfer_expression_temporary(reg);
-            reg = self.coerce_to_dyn(reg, &name, &type_args, &trait_name);
+        if let Some((name, type_args, trait_name, borrowed)) = self.claim_dyn_coercion(expr) {
+            if borrowed {
+                reg = self.borrowed_dyn_reference(expr, reg, &name, &type_args, &trait_name);
+            } else {
+                // The trait object owns the value from here on.
+                self.transfer_expression_temporary(reg);
+                reg = self.coerce_to_dyn(reg, &name, &type_args, &trait_name);
+            }
             self.dyn_coercions_in_progress.remove(&(expr.span.start, expr.span.end));
         }
         self.expression_depth -= 1;

@@ -19,7 +19,16 @@ The storage sentinel avoids glue for plain values, which keeps their callers'
 incremental codegen units cacheable. Destroying a trait object applies the
 destroy word, then releases the block. A trait object that is a call result
 used directly as a receiver (`make().show()`) is destroyed after the call. The
-borrow checker treats a by-value method call through `dyn` as a move. Codegen builds trait objects
+borrow checker treats a by-value method call through `dyn` as a move. A `&Concrete` call argument
+passed for `&dyn Trait` gets a block whose first word is the referenced value,
+whose destroy word is 0 (it borrows) and which the full expression's cleanup
+releases (`ExpressionTemporary::borrowed_dyn`); the argument is the address of
+the block's slot. The typechecker allows this only for call arguments and
+rejects calls whose result may contain a `&dyn` (S10). A generic type's
+table is per instantiation: `type_name` is the mangled specialization
+(`Wrap<i64>`), so `Wrap[i64]` and `Wrap[i32]` no longer collide. Conversions from a bounded
+type parameter record `(parameter, trait)` per generic function; monomorphization
+closure requests each concrete type's vtable methods. Codegen builds trait objects
 wherever the typechecker recorded a coercion (`ExprAnnotation::dyn_coercion`:
 declarations, arguments, returns, fields, generic arguments). Format 17
 objects had no destroy word, so format 17 files are rejected with a rebuild

@@ -12,8 +12,9 @@ use crate::bytecode::codegen::{CachedCodegenCall, CachedCodegenUnit};
 use crate::parser::ast::{Attribute, ItemKind, Program, TypeKind};
 
 const QZC_MAGIC: &[u8; 4] = b"\0QZC";
-// Rebuild units whose trait objects lacked the destroy word (QZI format 18).
-const QZC_VERSION: u8 = 41;
+// Rebuild units whose generic-type vtables were named without their type
+// arguments (one table per instantiation since QZC 42).
+const QZC_VERSION: u8 = 42;
 
 #[derive(Debug, Clone)]
 pub struct QzcHit {
