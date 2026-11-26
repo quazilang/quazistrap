@@ -173,6 +173,11 @@ boundary for one JSON string token. They preserve the JSON module's Unicode,
 surrogate-pair, and embedded-NUL guarantees while normalizing failures to
 `DecodeError`.
 
+Every scalar decoder has a `_with_limits(source, max_input, max_depth)` form
+with the same results plus `InputLimit`/`DepthLimit` (`decode_u64`,
+`decode_f64`, the sized integers, `decode_isize`, `decode_usize`,
+`decode_f32`, `decode_system_time`).
+
 `decode_i64(source)` and `decode_i64_with_limits(source, max_input, max_depth)`
 decode one JSON integer into a signed 64-bit Quazi value. The input must first
 be syntactically valid JSON and then fit the `i64` decimal range; legal JSON

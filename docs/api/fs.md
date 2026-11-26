@@ -93,10 +93,10 @@ const config: Result[String, fs.FsError] = fs.read_to_string("settings.qz");
 
 | API | Semantics and platform notes |
 | --- | --- |
-| `current_dir()` / `set_current_dir(path)` | The process-wide working directory as an owned `String` (`Result[String, FsError]`), and changing it (`Result[bool, FsError]`); `getcwd`/`chdir` on Linux and NetBSD, `GetCurrentDirectoryA`/`SetCurrentDirectoryA` on Windows. `std.os` re-exports both. |
+| `current_dir()` / `set_current_dir(path)` | The process-wide working directory as a `Path` (`Result[Path, FsError]`), and changing it (`Result[bool, FsError]`); `getcwd`/`chdir` on Linux and NetBSD, `GetCurrentDirectoryA`/`SetCurrentDirectoryA` on Windows. `std.os` re-exports both. |
 | `exists(path)` | Returns whether a native existence query succeeds. It conflates absence, permission failures, and other errors. |
 | `readable(path)` / `writable(path)` | Best-effort access probes, not a guarantee that a later open or write will succeed. Windows `writable` currently reports existence rather than testing write access. |
-| `walk(root)` | `Result[Array[String], FsError]`: every entry below `root` as a `/`-separated relative path. Each directory's entries are listed before any of its subdirectories are entered, and subdirectories are visited last-found first (a directory always precedes its contents). Symbolic links are listed but not followed, so link cycles cannot recur. |
+| `walk(root)` | `Result[Array[Path], FsError]`: every entry below `root` as a `/`-separated relative path. Each directory's entries are listed before any of its subdirectories are entered, and subdirectories are visited last-found first (a directory always precedes its contents). Symbolic links are listed but not followed, so link cycles cannot recur. |
 | `metadata(path)` / `symlink_metadata(path)` | `Result[Metadata, FsError]`, following links or describing the link itself. `Metadata` offers `len()`, `file_type()` (`FileType.File`/`Directory`/`Symlink`/`Other`), `is_file()`, `is_dir()`, `is_symlink()`, `readonly()` (no write bit on Linux, read-only attribute on Windows) and `modified_unix_nanos()`. Windows does not resolve links for `metadata`; NetBSD uses libc `stat`/`lstat`. |
 | `remove(path)` | Removes a file, not a directory. |
 | `mkdir(path)` | Creates one directory. On Linux it requests `0o755` before `umask`; Windows ignores POSIX mode bits. Parent directories are not created. |

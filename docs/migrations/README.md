@@ -1,5 +1,6 @@
 # Migration guides
 
+- [Unified std API conventions (В35А)](std-api-unification.md)
 - [`std.unix` is now `std.linux`](std-unix-to-linux.md)
 - [Per-file type visibility](source-type-visibility.md)
 

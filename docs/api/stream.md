@@ -16,7 +16,8 @@ pub enum IoError { Closed, WouldBlock, TimedOut, Interrupted, Native(i32), Other
 ```
 
 Why a streaming operation failed. `message()` gives a short English
-description. Other modules build values through the helpers `closed_error()`,
+description (static text, like every std error); `detail()` returns an owned
+`String` with the native code or the `Other` text. Other modules build values through the helpers `closed_error()`,
 `would_block_error()`, `timed_out_error()`, `native_error(code)` and
 `other_error(text)`.
 

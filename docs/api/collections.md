@@ -22,7 +22,8 @@ The map retains its original key on replacement and drops the previous value.
 
 Both types provide `contains(&key)`, `remove(&key)`, `len()`, `is_empty()`,
 and `clear()`. Removing a key drops its entry and reports whether it existed.
-For maps, `find(&key)` returns `Option[usize]`. A successful index can be passed
+For maps, `get(&key)` returns a copy of a `Copy` value as `Option[V]` (owned
+values are rejected; borrow them instead), and `find(&key)` returns `Option[usize]`. A successful index can be passed
 to `key_at(index)` or `value_at(index)` to borrow the stored element.
 `HashSet.value_at(index)` borrows a stored key. These indexed accessors panic
 for an out-of-range index. Removing an entry can move the last entry into its

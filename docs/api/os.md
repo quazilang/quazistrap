@@ -71,8 +71,8 @@ and NetBSD libc `setenv`/`unsetenv`.
 
 ## Working directory
 
-`os.current_dir()` returns the current working directory as an owned `String`
-(`Result[String, fs.FsError]`); paths longer than the initial 4 KiB buffer are
+`os.current_dir()` returns the current working directory as a `Path`
+(`Result[fs.Path, fs.FsError]`; `.as_str()` gives the text); paths longer than the initial 4 KiB buffer are
 retried with a larger one up to 1 MiB. `os.set_current_dir(path)` changes it
 for the whole process (every thread) and returns `Result[bool, fs.FsError]`.
 Both are implemented in `std.fs` (`fs.current_dir`, `fs.set_current_dir`):

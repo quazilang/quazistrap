@@ -29,8 +29,9 @@ search path. At run time the dynamic loader must find `libssl.so.3`.
 name (not for an IPv4 address), negotiates TLS 1.2 or newer and verifies the
 server: the chain against the system store and the certificate against
 `host`. `TlsStream.connect_with(host, port, &config)` takes a `TlsConfig`:
-`TlsConfig.system()`, or `TlsConfig.with_ca_file(path)` to trust only the PEM
-certificates in `path` (a private CA). No API disables verification.
+`TlsConfig.system()`, or `TlsConfig.with_ca_file(path)?` to trust only the PEM
+certificates in `path` (a private CA; an empty path is
+`TlsError.InvalidConfig`). No API disables verification.
 
 `send(text)`, `send_bytes(data)`, `receive(limit)` and `receive_all(limit)`
 take an exclusive receiver and mirror `TcpStream`. `receive` returns `""`

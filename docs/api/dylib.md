@@ -13,8 +13,8 @@ inside a narrow `unsafe` integration boundary.
 `DynamicLibrary.open(path)` copies the UTF-8 path into a NUL-terminated
 `CString` and returns a library owner. Embedded NULs become
 `DynamicLibraryError.InvalidName(index)`, allocation failures become
-`AllocationFailed`, and load failures become `OpenFailed` on Linux or
-`Native(code)` on Windows.
+`AllocationFailed`, and load failures become `OpenFailed(code)` on every
+target (the `GetLastError` code on Windows, 0 where the loader reports none).
 
 `close()` consumes the owner, unloads the library and returns `Ok(true)`
 (`Ok(false)` for an owner without a handle). A native unload failure becomes

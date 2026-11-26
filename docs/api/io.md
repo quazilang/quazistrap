@@ -34,8 +34,8 @@ delimiter is still returned. `readln()` is
 use immediate terminal mode where available and restore the original mode on
 all normal error and success paths. Redirected input remains buffered.
 
-`readkey()` reads one complete UTF-8 scalar, returning an owned empty string at
-EOF. It does not require Enter in an interactive terminal. Neither operation
+`readkey()` reads one complete UTF-8 scalar and returns
+`Err(ReadError.EndOfInput)` at end of input, like `read` and `readln`. It does not require Enter in an interactive terminal. Neither operation
 is a nonblocking API or offers cancellation/timeouts.
 
 `ReadError` distinguishes allocation failure, capacity overflow, native input
