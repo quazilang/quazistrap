@@ -6,8 +6,10 @@ Audience: Quazi application developers.
 [`std.net`](net.md). It follows
 [D-008](../decisions/README.md#d-008-tls-and-trust-policy): the system TLS
 library and the system trust store, with certificate and host-name
-verification always on. Linux uses OpenSSL 3; Windows (Schannel) and NetBSD
-are not implemented yet and return `TlsError.Unsupported`.
+verification always on. Linux uses OpenSSL 3. Windows uses Schannel
+(TLS 1.2) and verifies the chain and host name through the certificate chain
+API (system store, or only the CA file's PEM certificates). NetBSD is not
+implemented yet and returns `TlsError.Unsupported`.
 
 ## Linking
 
@@ -22,6 +24,8 @@ libraries = ["ssl", "crypto"]
 
 Add `library-paths` when the libraries live outside the linker's default
 search path. At run time the dynamic loader must find `libssl.so.3`.
+Windows needs no configuration: the program imports `secur32.dll` and
+`crypt32.dll`, which every Windows installation has.
 
 ## Streams
 
