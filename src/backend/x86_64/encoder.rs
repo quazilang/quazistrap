@@ -1721,6 +1721,30 @@ impl<'a> FnEncoder<'a> {
             }};
         }
 
+        // NetBSD libc calls return -1 and set errno; intrinsics report
+        // -errno like Linux syscalls (std maps those codes). `$wide`: the
+        // result is a 64-bit count (read/write), else a 32-bit status.
+        // Called at the same stack depth as the libc call before it.
+        macro_rules! netbsd_errno_result {
+            ($wide:expr) => {{
+                let mut done = asm.create_label();
+                if $wide {
+                    emit!(asm.cmp(rax, -1i32));
+                } else {
+                    emit!(asm.cmp(eax, -1i32));
+                }
+                emit!(asm.jne(done));
+                call_ext!("__errno".into(), RelocKind::Plt32);
+                emit!(asm.mov(eax, dword_ptr(rax)));
+                emit!(asm.neg(eax));
+                emit!(asm.movsxd(rax, eax));
+                emit!(asm.set_label(&mut done));
+                if !$wide {
+                    emit!(asm.movsxd(rax, eax));
+                }
+            }};
+        }
+
         macro_rules! lea_rip {
             ($reg:expr, $sym:expr) => {{
                 let idx = asm.instructions().len();
@@ -2475,6 +2499,7 @@ impl<'a> FnEncoder<'a> {
                             }
                             if is_netbsd {
                                 call_ext!("write".into(), RelocKind::Plt32);
+                                netbsd_errno_result!(true);
                             } else {
                                 emit!(asm.mov(rax, 1i64));
                                 emit!(asm.syscall());
@@ -2521,6 +2546,7 @@ impl<'a> FnEncoder<'a> {
                             }
                             if is_netbsd {
                                 call_ext!("read".into(), RelocKind::Plt32);
+                                netbsd_errno_result!(true);
                             } else {
                                 emit!(asm.mov(rax, 0i64));
                                 emit!(asm.syscall());
@@ -2716,6 +2742,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(rdx, slot(dst + 1)));
                             if is_netbsd {
                                 call_ext!("write".into(), RelocKind::Plt32);
+                                netbsd_errno_result!(true);
                             } else {
                                 emit!(asm.mov(rax, 1i64));
                                 emit!(asm.syscall());
@@ -3121,6 +3148,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(edx, 16i32)); // addrlen
                             if is_netbsd {
                                 call_ext!("bind".into(), RelocKind::Plt32);
+                                netbsd_errno_result!(false);
                             } else {
                                 emit!(asm.mov(rax, 49i64)); // Linux bind
                                 emit!(asm.syscall());
@@ -3200,6 +3228,7 @@ impl<'a> FnEncoder<'a> {
                             emit!(asm.mov(edx, 16i32));
                             if is_netbsd {
                                 call_ext!("connect".into(), RelocKind::Plt32);
+                                netbsd_errno_result!(false);
                             } else {
                                 emit!(asm.mov(rax, 42i64)); // Linux connect
                                 emit!(asm.syscall());

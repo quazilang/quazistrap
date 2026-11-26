@@ -542,6 +542,15 @@ pub fn item_should_include(attributes: &[Attribute]) -> bool {
     )
 }
 
+/// The `target_family` of an OS: `unix` (Linux, NetBSD) or `windows`.
+pub fn target_family(target_os: &str) -> Option<&'static str> {
+    match target_os {
+        "linux" | "netbsd" => Some("unix"),
+        "windows" => Some("windows"),
+        _ => None,
+    }
+}
+
 /// Returns `true` if the item should be included for an explicit compilation target.
 pub fn item_should_include_for(
     attributes: &[Attribute],
@@ -567,6 +576,11 @@ pub fn item_should_include_for(
                     }
                     AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_abi" => {
                         if val.as_str() != target_abi {
+                            matched = false;
+                        }
+                    }
+                    AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_family" => {
+                        if Some(val.as_str()) != target_family(target_os) {
                             matched = false;
                         }
                     }
@@ -7557,6 +7571,27 @@ fn main() void {
             "unexpected errors: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn cfg_target_family_groups_unix_targets() {
+        use crate::parser::ast::{AttrArg, AttrVal, Attribute};
+        use crate::semantic::item_should_include_for;
+        let family = |value: &str| {
+            vec![Attribute {
+                name: "cfg".to_string(),
+                args: vec![AttrArg::KeyValue(
+                    "target_family".to_string(),
+                    AttrVal::Str(value.to_string()),
+                )],
+                span: crate::parser::ast::Span::new(0, 0, 0, 0),
+            }]
+        };
+        for (os, unix) in [("linux", true), ("netbsd", true), ("windows", false), ("none", false)] {
+            assert_eq!(item_should_include_for(&family("unix"), os, "x86_64", "sysv"), unix, "{os}");
+        }
+        assert!(item_should_include_for(&family("windows"), "windows", "x86_64", "win64"));
+        assert!(!item_should_include_for(&family("windows"), "linux", "x86_64", "sysv"));
     }
 
     #[test]

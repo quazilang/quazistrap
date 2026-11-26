@@ -49,6 +49,7 @@ incompatible targets.
 | `target_os` | `"linux"`, `"windows"` |
 | `target_arch` | `"x86_64"` |
 | `target_abi` | `"sysv"`, `"win64"` |
+| `target_family` | `"unix"` (Linux, NetBSD), `"windows"` |
 
 ## Platform-specific behavior
 

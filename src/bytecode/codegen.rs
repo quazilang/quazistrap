@@ -12232,6 +12232,10 @@ fn cfg_condition_matches(attr: &crate::parser::ast::Attribute) -> bool {
             AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_arch" => {
                 return val.as_str() == std::env::consts::ARCH;
             }
+            AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_family" => {
+                return Some(val.as_str())
+                    == crate::semantic::target_family(std::env::consts::OS);
+            }
             AttrArg::KeyValue(key, AttrVal::Str(val)) if key == "target_abi" => {
                 #[cfg(target_os = "windows")]
                 let host_abi = "win64";

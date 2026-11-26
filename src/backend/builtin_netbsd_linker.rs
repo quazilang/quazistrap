@@ -28,6 +28,16 @@ const LIBC: &[u8] = b"libc.so.12\0";
 // NetBSD keeps the POSIX thread functions out of libc; a program that calls
 // any of them needs libpthread loaded too (before libc, as `cc -pthread`).
 const LIBPTHREAD: &[u8] = b"libpthread.so.1\0";
+// The base-system OpenSSL of NetBSD 11 (std.tls).
+const LIBSSL: &[u8] = b"libssl.so.16\0";
+const LIBCRYPTO: &[u8] = b"libcrypto.so.16\0";
+
+/// Whether an import comes from the base-system OpenSSL.
+fn is_openssl_import(name: &str) -> bool {
+    ["SSL_", "TLS_", "ERR_", "OPENSSL_", "X509_", "EVP_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
 // From NetBSD 11.0 amd64 .note.netbsd.ident: namesz=7, descsz=4,
 // type=NT_NETBSD_VERSION, vendor=NetBSD, version 1100000000.
 pub(super) const NETBSD_NOTE: [u8; 24] = [
@@ -122,10 +132,16 @@ pub fn link_netbsd_image_at(objects: &[&[u8]], base: u64) -> Result<Vec<u8>, Str
         .collect::<BTreeSet<_>>().into_iter().collect();
 
     // All non-linker imports must be provided by the NetBSD 11 libc (and
-    // libpthread for `pthread_*`). Do not silently turn unknown native
-    // dependencies into Linux-host dependencies.
+    // libpthread for `pthread_*`, the base OpenSSL for std.tls). Do not
+    // silently turn unknown native dependencies into Linux-host dependencies.
     let mut dynstr = vec![0u8];
     let mut needed = Vec::new();
+    if imports.iter().any(|name| is_openssl_import(name)) {
+        for library in [LIBSSL, LIBCRYPTO] {
+            needed.push(dynstr.len() as u64);
+            dynstr.extend_from_slice(library);
+        }
+    }
     if imports.iter().any(|name| name.starts_with("pthread_")) {
         needed.push(dynstr.len() as u64);
         dynstr.extend_from_slice(LIBPTHREAD);
@@ -412,6 +428,13 @@ mod tests {
         assert!(bytes.windows(LIBC.len()).any(|window| window == LIBC));
         assert!(!bytes.windows(LIBPTHREAD.len()).any(|window| window == LIBPTHREAD));
         assert_eq!(u16::from_le_bytes([bytes[56], bytes[57]]), PH_COUNT as u16);
+    }
+
+    #[test]
+    fn openssl_imports_load_the_base_openssl() {
+        assert!(is_openssl_import("SSL_connect") && is_openssl_import("ERR_clear_error"));
+        assert!(is_openssl_import("TLS_client_method") && !is_openssl_import("pthread_create"));
+        assert!(!is_openssl_import("open"));
     }
 
     #[test]

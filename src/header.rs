@@ -661,6 +661,11 @@ fn cfg_active(attributes: &[Attribute], target: HeaderTarget) -> bool {
                         HeaderTarget::X86_64Windows => value == "windows",
                     },
                     "target_arch" => value == "x86_64",
+                    "target_family" => match target {
+                        HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd => value == "unix",
+                        HeaderTarget::X86_64Windows => value == "windows",
+                        HeaderTarget::X86_64None => false,
+                    },
                     "target_abi" => match target {
                         HeaderTarget::X86_64Linux | HeaderTarget::X86_64NetBsd | HeaderTarget::X86_64None => value == "sysv",
                         HeaderTarget::X86_64Windows => value == "win64",

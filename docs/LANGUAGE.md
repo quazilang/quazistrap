@@ -307,7 +307,7 @@ requiring a compiler or parser update. A consuming library or tool is
 responsible for reporting an unknown, misplaced, or invalid attribute in its
 own domain.
 
-- `@cfg(target_os="linux")`, `target_arch`, `target_abi`: conditional compile.
+- `@cfg(target_os="linux")`, `target_arch`, `target_abi`, `target_family`: conditional compile.
 - `@inline`: request inlining; recursive functions remain excluded.
 - `@derive(...)`: register derived traits.
 - `@ignore`, `@ignore(unused_vars)`, `@ignore(dead_code)`: warning control.
@@ -332,6 +332,7 @@ package settings in `quazi.toml`, not source attributes. See
 }
 ```
 
-Supported target keys are `target_os`, `target_arch`, and `target_abi`.
+Supported target keys are `target_os`, `target_arch`, `target_abi`, and
+`target_family` (`"unix"` for Linux and NetBSD, `"windows"`).
 Current production triples are `x86_64-linux`/`sysv` and
 `x86_64-windows`/`win64`.

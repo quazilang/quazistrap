@@ -6,10 +6,10 @@ Audience: Quazi application developers.
 [`std.net`](net.md). It follows
 [D-008](../decisions/README.md#d-008-tls-and-trust-policy): the system TLS
 library and the system trust store, with certificate and host-name
-verification always on. Linux uses OpenSSL 3. Windows uses Schannel
-(TLS 1.2) and verifies the chain and host name through the certificate chain
-API (system store, or only the CA file's PEM certificates). NetBSD is not
-implemented yet and returns `TlsError.Unsupported`.
+verification always on. Linux and NetBSD use OpenSSL 3 (NetBSD 11: the base
+system's `libssl.so.16`, linked by the built-in NetBSD linker). Windows uses
+Schannel (TLS 1.2) and verifies the chain and host name through the
+certificate chain API (system store, or only the CA file's PEM certificates).
 
 ## Linking
 
