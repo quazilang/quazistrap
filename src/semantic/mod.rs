@@ -8731,6 +8731,19 @@ fn entry(wrapper: Wrapper[Token]) Token {{ ret wrapper.read(); }}
     }
 
     #[test]
+    fn rejects_capturing_partially_moved_values() {
+        let report = analyze(
+            r#"struct Item { value: i32 } struct Pair { a: Item, b: Item } impl Item { fn free(self: Item) void {} } fn peek() i32 { const p = Pair { a: Item { value: 1 }, b: Item { value: 2 } }; const a: Item = p.a; const f: fn() i32 = || p.b.value; ret f(); }"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S10"
+                && error.message.contains("cannot capture partially moved value 'p'")),
+            "{:?}",
+            report.errors
+        );
+    }
+
+    #[test]
     fn allows_only_structural_receiver_field_returns() {
         let accepted = analyze(
             r#"
@@ -8756,8 +8769,16 @@ impl Outer { fn take(self: Outer) Item { ret self.item; } }
             r#"struct Item { value: i32 } struct Inner { item: Item } struct Outer { inner: Inner } impl Item { fn free(self: Item) void {} } impl Outer { fn take(self: Outer) Item { ret self.inner.item; } }"#,
         );
         assert!(nested.errors.is_empty(), "{:?}", nested.errors);
+        // D-028: the type's own by-value receiver may move fields out even
+        // when the type has a `free` hook (the hook is then skipped).
+        let hooked = analyze(
+            r#"struct Item { value: i32 } struct Outer { item: Item, other: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } fn keep(self: Outer, flag: bool) i32 { if flag { const item: Item = self.other; ret item.value; } ret 0; } }"#,
+        );
+        assert!(hooked.errors.is_empty(), "{:?}", hooked.errors);
+        // Any other owner of a hooked type is still destroyed whole.
         for source in [
-            r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { ret self.item; } }"#,
+            r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} } fn take(outer: Outer) Item { ret outer.item; }"#,
+            r#"struct Item { value: i32 } struct Outer { item: Item } impl Item { fn free(self: Item) void {} } impl Outer { fn free(self: Outer) void {} fn take(self: Outer) Item { const copy: Outer = self; ret copy.item; } }"#,
         ] {
             let report = analyze(source);
             assert!(

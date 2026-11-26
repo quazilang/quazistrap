@@ -223,3 +223,7 @@ Accepted 2026-11-18: [`@serde("json", "ini")` structs, field renames, per-format
 ## D-027: raw pointer access
 
 Decided 2026-11-26: [`*T` reads, `*T!` reads and writes; only literal 0 is a pointer](raw-pointer-access.md).
+
+## D-028: a `free` hook, then the remaining fields
+
+Decided 2026-11-26: [the compiler destroys the fields a `free` hook leaves; the type's own by-value methods may move fields out, which skips the hook](drop-hook-fields.md).

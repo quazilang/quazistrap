@@ -2518,7 +2518,7 @@ impl Analyzer {
                             expr.span,
                             "S10",
                             format!(
-                                "cannot move `{root}.{path}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook"
+                                "cannot move `{root}.{path}` here: a field moves out of a local struct only outside loops that do not declare it, while the local is not borrowed, and when its type has no `free` hook (a by-value `self` of the type's own method may move its fields)"
                             ),
                         );
                         return;
@@ -2653,6 +2653,21 @@ impl Analyzer {
                             },
                         );
                         if owned {
+                            // Capturing moves the whole value: a field moved
+                            // out of it earlier makes that a partial-move use.
+                            if let Some((field, moved_at)) = env
+                                .lookup(&name)
+                                .and_then(|var| var.moved_fields.first().cloned())
+                            {
+                                self.push_error(
+                                    expr.span,
+                                    "S10",
+                                    format!(
+                                        "cannot capture partially moved value '{name}' (field `{field}` moved at {})",
+                                        self.span_label(moved_at)
+                                    ),
+                                );
+                            }
                             env.mark_moved(&name, expr.span);
                         }
                     }
@@ -3148,10 +3163,12 @@ impl Analyzer {
             }
             if let Some(element) = element_index.and_then(|index| type_args.get(index)) {
                 self.bc_record_destructor_roots(&element.node, owner, visiting);
+                return;
             }
-            return;
         }
-        if self.consuming_receiver_methods.contains(&release) || self.repr_c_structs.contains(&name) {
+        // A `free` hook runs first; the fields it leaves are destroyed after
+        // it (D-028), so their destructors are roots too.
+        if self.repr_c_structs.contains(&name) {
             return;
         }
         let fields: Vec<TypeKind> = if let Some(fields) = self.struct_defs.get(&name) {
@@ -3282,9 +3299,12 @@ impl Analyzer {
         let TypeKind::Named { name, .. } = &resolved else {
             return false;
         };
-        true
-            && self.struct_defs.contains_key(name)
-            && !self.consuming_receiver_methods.contains(&format!("{name}.free"))
+        // A by-value receiver of the type's own method may move fields out
+        // even when the type has a `free` hook (D-028): the hook then does
+        // not run and the remaining fields are destroyed one by one.
+        let own_receiver = env.consuming_receiver.as_deref() == Some(root);
+        self.struct_defs.contains_key(name)
+            && (own_receiver || !self.consuming_receiver_methods.contains(&format!("{name}.free")))
             && !self.repr_c_structs.contains(name)
     }
 
@@ -3339,12 +3359,9 @@ impl Analyzer {
         else {
             return false;
         };
-        if !type_args.is_empty()
-            || self.repr_c_structs.contains(&name)
-            || self
-                .consuming_receiver_methods
-                .contains(&format!("{name}.free"))
-        {
+        // A type with a `free` hook qualifies too (D-028): moving a field
+        // out of its own receiver skips the hook.
+        if !type_args.is_empty() || self.repr_c_structs.contains(&name) {
             return false;
         }
         let Some((_, field_ty)) = self

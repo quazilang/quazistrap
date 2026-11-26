@@ -28,8 +28,7 @@ Additions (not breaking):
   `decode_isize`, `decode_usize`, `decode_f32`, `decode_system_time`), not
   only `decode_bool`/`decode_string`/`decode_i64`.
 
-Not changed yet: `stream.BufWriter` still does not flush when dropped
-(`fs.BufferedWriter` does). A `free` hook would forbid `into_inner`, which
-moves the wrapped writer out, until the language can move a field out of a
-type with a `free` hook; call `flush()` (or `into_inner()`) before dropping a
-`BufWriter`.
+`stream.BufWriter` flushes when dropped (2026-11-26, D-028), like
+`fs.BufferedWriter`: its `free` hook passes the buffered bytes on and flushes
+the inner writer, ignoring errors. Call `flush()` to see errors;
+`into_inner()` moves the inner writer out without the drop-time flush.

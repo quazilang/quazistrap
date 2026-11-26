@@ -91,7 +91,10 @@ Reassigning the whole local destroys its remaining fields first. A move
 inside a loop that does not declare the local is rejected (it would repeat),
 the local must not be borrowed, and its type must be a struct without its own
 `free` hook (generic structs included: each concrete specialization has its
-own cleanup plan).
+own cleanup plan). The one exception is the by-value `self` of the type's own
+method: it may move fields out even when the type has a `free` hook, and the
+hook then does not run for it; the remaining fields are destroyed one by one
+(D-028).
 
 ### Borrowed method receivers
 
@@ -115,7 +118,9 @@ projections and whole-owner moves remain valid. Whole-program and cross-call
 effects remain D-014 work.
 A consuming `free(self: T)` hook may consume projections rooted in that
 receiver while performing its own cleanup, because the complete receiver was
-already transferred to the hook.
+already transferred to the hook. After the hook returns, the compiler
+destroys every owned field the hook did not move out (reverse declaration
+order), then releases the struct (D-028).
 
 ## Scope cleanup (RAII)
 

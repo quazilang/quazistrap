@@ -243,6 +243,15 @@ establishes destruction only, not a `Headers` migration.
   specializations, or recursive layouts. Receiver capability metadata gates
   terminal hooks, so a reusable `free(&T!)` method is never treated as a
   destructor.
+- D-028 (2026-11-26) implements "hook, then remaining fields" for the same
+  structural domain: inside a consuming `free(self)` body, `self`'s cleanup
+  is its structural plan masked by the fields the hook moved out. A by-value
+  receiver of the type's own method keeps the structural plan plus the hook
+  (`hook_unless_moved` in codegen): mask 1 (nothing moved) calls the hook,
+  any moved bit destroys the remaining fields instead; a returned receiver
+  field never runs the hook. Types outside the structural domain keep the
+  hook-then-storage behavior. Semantic destructor roots now include the
+  fields of hooked types.
 - Enums destroy the active payload by discriminant, and enum payload layout
   becomes layout-driven like container elements (phase 1 gates multi-slot
   payloads with `S14` until then).

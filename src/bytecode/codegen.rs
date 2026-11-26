@@ -2474,26 +2474,52 @@ impl<'a> Codegen<'a> {
                         .contains(declared_name);
                 let is_destructor = declared_name.ends_with(".free");
                 if is_bare_self && is_destructor {
-                    if let TypeKind::Named { name: owner, .. } = &param_ty
+                    if let TypeKind::Named { name: owner, type_args } = &param_ty
                         && self.report.struct_defs.contains_key(owner)
                         && !self.report.repr_c_structs.contains(owner)
                     {
-                        // Source free bodies tear down resources; the compiler
-                        // retains the separate aggregate allocation as an owner.
-                        // A whole-receiver transfer deactivates this entry through
-                        // the ordinary ownership path, without recursive free.
-                        parameter_drops.push((p.name.clone(), reg, DropAction::ReleaseStorage));
+                        // The hook runs first; then the compiler destroys
+                        // the fields it did not move out and releases the
+                        // aggregate (D-028). A whole-receiver transfer
+                        // deactivates this entry without recursive free.
+                        let action = fc
+                            .structural_drop_action_for_named(owner, type_args, &mut HashSet::new())
+                            .unwrap_or(DropAction::ReleaseStorage);
+                        parameter_drops.push((p.name.clone(), reg, action, None));
                     }
                 } else if (p.name != "self" || is_bare_self)
                     && let Some(action) = fc.drop_action_for_type(&param_ty)
                 {
-                    parameter_drops.push((p.name.clone(), reg, action));
+                    // A by-value receiver of a type with a `free` hook may
+                    // have fields moved out (D-028): keep its structural plan
+                    // and run the hook only while nothing has moved.
+                    let receiver_plan = match (&action, &param_ty) {
+                        (DropAction::Call(hook), TypeKind::Named { name: owner, type_args })
+                            if is_bare_self && self.report.struct_defs.contains_key(owner) =>
+                        {
+                            fc.structural_drop_action_for_named(owner, type_args, &mut HashSet::new())
+                                .map(|plan| (plan, hook.clone()))
+                        }
+                        _ => None,
+                    };
+                    match receiver_plan {
+                        Some((plan @ DropAction::Structural(_), hook)) => {
+                            parameter_drops.push((p.name.clone(), reg, plan, Some(hook)));
+                        }
+                        _ => parameter_drops.push((p.name.clone(), reg, action, None)),
+                    }
                 }
             }
         }
         // Guards must follow the complete ABI prefix, including variadic slots.
-        for (parameter, reg, action) in parameter_drops {
+        for (parameter, reg, action, hook) in parameter_drops {
             fc.register_drop_action(&parameter, reg, action, true);
+            if let Some(hook) = hook
+                && let Some(local) = fc.drop_local(&parameter)
+            {
+                let guard = local.initialized;
+                fc.hook_unless_moved.insert(guard, hook);
+            }
         }
         if attributes
             .iter()
@@ -2894,6 +2920,11 @@ struct FnCompiler<'a> {
     /// precede a cleanup at run time only if it precedes it in code, since a
     /// loop cannot move out of a local declared outside it.
     field_moved_guards: HashSet<u8>,
+    /// Drop guards of by-value receivers whose type has a `free` hook
+    /// (D-028), mapped to that hook. Such a receiver's cleanup runs the hook
+    /// while no field has moved out; after a move it destroys the remaining
+    /// fields through its structural plan instead.
+    hook_unless_moved: HashMap<u8, String>,
     codegen_error: Option<String>,
     resolution_errors: Rc<RefCell<Vec<String>>>,
     bound_names: HashSet<String>,
@@ -3210,6 +3241,7 @@ impl<'a> FnCompiler<'a> {
             reg_high_water: 0,
             reserved_drop_guard: None,
             field_moved_guards: HashSet::new(),
+            hook_unless_moved: HashMap::new(),
             codegen_error: None,
             resolution_errors,
             bound_names,
@@ -6082,9 +6114,43 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn emit_guarded_local_drop(&mut self, local: &DropLocal, action: DropAction) {
+        self.emit_guarded_local_drop_with(local, action, true);
+    }
+
+    /// `run_hook` is false when the caller has just moved a field out of the
+    /// local itself (a returned receiver field), so its `free` hook must not
+    /// run whatever the mask says.
+    fn emit_guarded_local_drop_with(&mut self, local: &DropLocal, action: DropAction, run_hook: bool) {
         let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
-        match (&local.action, action) {
-            (DropAction::Structural(declared), DropAction::Structural(fields))
+        let hook = self.hook_unless_moved.get(&local.initialized).cloned();
+        match (&local.action, action, hook) {
+            (DropAction::Structural(_), _, Some(hook))
+                if run_hook && !self.field_moved_guards.contains(&local.initialized) =>
+            {
+                // Nothing has moved out of the receiver on any path so far.
+                self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                self.emit_drop_action(local.reg, DropAction::Call(hook));
+            }
+            (DropAction::Structural(declared), DropAction::Structural(fields), Some(hook))
+                if run_hook =>
+            {
+                // Mask 1 (live, nothing moved) runs the hook; any moved bit
+                // destroys the remaining fields instead.
+                let mask = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Mov, mask, local.initialized, 0));
+                self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
+                let one = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, one, 1));
+                self.chunk.emit(rrr(Opcode::Cmp, 0, mask, one));
+                let moved = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                self.emit_drop_action(local.reg, DropAction::Call(hook));
+                let done = self.chunk.emit(ri16(Opcode::Jmp, 0, 0));
+                self.chunk.patch_jump(moved, self.chunk.len() as u16);
+                let bits = structural_bit_paths(declared);
+                self.emit_masked_structural_drop(local.reg, &fields, &[], &bits, mask);
+                self.chunk.patch_jump(done, self.chunk.len() as u16);
+            }
+            (DropAction::Structural(declared), DropAction::Structural(fields), _)
                 if self.field_moved_guards.contains(&local.initialized) =>
             {
                 // Skip each field whose moved bit (see
@@ -6095,7 +6161,7 @@ impl<'a> FnCompiler<'a> {
                 let bits = structural_bit_paths(declared);
                 self.emit_masked_structural_drop(local.reg, &fields, &[], &bits, mask);
             }
-            (_, action) => {
+            (_, action, _) => {
                 self.chunk.emit(ri16(Opcode::MovI, local.initialized, 0));
                 self.emit_drop_action(local.reg, action);
             }
@@ -7180,10 +7246,45 @@ impl<'a> FnCompiler<'a> {
             ExprKind::Assign { target, .. } => self.mark_consumed_binding(target, value),
             ExprKind::Match { arms, .. } => {
                 for arm in arms {
-                    self.mark_consumed_binding(&arm.expr, value);
+                    self.mark_consumed_arm_binding(&arm.expr, value);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A `match` arm's value moved out only if that arm ran: like the
+    /// identifier case of `mark_consumed_binding`, a field is marked moved
+    /// only when it still holds the produced value (owned values are
+    /// distinct allocations), so the other arms leave it owned.
+    fn mark_consumed_arm_binding(&mut self, expr: &Expr, value: u8) {
+        match &expr.node {
+            ExprKind::Field { .. } => {
+                let Some((root, path)) = self.field_chain_offsets(expr) else {
+                    return;
+                };
+                let Some(local) = self.drop_local(&root).cloned() else {
+                    return;
+                };
+                if !matches!(local.action, DropAction::Structural(_)) {
+                    return;
+                }
+                let empty = self.chunk.emit(ri16(Opcode::Jz, local.initialized, 0));
+                let mut current = local.reg;
+                for offset in &path {
+                    let next = self.alloc_reg();
+                    self.chunk.emit(field_load(next, current, *offset));
+                    current = next;
+                }
+                self.chunk.emit(rrr(Opcode::Cmp, 0, current, value));
+                let different = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
+                self.move_field_out_of_local(&root, &path);
+                let end = self.chunk.len() as u16;
+                self.chunk.patch_jump(empty, end);
+                self.chunk.patch_jump(different, end);
+            }
+            ExprKind::Group(inner) => self.mark_consumed_arm_binding(inner, value),
+            _ => self.mark_consumed_binding(expr, value),
         }
     }
 
@@ -7232,7 +7333,8 @@ impl<'a> FnCompiler<'a> {
                 } else {
                     local.action.clone()
                 };
-                self.emit_guarded_local_drop(local, action);
+                let run_hook = !(local.name == local_name && Some(local.reg) == returned_binding);
+                self.emit_guarded_local_drop_with(local, action, run_hook);
             }
         }
     }
@@ -11519,9 +11621,12 @@ impl<'a> FnCompiler<'a> {
 
                 // Failure path: build failure variant and early-return. Its
                 // registers are dead after the return, so later code reuses them.
+                // The failure value stays out of register 0 until cleanup has
+                // run: register 0 holds the first parameter, which cleanup
+                // may still destroy.
                 self.chunk.patch_jump(jne, self.chunk.len() as u16);
                 let failure_mark = self.next_reg;
-                if enum_name == "Option" {
+                let failure = if enum_name == "Option" {
                     // Return None — zero-arg variant.
                     let none_ptr = self.alloc_reg();
                     self.chunk
@@ -11536,9 +11641,7 @@ impl<'a> FnCompiler<'a> {
                         none_ptr,
                         ENUM_DISCRIM_OFFSET,
                     ));
-                    if none_ptr != 0 {
-                        self.chunk.emit(rrr(Opcode::Mov, 0, none_ptr, 0));
-                    }
+                    none_ptr
                 } else {
                     // Return Err(payload) — copy scrutinee payload into new Err object.
                     let err_payload = self.alloc_reg();
@@ -11559,12 +11662,8 @@ impl<'a> FnCompiler<'a> {
                     ));
                     self.chunk
                         .emit(field_store(err_payload, err_ptr, ENUM_PAYLOAD_OFFSET));
-                    if err_ptr != 0 {
-                        self.chunk.emit(rrr(Opcode::Mov, 0, err_ptr, 0));
-                    }
-                }
-                let failure = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::Mov, failure, 0, 0));
+                    err_ptr
+                };
                 if consumed {
                     self.emit_drop_action(scr, DropAction::ReleaseStorage);
                 }
