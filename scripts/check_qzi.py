@@ -71,6 +71,21 @@ fn outer(x: str) str {
 }
 fn main() i32 { const a = String.from("a"); ret outer(a.as_str()).len() as i32; }
 """
+# A destructor hook whose body differs per target has per-target QZI copies
+# (`Handle.free@t<mask>`); each copy is still the hook (it used to destroy
+# its own receiver again: endless recursion on Windows and NetBSD).
+TARGET_HOOK = """import std.io;
+struct Handle { id: i32 }
+impl Handle {
+    fn free(self: Handle) void {
+        @cfg(target_os = "windows") { io.println("close windows {self.id}"); }
+        @cfg(target_os = "linux") { io.println("close linux {self.id}"); }
+        @cfg(target_os = "netbsd") { io.println("close netbsd {self.id}"); }
+        self.id = 0;
+    }
+}
+fn main() i32 { const h = Handle { id: 7 }; io.println("made {h.id}"); 0 }
+"""
 LINUX_ONLY = """@cfg(target_os = "linux")
 fn only() i32 { ret 0; }
 fn main() i32 { ret only(); }
@@ -362,6 +377,21 @@ def main():
                     win = out / "generic-windows"
                 got = run([str(args.wine), str(win)], out, env=env).stdout.replace(b"\r", b"")
                 assert got == expected, got
+        project(work, TARGET_HOOK)
+        run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "hook.qzi")], work)
+        for target in ("linux", "windows", "netbsd"):
+            run([qz, "build", str(root / "hook.qzi"), "--silent", "--target", f"x86_64-{target}",
+                 "-o", str(out / f"hook-{target}")], out)
+        expected_hook = lambda target: f"made 7\nclose {target} 7\n".encode()
+        assert run([str(out / "hook-linux")], out).stdout == expected_hook("linux")
+        if args.wine:
+            hook_exe = out / "hook-windows.exe"
+            (out / "hook-windows").rename(hook_exe)
+            got = run([str(args.wine), str(hook_exe)], out, env=env).stdout.replace(b"\r", b"")
+            assert got == expected_hook("windows"), got
+        if netbsd_run:
+            got = run([*netbsd_run, str(out / "hook-netbsd")], out).stdout
+            assert got == expected_hook("netbsd"), got
         project(work, RETAINED_VIEW)
         failed = run([qz, "build", "-i", "--silent", "--no-incremental", "-o", str(root / "view.qzi")],
                      work, ok=False)
@@ -377,7 +407,7 @@ def main():
           f"linux/windows/netbsd natives without sources{' (windows under Wine)' if args.wine else ''}"
           f"{' (netbsd run)' if netbsd_run else ''}; "
           "failed targets prevent publication; dependencies (source, QZI, QZI with std) linked into the one QZI; "
-          "per-target generic copies and retention; format 15 rejected")
+          "per-target generic copies, destructor hooks and retention; format 15 rejected")
 
 
 if __name__ == "__main__":

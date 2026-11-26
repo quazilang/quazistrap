@@ -2464,7 +2464,9 @@ impl<'a> Codegen<'a> {
                 };
                 let param_ty = fc.resolve_type(&p.ty.node);
                 fc.local_types.insert(p.name.clone(), param_ty.clone());
-                let declared_name = name.split('<').next().unwrap_or(name);
+                // A QZI per-target copy (`T.free@t<mask>`) is the same hook.
+                let source_name = crate::semantic::target_views::strip_variant_markers(name);
+                let declared_name = source_name.split('<').next().unwrap_or(&source_name);
                 let is_bare_self = p.name == "self"
                     && self
                         .report
@@ -6968,10 +6970,11 @@ impl<'a> FnCompiler<'a> {
     }
 
     /// Whether this chunk is a type's consuming `free` hook (`T.free`,
-    /// including specializations `T.free<...>`).
+    /// including specializations `T.free<...>` and QZI per-target copies
+    /// `T.free@t<mask>`).
     fn compiling_destructor_hook(&self) -> bool {
-        let name = self.chunk.name.as_str();
-        let base = name.split('<').next().unwrap_or(name);
+        let name = crate::semantic::target_views::strip_variant_markers(&self.chunk.name);
+        let base = name.split('<').next().unwrap_or(&name);
         base.ends_with(".free")
     }
 
