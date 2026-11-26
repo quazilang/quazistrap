@@ -18,10 +18,10 @@ fn __string_str_concat(s1: str, s2: str) str;
 fn __string_free(s: str) void;
 
 @intrinsic("quazi.malloc")
-unsafe fn __string_malloc(size: usize) *u8;
+unsafe fn __string_malloc(size: usize) *u8!;
 
 @intrinsic("quazi.memcpy")
-unsafe fn __string_memcpy(dst: *u8, src: *u8, n: usize) *u8;
+unsafe fn __string_memcpy(dst: *u8!, src: *u8, n: usize) *u8!;
 
 @intrinsic("quazi.str.byte_at")
 fn __string_byte_at(s: str, index: usize) u8;
@@ -110,7 +110,7 @@ fn __previous_rune_offset(text: str, current: usize) usize {
 fn __owned_range(text: str, start: usize, end: usize) String {
     if (end <= start) { ret String.new(); }
     const length: usize = end - start;
-    var data: *u8 = 0;
+    var data: *u8! = 0;
     unsafe { data = __string_malloc(length + 1); }
     if (data == 0) { panic("string allocation failed"); }
     unsafe {
@@ -210,7 +210,7 @@ impl str {
         }
 
         const byte_len: usize = self.bytes_len();
-        var data: *u8 = 0;
+        var data: *u8! = 0;
         unsafe { data = __string_malloc(byte_len + 1); }
         if (data == 0) { panic("string allocation failed"); }
         var source: usize = __rune_byte_offset(self, start as usize);
@@ -252,7 +252,7 @@ impl str {
     pub fn reverse(self: str) String {
         const length: usize = __string_strlen(self);
         if (length == 0) { ret String.new(); }
-        var data: *u8 = 0;
+        var data: *u8! = 0;
         unsafe { data = __string_malloc(length + 1); }
         if (data == 0) { panic("string allocation failed"); }
         var source: usize = 0;
@@ -276,7 +276,8 @@ impl str {
         const result: String = __owned_range(self, 0, length);
         var index: usize = 0;
         unsafe {
-            const data: *u8 = __string_as_ptr(result.as_str());
+            // `result` is this function's own buffer: writable.
+            const data: *u8! = __string_as_ptr(result.as_str()) as *u8!;
             for (index < length) {
                 const byte: u8 = *(data + index);
                 if (byte >= 65 && byte <= 90) { *(data + index) = byte + 32; }
@@ -292,7 +293,8 @@ impl str {
         const result: String = __owned_range(self, 0, length);
         var index: usize = 0;
         unsafe {
-            const data: *u8 = __string_as_ptr(result.as_str());
+            // `result` is this function's own buffer: writable.
+            const data: *u8! = __string_as_ptr(result.as_str()) as *u8!;
             for (index < length) {
                 const byte: u8 = *(data + index);
                 if (byte >= 97 && byte <= 122) { *(data + index) = byte - 32; }
@@ -312,7 +314,8 @@ impl str {
         const result: String = __owned_range(self, 0, __string_strlen(self));
         if (!result.is_empty()) {
             unsafe {
-                const data: *u8 = __string_as_ptr(result.as_str());
+                // `result` is this function's own buffer: writable.
+            const data: *u8! = __string_as_ptr(result.as_str()) as *u8!;
                 const first: u8 = *data;
                 if (first >= 97 && first <= 122) { *data = first - 32; }
             }

@@ -1032,7 +1032,7 @@ fn self_contained_type(ty: &TypeKind) -> bool {
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => self_contained_type(&elem_ty.node),
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             self_contained_type(&inner.node)
         }
         TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {

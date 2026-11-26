@@ -208,6 +208,7 @@ mod tests {
         assert_eq!(
             runtime_move_kind(&TypeKind::RawPtr {
                 inner: Box::new(ty(TypeKind::Uint8)),
+                exclusive: false,
             }),
             MoveKind::Plain
         );

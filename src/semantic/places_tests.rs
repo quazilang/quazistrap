@@ -383,7 +383,7 @@ fn main() void { caller[i32](); }
         );
         if spelling == "observe(*pointer)" {
             assert!(
-                matches!(&place(actual).root.ty, Some(TypeKind::RawPtr { inner }) if matches!(inner.node, TypeKind::Int64))
+                matches!(&place(actual).root.ty, Some(TypeKind::RawPtr { inner, .. }) if matches!(inner.node, TypeKind::Int64))
             );
         } else {
             assert!(matches!(place(actual).root.ty, Some(TypeKind::Int64)));

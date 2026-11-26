@@ -1814,12 +1814,20 @@ impl Analyzer {
             (TypeKind::Ref { inner: expected }, TypeKind::Ref { inner: actual })
             | (TypeKind::Ref { inner: expected }, TypeKind::MutRef { inner: actual })
             | (TypeKind::MutRef { inner: expected }, TypeKind::MutRef { inner: actual })
-            | (TypeKind::RawPtr { inner: expected }, TypeKind::RawPtr { inner: actual })
             | (TypeKind::Slice { elem_ty: expected }, TypeKind::Slice { elem_ty: actual })
             | (
                 TypeKind::FlexibleArray { elem_ty: expected },
                 TypeKind::FlexibleArray { elem_ty: actual },
             ) => self.types_have_same_runtime_shape(&expected.node, &actual.node),
+            // Inside a reference or generic argument a pointer's access is
+            // invariant: `&*u8` must not reach a `*u8!`.
+            (
+                TypeKind::RawPtr { inner: expected, exclusive: expected_exclusive },
+                TypeKind::RawPtr { inner: actual, exclusive: actual_exclusive },
+            ) => {
+                expected_exclusive == actual_exclusive
+                    && self.types_have_same_runtime_shape(&expected.node, &actual.node)
+            }
             (
                 TypeKind::Array {
                     elem_ty: expected,
@@ -3193,6 +3201,20 @@ impl Analyzer {
 
     pub(super) fn type_check_expr(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
         let result = self.type_check_expr_inner(expr, reachable);
+        // `p.field` / `p[i]` on a raw pointer were never lowered through the
+        // pointer (a read returned garbage, a write crashed): require `*`.
+        if let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &expr.node
+            && self
+                .assignment_operand_type(object)
+                .is_some_and(|ty| matches!(self.resolve_type_aliases(&ty), TypeKind::RawPtr { .. }))
+        {
+            self.push_error(
+                expr.span,
+                "S11",
+                "a raw pointer has no fields or elements; dereference it first: `(*p).field`, `(*p)[i]`"
+                    .to_string(),
+            );
+        }
         if matches!(expr.node, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.finish_borrowed_dyn_arguments(expr, &result);
         }
@@ -3514,7 +3536,7 @@ impl Analyzer {
                                     const_value: None,
                                 }
                             }
-                            Some(TypeKind::RawPtr { inner: t }) => {
+                            Some(TypeKind::RawPtr { inner: t, .. }) => {
                                 if self.unsafe_depth == 0 {
                                     self.push_error(
                                         expr.span,
@@ -5596,6 +5618,7 @@ impl Analyzer {
                             "as_ptr" => match &object_eval.ty {
                                 Some(TypeKind::Bytes) => Some(TypeKind::RawPtr {
                                     inner: Box::new(Spanned::new(TypeKind::Uint8, expr.span)),
+                                    exclusive: false,
                                 }),
                                 Some(TypeKind::Named { .. }) => None,
                                 Some(other) => {
@@ -6194,6 +6217,16 @@ impl Analyzer {
                     initialization_match.finish_arm(&coverage, guard_condition.falsy, output);
 
                     if let Some(arm_ty) = arm_eval.ty {
+                        // Arms of `*T!` and `*T` give a `*T` (the weaker access),
+                        // in either order.
+                        if let (
+                            Some(TypeKind::RawPtr { exclusive: true, .. }),
+                            TypeKind::RawPtr { exclusive: false, .. },
+                        ) = (&result_ty, &arm_ty)
+                            && self.types_compatible(&arm_ty, result_ty.as_ref().unwrap())
+                        {
+                            result_ty = Some(arm_ty.clone());
+                        }
                         if let Some(current) = &result_ty {
                             if !self.types_compatible(current, &arm_ty) {
                                 self.push_error(
@@ -7895,6 +7928,14 @@ impl Analyzer {
         let left = left.as_ref().map(&mut operand_type);
         let right = right.as_ref().map(operand_type);
         match op {
+            // Pointer arithmetic: `p + n` / `p - n` offsets by bytes and
+            // keeps the pointer type; `p - q` of two pointers keeps `p`'s.
+            BinOpKind::Add | BinOpKind::Sub
+                if matches!(&left, Some(TypeKind::RawPtr { .. }))
+                    && right.as_ref().is_some_and(|r| Self::is_integer(r)) =>
+            {
+                left.clone()
+            }
             BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Mod => {
                 match (&left, &right) {
                     (Some(l), Some(r)) if self.types_compatible(l, r) => {
@@ -7923,6 +7964,17 @@ impl Analyzer {
                     (None, Some(r)) => Some(r.clone()),
                     (None, None) => None,
                 }
+            }
+            // Pointers compare with pointers of either access and with
+            // integers (`p == 0`, the null constant).
+            BinOpKind::EqEq | BinOpKind::NotEq
+                if matches!(
+                    (&left, &right),
+                    (Some(TypeKind::RawPtr { .. }), Some(TypeKind::RawPtr { .. }))
+                ) || matches!((&left, &right), (Some(TypeKind::RawPtr { .. }), Some(other))
+                        | (Some(other), Some(TypeKind::RawPtr { .. })) if Self::is_integer(other)) =>
+            {
+                Some(TypeKind::Bool)
             }
             BinOpKind::EqEq | BinOpKind::NotEq => {
                 if let (Some(l), Some(r)) = (&left, &right)
@@ -8658,7 +8710,7 @@ impl Analyzer {
                 .any(|arg| self.mentions_unresolved_type_parameter(&arg.node)),
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Slice { elem_ty: inner }
             | TypeKind::Array { elem_ty: inner, .. } => {
@@ -9196,6 +9248,13 @@ impl Analyzer {
         let call_argument = std::mem::replace(&mut self.checking_call_argument, false);
         let expected_resolved = self.resolve_type_aliases(expected);
         let actual_resolved = self.resolve_type_aliases(actual);
+        // The null pointer constant.
+        if matches!(expected_resolved, TypeKind::RawPtr { .. } | TypeKind::CFn { .. })
+            && Self::is_integer(&actual_resolved)
+            && crate::evaluation::integer_literal_value(expr) == Some(0)
+        {
+            return true;
+        }
         if Self::is_integer(&expected_resolved)
             && Self::is_integer(&actual_resolved)
             && let Some(value) = crate::evaluation::integer_literal_value(expr)
@@ -9237,16 +9296,24 @@ impl Analyzer {
             );
             return true;
         }
+        // `&x` passes as `*T`, `&x!` as `*T` or `*T!`: a raw pointer is
+        // writable only when the borrow is exclusive.
         if let (
             TypeKind::RawPtr {
                 inner: expected_inner,
+                exclusive,
             },
             TypeKind::Ref {
+                inner: actual_inner,
+            }
+            | TypeKind::MutRef {
                 inner: actual_inner,
             },
         ) = (&expected_resolved, &actual_resolved)
         {
+            let borrowed_exclusively = matches!(actual_resolved, TypeKind::MutRef { .. });
             return address_of_ident(expr).is_some()
+                && (!*exclusive || borrowed_exclusively)
                 && self.types_have_same_runtime_shape(&expected_inner.node, &actual_inner.node);
         }
         if let (
@@ -9876,6 +9943,16 @@ impl Analyzer {
             );
             return;
         }
+        if let Some(pointer) = self.lvalue_read_only_pointer(target) {
+            self.push_error(
+                target.span,
+                "S07",
+                format!(
+                    "cannot write through `{pointer}`, a read-only raw pointer; use `*T!` (declare it writable or cast with `as *T!`)"
+                ),
+            );
+            return;
+        }
         // Strip grouping parentheses so e.g. `(arr[0]) += 1` and `(*p)++` are valid lvalues.
         let mut target = target;
         while let ExprKind::Group(inner) = &target.node {
@@ -10117,6 +10194,27 @@ impl Analyzer {
         }
     }
 
+    /// The read-only raw pointer type (`*T`) a place writes through, if any:
+    /// `*p = v`, `(*p).field = v`, `(*p)[i] = v`.
+    fn lvalue_read_only_pointer(&self, target: &Expr) -> Option<TypeKind> {
+        match &target.node {
+            ExprKind::Group(inner) => self.lvalue_read_only_pointer(inner),
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => self
+                .assignment_operand_type(object)
+                .map(|ty| self.resolve_type_aliases(&ty))
+                .filter(|ty| matches!(ty, TypeKind::RawPtr { exclusive: false, .. }))
+                .or_else(|| self.lvalue_read_only_pointer(object)),
+            ExprKind::Unary {
+                op: UnaryOpKind::Deref,
+                expr: inner,
+            } => self
+                .assignment_operand_type(inner)
+                .map(|ty| self.resolve_type_aliases(&ty))
+                .filter(|ty| matches!(ty, TypeKind::RawPtr { exclusive: false, .. })),
+            _ => None,
+        }
+    }
+
     fn lvalue_contains_shared_deref(&self, target: &Expr) -> bool {
         match &target.node {
             ExprKind::Group(inner) => self.lvalue_contains_shared_deref(inner),
@@ -10237,15 +10335,16 @@ impl Analyzer {
             | (TypeKind::Ref { inner: a }, TypeKind::MutRef { inner: b }) => {
                 self.types_have_same_runtime_shape(&a.node, &b.node)
             }
-            // All raw pointers are mutually compatible in unsafe code — C-style void* semantics.
-            // Dereference still requires unsafe {}, so the programmer is responsible.
-            (TypeKind::RawPtr { .. }, TypeKind::RawPtr { .. }) => true,
-            // Integer ↔ *T: enables null pointer constants (var p: *u8 = 0) and
-            // address literals (var p: *u8 = some_usize). Dereference still requires
-            // unsafe {}, so the programmer is responsible for correctness.
-            (a, TypeKind::RawPtr { .. }) | (TypeKind::RawPtr { .. }, a) if Self::is_integer(a) => {
-                true
-            }
+            // Raw pointers convert between pointee types (C `void*`
+            // semantics); a writable `*T!` is accepted where `*T` is
+            // expected, never the reverse. Dereference requires unsafe {}.
+            (
+                TypeKind::RawPtr { exclusive: expected, .. },
+                TypeKind::RawPtr { exclusive: actual, .. },
+            ) => !*expected || *actual,
+            // Only the literal 0 is a pointer (the null constant, accepted by
+            // `check_expr_compat` and comparisons). Integers and pointers do
+            // not convert: pointer provenance stays analyzable.
             (a, TypeKind::CFn { .. }) | (TypeKind::CFn { .. }, a) if Self::is_integer(a) => true,
             (TypeKind::RawPtr { .. }, TypeKind::Ref { .. } | TypeKind::MutRef { .. })
             | (TypeKind::Ref { .. } | TypeKind::MutRef { .. }, TypeKind::RawPtr { .. }) => false,
@@ -10336,11 +10435,14 @@ impl Analyzer {
             }
             (TypeKind::Ref { inner: a }, TypeKind::Ref { inner: b })
             | (TypeKind::MutRef { inner: a }, TypeKind::MutRef { inner: b })
-            | (TypeKind::RawPtr { inner: a }, TypeKind::RawPtr { inner: b })
             | (TypeKind::Slice { elem_ty: a }, TypeKind::Slice { elem_ty: b })
             | (TypeKind::FlexibleArray { elem_ty: a }, TypeKind::FlexibleArray { elem_ty: b }) => {
                 self.generic_type_args_compatible(&a.node, &b.node)
             }
+            (
+                TypeKind::RawPtr { inner: a, exclusive: a_exclusive },
+                TypeKind::RawPtr { inner: b, exclusive: b_exclusive },
+            ) => a_exclusive == b_exclusive && self.generic_type_args_compatible(&a.node, &b.node),
             (
                 TypeKind::Array {
                     elem_ty: a,
@@ -10587,7 +10689,7 @@ fn type_contains_any(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any => true,
         TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_contains_any(&inner.node),
-        TypeKind::RawPtr { inner } => type_contains_any(&inner.node),
+        TypeKind::RawPtr { inner, .. } => type_contains_any(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_contains_any(&elem_ty.node),
         TypeKind::FlexibleArray { elem_ty } => type_contains_any(&elem_ty.node),
         TypeKind::Slice { elem_ty } => type_contains_any(&elem_ty.node),
@@ -10616,7 +10718,7 @@ fn builtin_constructor_kind(name: &str, symbol: &Symbol) -> Option<&'static str>
 pub(super) fn type_contains_error(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Error => true,
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             type_contains_error(&inner.node)
         }
         TypeKind::Array { elem_ty, .. }
@@ -10639,7 +10741,7 @@ fn type_contains_self(ty: &TypeKind) -> bool {
             (name == "Self" && type_args.is_empty())
                 || type_args.iter().any(|arg| type_contains_self(&arg.node))
         }
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             type_contains_self(&inner.node)
         }
         TypeKind::Array { elem_ty, .. }
@@ -10677,7 +10779,8 @@ fn substitute_self_type(ty: &TypeKind, concrete: &TypeKind) -> TypeKind {
                 inner.span,
             )),
         },
-        TypeKind::RawPtr { inner } => TypeKind::RawPtr {
+        TypeKind::RawPtr { inner, exclusive } => TypeKind::RawPtr {
+            exclusive: *exclusive,
             inner: Box::new(Spanned::new(
                 substitute_self_type(&inner.node, concrete),
                 inner.span,
@@ -10811,7 +10914,8 @@ pub(crate) fn substitute_type_kind(
                 inner.span,
             )),
         },
-        TypeKind::RawPtr { inner } => TypeKind::RawPtr {
+        TypeKind::RawPtr { inner, exclusive } => TypeKind::RawPtr {
+            exclusive: *exclusive,
             inner: Box::new(Spanned::new(
                 substitute_type_kind(&inner.node, subst),
                 inner.span,
@@ -10947,7 +11051,7 @@ fn infer_struct_type_subst(
         (TypeKind::Ref { inner: field }, TypeKind::Ref { inner: value })
         | (TypeKind::Ref { inner: field }, TypeKind::MutRef { inner: value })
         | (TypeKind::MutRef { inner: field }, TypeKind::MutRef { inner: value })
-        | (TypeKind::RawPtr { inner: field }, TypeKind::RawPtr { inner: value }) => {
+        | (TypeKind::RawPtr { inner: field, .. }, TypeKind::RawPtr { inner: value, .. }) => {
             infer_struct_type_subst(&field.node, &value.node, generic_params, subst);
         }
         _ => {}
@@ -11106,7 +11210,7 @@ fn contains_owned_function_value(ty: &TypeKind) -> bool {
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Ref { inner: elem_ty }
         | TypeKind::MutRef { inner: elem_ty }
-        | TypeKind::RawPtr { inner: elem_ty } => contains_owned_function_value(&elem_ty.node),
+        | TypeKind::RawPtr { inner: elem_ty, .. } => contains_owned_function_value(&elem_ty.node),
         TypeKind::CFn { params, return_ty } => {
             params
                 .iter()
@@ -11492,7 +11596,7 @@ fn collect_bare_names(ty: &TypeKind, names: &mut Vec<String>) {
                 collect_bare_names(&argument.node, names);
             }
         }
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             collect_bare_names(&inner.node, names)
         }
         _ => {}
@@ -11521,7 +11625,7 @@ fn type_mentions_any(ty: &TypeKind, params: &[String]) -> bool {
         }
         TypeKind::Ref { inner }
         | TypeKind::MutRef { inner }
-        | TypeKind::RawPtr { inner }
+        | TypeKind::RawPtr { inner, .. }
         | TypeKind::FlexibleArray { elem_ty: inner }
         | TypeKind::Slice { elem_ty: inner }
         | TypeKind::Array { elem_ty: inner, .. } => type_mentions_any(&inner.node, params),

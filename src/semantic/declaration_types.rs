@@ -74,7 +74,7 @@ impl DeclarationWork {
                 }
                 TypeKind::Ref { inner }
                 | TypeKind::MutRef { inner }
-                | TypeKind::RawPtr { inner } => stack.push(&inner.node),
+                | TypeKind::RawPtr { inner, .. } => stack.push(&inner.node),
                 TypeKind::Array { elem_ty, .. }
                 | TypeKind::Slice { elem_ty }
                 | TypeKind::FlexibleArray { elem_ty } => stack.push(&elem_ty.node),

@@ -22,7 +22,7 @@ pub unsafe fn worker(shared: *u8) *u8 {
     const atomic = AtomicI64.at(*((shared + 8) as **u8));
     for i : 0..50000 {
         lock.lock();
-        *((shared + 16) as *i64) = *((shared + 16) as *i64) + 1;
+        *((shared + 16) as *i64!) = *((shared + 16) as *i64) + 1;
         lock.unlock();
         atomic.fetch_add(2);
     }
@@ -35,9 +35,9 @@ fn main() i32 {
     var counted: i64 = 0;
     unsafe {
         const shared: *u8 = core.malloc(24);
-        *(shared as **u8) = lock.as_ptr();
-        *((shared + 8) as **u8) = atomic.as_ptr();
-        *((shared + 16) as *i64) = 0;
+        *(shared as **u8!) = lock.as_ptr();
+        *((shared + 8) as **u8!) = atomic.as_ptr();
+        *((shared + 16) as *i64!) = 0;
         const a = thread.thread_spawn_arg(worker, shared);
         const b = thread.thread_spawn_arg(worker, shared);
         const c = thread.thread_spawn_arg(worker, shared);
@@ -71,13 +71,13 @@ pub unsafe fn atomic_worker(counter: *u8) *u8 {
 
 @export("mt_plain_worker")
 pub unsafe fn plain_worker(counter: *u8) *u8 {
-    for i : 0..100000 { *(counter as *i64) = *(counter as *i64) + 1; }
+    for i : 0..100000 { *(counter as *i64!) = *(counter as *i64) + 1; }
     ret 0;
 }
 
 unsafe fn run(worker: ThreadCallback) i64 {
     const counter: *u8 = core.malloc(8);
-    *(counter as *i64) = 0;
+    *(counter as *i64!) = 0;
     const a = spawn_arg(worker, counter);
     const b = spawn_arg(worker, counter);
     const c = spawn_arg(worker, counter);
@@ -135,7 +135,7 @@ fn main() i32 {
     var total: i64 = 0;
     unsafe {
         const counter: *u8 = core.malloc(8);
-        *(counter as *i64) = 0;
+        *(counter as *i64!) = 0;
         // Each thread maps an 8 MiB region; join must unmap it.
         for i : 0..2000 {
             const handle = thread.thread_spawn_arg(worker, counter);
@@ -147,7 +147,7 @@ fn main() i32 {
         // 2000 leaked regions would be about 4 million pages.
         if (pages == 0 || pages > 65536) { io.println("mapped pages {}", pages); ret 3; }
         // Returning from main ends the process although this thread never stops.
-        *(counter as *i64) = 0;
+        *(counter as *i64!) = 0;
         thread.thread_spawn_arg(forever, counter);
         for (core.atomic_add(counter as *i64, 0) == 0) { }
     }

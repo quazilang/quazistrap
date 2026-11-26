@@ -71,6 +71,8 @@ A `&Concrete` call argument converts to `&dyn Trait` (a borrowed trait
 object released after the call) and a value of a bounded type parameter
 `T: Trait` converts to `dyn Trait` (В34А); each generic-type instantiation
 has its own vtable, and QZC42 invalidates caches.
+Raw pointers distinguish access like references (D-027): `*T` reads, `*T!`
+reads and writes; only the literal `0` converts to a pointer.
 QZI format 17 introduced the D-014 ownership certificate: one record of bytecode
 parameter effects per function body (reads, writes through references,
 returned and stored slots, unknown uses), closed over direct calls. Readers

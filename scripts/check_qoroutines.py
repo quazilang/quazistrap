@@ -157,7 +157,7 @@ fn main() i32 {
     var done: i64 = 0;
     unsafe {
         const counter: *u8 = core.malloc(8);
-        *(counter as *i64) = 0;
+        *(counter as *i64!) = 0;
         const a = qo spin(counter, 8 as i64);
         const b = qo spin(counter, 8 as i64);
         const c = qo spin(counter, 8 as i64);

@@ -4658,7 +4658,7 @@ fn type_mentions_params(ty: &TypeKind, params: &[String]) -> bool {
         }
         TypeKind::Ref { inner }
         | TypeKind::MutRef { inner }
-        | TypeKind::RawPtr { inner }
+        | TypeKind::RawPtr { inner, .. }
         | TypeKind::FlexibleArray { elem_ty: inner }
         | TypeKind::Slice { elem_ty: inner } => type_mentions_params(&inner.node, params),
         TypeKind::Array { elem_ty, .. } => type_mentions_params(&elem_ty.node, params),
@@ -7560,17 +7560,81 @@ fn main() void {
     }
 
     #[test]
+    fn raw_pointers_are_read_only_unless_exclusive() {
+        let errors = |source: &str| -> Vec<String> {
+            analyze(source)
+                .errors
+                .iter()
+                .map(|error| format!("{} {}", error.code, error.message))
+                .collect()
+        };
+        // Writes need `*T!`; reads work through either.
+        let rejected = errors(
+            "unsafe fn write(p: *i32) void { *p = 1; (*p)++; *(p as *u8) = 0; }",
+        );
+        assert_eq!(rejected.iter().filter(|e| e.contains("read-only raw pointer")).count(), 3, "{rejected:?}");
+        assert!(errors("unsafe fn write(p: *i32!) i32 { *p = 1; (*p)++; *(p as *u8!) = 0; ret *p; }").is_empty());
+        // `*T!` passes as `*T`, never the reverse; `as *T!` is explicit.
+        assert!(errors("unsafe fn take(p: *u8) void {} unsafe fn give(p: *u8!) void { take(p); }").is_empty());
+        let upgrade = errors("unsafe fn take(p: *u8!) void {} unsafe fn give(p: *u8) void { take(p); }");
+        assert!(upgrade.iter().any(|e| e.starts_with("S08")), "{upgrade:?}");
+        assert!(errors("unsafe fn take(p: *u8!) void {} unsafe fn give(p: *u8) void { take(p as *u8!); }").is_empty());
+        // Only the literal 0 is a pointer; an integer value is not.
+        assert!(errors("fn main() void { const p: *u8 = 0; }").is_empty());
+        let integer = errors("fn main() void { const a: usize = 8; const p: *u8 = a; }");
+        assert!(integer.iter().any(|e| e.starts_with("S01")), "{integer:?}");
+        // `&x` is a `*T`; only `&x!` is a `*T!`.
+        let shared = errors("unsafe fn bump(p: *i32!) void {} fn main() void { var x: i32 = 0; unsafe { bump(&x); } }");
+        assert!(shared.iter().any(|e| e.starts_with("S08")), "{shared:?}");
+        assert!(errors("unsafe fn bump(p: *i32!) void {} fn main() void { var x: i32 = 0; unsafe { bump(&x!); } }").is_empty());
+        // A raw pointer has no fields or elements: `(*p).x`, never `p.x`.
+        let projected = errors("struct S { x: i32 } unsafe fn f(p: *S!, q: *i32!) void { p.x = 7; q[0] = 1; }");
+        assert_eq!(projected.iter().filter(|e| e.starts_with("S11")).count(), 2, "{projected:?}");
+        // Access is invariant inside references and generic arguments.
+        let nested = errors("unsafe fn g(r: &*u8!) void {} fn main() void { const p: *u8 = 0; unsafe { g(&p); } }");
+        assert!(!nested.is_empty(), "&*u8 must not pass as &*u8!");
+        let generic = errors("struct W[T] { v: T } unsafe fn g(r: W[*u8!]) void {} fn main() void { const p: *u8 = 0; const w: W[*u8] = W { v: p }; unsafe { g(w); } }");
+        assert!(!generic.is_empty(), "W[*u8] must not pass as W[*u8!]");
+        // Branches of either access give the read-only pointer, in any order.
+        assert!(errors("unsafe fn pick(c: bool, a: *u8!, b: *u8) *u8 { if c { a } else { b } }").is_empty());
+        assert!(errors("unsafe fn pick(c: bool, a: *u8!, b: *u8) *u8 { if c { b } else { a } }").is_empty());
+    }
+
+    #[test]
+    fn writable_pointer_types_print_as_they_parse() {
+        for spelling in ["*u8!", "**u8", "**u8!", "* *u8!", "* *u8!!", "&*u8!", "*&u8!!"] {
+            let source = format!("unsafe fn f(p: {spelling}) void {{}}");
+            let program = crate::parser::Parser::new(crate::lexer::Lexer::new(&source).tokenize())
+                .parse()
+                .unwrap();
+            let crate::parser::ast::ItemKind::Fn { params, .. } = &program.items[0].node else {
+                panic!("expected a function");
+            };
+            let printed = params[0].ty.node.to_string();
+            let reparsed_source = format!("unsafe fn f(p: {printed}) void {{}}");
+            let reparsed = crate::parser::Parser::new(crate::lexer::Lexer::new(&reparsed_source).tokenize())
+                .parse()
+                .unwrap();
+            let crate::parser::ast::ItemKind::Fn { params: again, .. } = &reparsed.items[0].node else {
+                panic!("expected a function");
+            };
+            assert_eq!(format!("{:?}", params[0].ty.node).replace(char::is_numeric, ""),
+                format!("{:?}", again[0].ty.node).replace(char::is_numeric, ""), "{spelling} printed as {printed}");
+        }
+    }
+
+    #[test]
     fn inc_dec_on_parenthesized_deref_is_valid() {
         let report = analyze(
             r#"
-unsafe fn bump(p: *i32) void {
+unsafe fn bump(p: *i32!) void {
     (*p)++;
     --(*p);
 }
 
 fn main() void {
     var x: i32 = 0;
-    unsafe { bump(&x); }
+    unsafe { bump(&x!); }
 }
 "#,
         );
@@ -7592,6 +7656,7 @@ fn main() void {
             },
             &TypeKind::RawPtr {
                 inner: Box::new(scalar),
+                exclusive: false,
             },
         ));
         let report = analyze(

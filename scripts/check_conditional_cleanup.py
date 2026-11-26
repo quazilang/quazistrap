@@ -7,60 +7,60 @@ import tempfile
 from pathlib import Path
 
 
-PRELUDE = """struct Owner { trace: *i32, digit: i32 }
+PRELUDE = """struct Owner { trace: *i32!, digit: i32 }
 impl Owner {
     fn free(self: Owner) void {
         unsafe { *self.trace = *self.trace * 10 + self.digit; }
     }
 }
 struct Pair { child: Owner }
-unsafe fn mark(trace: *i32, digit: i32) Owner {
+unsafe fn mark(trace: *i32!, digit: i32) Owner {
     ret Owner { trace: trace, digit: digit };
 }
 fn consume(value: Owner) void {}
 fn take(value: Owner, scalar: i32) void {}
 fn fail() Result[i32, i32] { ret Err(7); }
-unsafe fn initialize(trace: *i32, enter: bool) void {
+unsafe fn initialize(trace: *i32!, enter: bool) void {
     var item: Owner;
     if enter { item = mark(trace, 1); }
 }
-unsafe fn move_branch(trace: *i32, enter: bool) void {
+unsafe fn move_branch(trace: *i32!, enter: bool) void {
     var item = mark(trace, 1);
     if enter { consume(item); }
 }
-unsafe fn replace(trace: *i32, enter: bool) void {
+unsafe fn replace(trace: *i32!, enter: bool) void {
     var item = mark(trace, 1);
     if enter { item = mark(trace, 2); }
 }
-unsafe fn choose(trace: *i32, first: bool) Owner {
+unsafe fn choose(trace: *i32!, first: bool) Owner {
     var left = mark(trace, 1);
     var right = mark(trace, 2);
     ret match first { true => left, false => right, };
 }
-unsafe fn pending(trace: *i32, first: bool) Result[i32, i32] {
+unsafe fn pending(trace: *i32!, first: bool) Result[i32, i32] {
     var left = mark(trace, 1);
     var right = mark(trace, 2);
     take(match first { true => left, false => right, }, fail()?);
     ret Ok(0);
 }
-unsafe fn grouped(trace: *i32) Result[i32, i32] {
+unsafe fn grouped(trace: *i32!) Result[i32, i32] {
     var item = mark(trace, 1);
     take((item), fail()?);
     ret Ok(0);
 }
-unsafe fn grouped_producer(trace: *i32) Result[i32, i32] {
+unsafe fn grouped_producer(trace: *i32!) Result[i32, i32] {
     take((mark(trace, 1)), fail()?);
     ret Ok(0);
 }
-unsafe fn cast_producer(trace: *i32) Result[i32, i32] {
+unsafe fn cast_producer(trace: *i32!) Result[i32, i32] {
     take((mark(trace, 1) as Owner), fail()?);
     ret Ok(0);
 }
-unsafe fn pending_producers(trace: *i32, first: bool) Result[i32, i32] {
+unsafe fn pending_producers(trace: *i32!, first: bool) Result[i32, i32] {
     take(match first { true => mark(trace, 1), false => mark(trace, 2), }, fail()?);
     ret Ok(0);
 }
-unsafe fn method_pending(trace: *i32) Result[i32, i32] {
+unsafe fn method_pending(trace: *i32!) Result[i32, i32] {
     var item = mark(trace, 1);
     item.accept(fail()?);
     ret Ok(0);
@@ -167,9 +167,9 @@ def source():
     functions = []
     checks = []
     for index, (name, (body, expected)) in enumerate(CASES.items(), 1):
-        functions.append(f"unsafe fn {name}(trace: *i32) i32 {{ {body} ret 0; }}")
+        functions.append(f"unsafe fn {name}(trace: *i32!) i32 {{ {body} ret 0; }}")
         functions.append(f"""unsafe fn check_{name}() bool {{ var trace: i32 = 0;
-            if {name}(&trace) != 0 {{ ret false; }}
+            if {name}(&trace!) != 0 {{ ret false; }}
             ret trace == {expected}; }}""")
         checks.append(f"unsafe {{ if !check_{name}() {{ ret {index}; }} }}")
     return PRELUDE + "\n".join(functions) + "\nfn main() i32 {" + "\n".join(checks) + "ret 0; }\n"

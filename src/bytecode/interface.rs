@@ -396,7 +396,7 @@ fn fn_params_contain_runtime_any(params: &[Param], attributes: &[Attribute]) -> 
 fn type_contains_any(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any => true,
-        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => type_contains_any(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::RawPtr { inner, .. } => type_contains_any(&inner.node),
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => type_contains_any(&elem_ty.node),
@@ -624,7 +624,7 @@ fn public_item_contains_owned_fn(item: &Item) -> bool {
 fn type_contains_owned_fn(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Fn { .. } => true,
-        TypeKind::Ref { inner } | TypeKind::RawPtr { inner } => type_contains_owned_fn(&inner.node),
+        TypeKind::Ref { inner } | TypeKind::RawPtr { inner, .. } => type_contains_owned_fn(&inner.node),
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => type_contains_owned_fn(&elem_ty.node),

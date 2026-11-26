@@ -30,7 +30,7 @@ pub(super) fn specialization_types_are_bounded(types: &[TypeKind]) -> bool {
             }
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::Slice { elem_ty: inner }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Array { elem_ty: inner, .. } => pending.push((&inner.node, depth + 1)),
@@ -291,7 +291,7 @@ impl Analyzer {
             }
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::Slice { elem_ty: inner } => self.ownership_type_is_concrete(&inner.node),
             TypeKind::Array { elem_ty, .. } => self.ownership_type_is_concrete(&elem_ty.node),
             TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
@@ -490,7 +490,7 @@ fn canonical_ownership_type(ty: &TypeKind) -> String {
         TypeKind::Slice { elem_ty } => format!("slice({})", encode(&elem_ty.node)),
         TypeKind::Ref { inner } => format!("shared({})", encode(&inner.node)),
         TypeKind::MutRef { inner } => format!("exclusive({})", encode(&inner.node)),
-        TypeKind::RawPtr { inner } => format!("pointer({})", encode(&inner.node)),
+        TypeKind::RawPtr { inner, .. } => format!("pointer({})", encode(&inner.node)),
         TypeKind::Fn { params, return_ty } => {
             format!("fn([{}];{})", list(params), encode(&return_ty.node))
         }

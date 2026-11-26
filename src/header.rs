@@ -505,7 +505,7 @@ fn c_base_type(
             return Ok(primitive.to_string());
         }
         match current {
-            TypeKind::RawPtr { inner } => {
+            TypeKind::RawPtr { inner, .. } => {
                 return Ok(format!(
                     "{} *",
                     c_base_type(&inner.node, context, resolving)?
@@ -564,7 +564,7 @@ fn collect_named_types(ty: &TypeKind, names: &mut HashSet<String>) {
                 collect_named_types(&argument.node, names);
             }
         }
-        TypeKind::RawPtr { inner }
+        TypeKind::RawPtr { inner, .. }
         | TypeKind::Ref { inner }
         | TypeKind::Array { elem_ty: inner, .. }
         | TypeKind::FlexibleArray { elem_ty: inner }

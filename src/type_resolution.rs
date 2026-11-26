@@ -299,9 +299,10 @@ impl<F: Fn(&str) -> Option<String>> Resolver<'_, F> {
                     TypeKind::MutRef { inner }
                 })
             }
-            TypeKind::RawPtr { inner } => {
+            TypeKind::RawPtr { inner, exclusive } => {
+                let exclusive = *exclusive;
                 self.unary(inner, parameters, source_context, depth, |inner| {
-                    TypeKind::RawPtr { inner }
+                    TypeKind::RawPtr { inner, exclusive }
                 })
             }
             TypeKind::Array { elem_ty, len } => {
@@ -882,6 +883,7 @@ mod tests {
         for _ in 0..MAX_TYPE_DEPTH {
             deep = TypeKind::RawPtr {
                 inner: Box::new(Spanned::new(deep, span)),
+                exclusive: false,
             };
         }
         assert!(matches!(

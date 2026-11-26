@@ -123,7 +123,7 @@ fn main() i32 {
     io.println("size {}", info.len());
     var reader = fs.File.open(path).unwrap();
     if (reader.seek(far - 4, fs.SEEK_SET).unwrap() != far - 4) { ret 3; }
-    var buffer: *u8 = 0;
+    var buffer: *u8! = 0;
     unsafe { buffer = core.malloc(32); }
     var total: usize = 0;
     // Three bytes at a time until the end of the file.

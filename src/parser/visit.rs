@@ -369,7 +369,7 @@ pub fn walk_type<V: MutVisitor + ?Sized>(visitor: &mut V, ty: &mut Type) {
         TypeKind::Array { elem_ty, .. }
         | TypeKind::FlexibleArray { elem_ty }
         | TypeKind::Slice { elem_ty } => visitor.visit_type(elem_ty),
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             visitor.visit_type(inner)
         }
         TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {

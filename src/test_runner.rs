@@ -901,23 +901,23 @@ fn exercise_array_from() i32 {
             "prelude-box-ownership",
             r#"
 @intrinsic("quazi.malloc")
-unsafe fn allocate(size: usize) *usize;
+unsafe fn allocate(size: usize) *usize!;
 @intrinsic("quazi.free")
 unsafe fn release(pointer: *usize) void;
 
-struct Probe { hits: *usize }
+struct Probe { hits: *usize! }
 impl Probe {
     fn free(self: Probe) void {
         unsafe { *self.hits = *self.hits + 1; }
     }
 }
 
-unsafe fn abandon(hits: *usize) void {
+unsafe fn abandon(hits: *usize!) void {
     const _box: Box[Probe] = Box.new(Probe { hits: hits });
 }
 
 fn exercise_box() i32 {
-    var hits: *usize;
+    var hits: *usize!;
     unsafe { hits = allocate(8); *hits = 0; }
     unsafe { abandon(hits); }
     unsafe { if (*hits != 1) { release(hits); ret 1; } }

@@ -219,3 +219,7 @@ Decided 2026-11-18: [generic values move unless `T: Copy`, `@derive(Copy)` and `
 ## D-026: attribute-driven marshalling
 
 Accepted 2026-11-18: [`@serde("json", "ini")` structs, field renames, per-format traits, documents](serde-marshalling.md).
+
+## D-027: raw pointer access
+
+Decided 2026-11-26: [`*T` reads, `*T!` reads and writes; only literal 0 is a pointer](raw-pointer-access.md).

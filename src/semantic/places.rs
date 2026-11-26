@@ -1107,7 +1107,7 @@ fn type_cost(ty: &TypeKind) -> usize {
             }
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::Slice { elem_ty: inner }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Array { elem_ty: inner, .. } => pending.push(&inner.node),

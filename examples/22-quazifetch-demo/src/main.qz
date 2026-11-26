@@ -146,7 +146,7 @@ fn basename_of(path: String) String {
     }
     // Copy the basename into separately owned storage; no escaping view.
     const byte_count: usize = length - start;
-    var copy: *u8 = 0;
+    var copy: *u8! = 0;
     unsafe { copy = core.malloc(byte_count + 1); }
     if (copy == 0) { ret String.new(); }
     unsafe {

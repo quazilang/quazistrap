@@ -72,14 +72,14 @@ fn main() void {
 }
 """,
     "raw_helper_copy": """struct View { value: str }
-@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8;
+@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8!;
 @intrinsic("quazi.memcpy") unsafe fn copy(dst: *u8, src: *u8, n: usize) *u8;
 unsafe fn storage() *u8 { ret allocate(8); }
 fn wrap(value: str) View {
     var result: str = "";
     unsafe {
         var source = allocate(8);
-        *(source as *str) = value;
+        *(source as *str!) = value;
         var destination = storage();
         copy(destination, source, 8);
         result = *(destination as *str);
@@ -94,8 +94,8 @@ fn main() i32 {
 }
 """,
     "unknown_pointer_alias": """struct View { value: str }
-@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8;
-unsafe fn read_after_write(left: *str, right: *str, value: str) str {
+@intrinsic("quazi.malloc") unsafe fn allocate(n: usize) *u8!;
+unsafe fn read_after_write(left: *str!, right: *str, value: str) str {
     *left = value;
     ret *right;
 }

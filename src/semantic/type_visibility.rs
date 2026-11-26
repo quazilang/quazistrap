@@ -106,7 +106,7 @@ impl Visibility<'_> {
             TypeKind::Array { elem_ty, .. }
             | TypeKind::FlexibleArray { elem_ty }
             | TypeKind::Slice { elem_ty } => self.check_type(elem_ty, binders),
-            TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
                 self.check_type(inner, binders)
             }
             TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {

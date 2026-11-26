@@ -150,11 +150,15 @@ analysis is implemented.
 
 ### Raw pointers
 
-`*T` — a raw native pointer. May be null, dangling, misaligned, or point to
-invalid storage. Dereferencing requires an unsafe context. Integer `0` is the
-null-pointer constant for any `*T`. All raw pointer types are mutually
-compatible: `*T` converts to `*U`. Raw pointers serve FFI boundaries; typed
-wrappers are preferred for application code.
+`*T` — a raw native pointer for reading; `*T!` — one for reading and writing
+([D-027](../decisions/raw-pointer-access.md)). May be null, dangling,
+misaligned, or point to invalid storage. Dereferencing requires an unsafe
+context, and a write (`*p = v`, `(*p)++`, `(*p).field = v`) requires `*T!`
+(S07). Integer literal `0` is the null-pointer constant for any pointer; other
+integers do not convert. Pointee types are mutually compatible (`*T` converts
+to `*U`); `*T!` converts to `*T`, the reverse needs `as *T!`. `&x` passes as
+`*T`, `&x!` also as `*T!`. Allocation returns `*u8!`. Raw pointers serve FFI
+boundaries; typed wrappers are preferred for application code.
 
 ## Named types
 

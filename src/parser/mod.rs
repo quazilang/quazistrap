@@ -2259,30 +2259,46 @@ impl Parser {
                     span,
                 ));
             }
+            // `*T` reads, `*T!` reads and writes (like `&T` / `&T!`).
             TokenKind::Star => {
                 let inner = self.parse_type()?;
-                let span = Span::merge(to_ast_span(start), inner.span);
+                let (exclusive, end) = if self.at(TokenKind::Bang) {
+                    (true, to_ast_span(self.advance().span))
+                } else {
+                    (false, inner.span)
+                };
+                let span = Span::merge(to_ast_span(start), end);
                 return Ok(Spanned::new(
                     TypeKind::RawPtr {
                         inner: Box::new(inner),
+                        exclusive,
                     },
                     span,
                 ));
             }
-            // `**T` is lexed as a single `StarStar` token. Treat it as `*(*T)`.
+            // `**T` is lexed as a single `StarStar` token. Treat it as `*(*T)`;
+            // `**T!` makes the outer pointer writable (`*(*T)!`), so a pointer
+            // can be stored through it.
             TokenKind::StarStar => {
                 let inner = self.parse_type()?;
                 let inner_span = inner.span;
+                let (exclusive, end) = if self.at(TokenKind::Bang) {
+                    (true, to_ast_span(self.advance().span))
+                } else {
+                    (false, inner_span)
+                };
                 let ptr_inner = Spanned::new(
                     TypeKind::RawPtr {
                         inner: Box::new(inner),
+                        exclusive: false,
                     },
                     inner_span,
                 );
-                let span = Span::merge(to_ast_span(start), inner_span);
+                let span = Span::merge(to_ast_span(start), end);
                 return Ok(Spanned::new(
                     TypeKind::RawPtr {
                         inner: Box::new(ptr_inner),
+                        exclusive,
                     },
                     span,
                 ));
@@ -2910,7 +2926,7 @@ fn main() void {
         let ItemKind::Fn { return_ty, .. } = &program.items[0].node else {
             panic!("expected function declaration");
         };
-        let TypeKind::RawPtr { inner } = &return_ty.node else {
+        let TypeKind::RawPtr { inner, .. } = &return_ty.node else {
             panic!("expected outer raw pointer, got {return_ty:?}");
         };
         assert!(matches!(inner.node, TypeKind::RawPtr { .. }));

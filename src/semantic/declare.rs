@@ -1368,7 +1368,7 @@ pub(super) fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Bool => "bool".to_string(),
         TypeKind::Str => "str".to_string(),
         TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
-        TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
+        TypeKind::RawPtr { inner, .. } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }
 }

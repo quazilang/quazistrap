@@ -2808,7 +2808,7 @@ impl<'a> Codegen<'a> {
             }
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Slice { elem_ty: inner } => {
                 Self::has_unresolved_layout_param(&inner.node, type_subst)
@@ -3346,7 +3346,7 @@ impl<'a> FnCompiler<'a> {
     /// dereference, sharing C scalar conversion rules with fields and globals.
     /// Safe-reference accesses retain the VM's 8-byte slot layout.
     fn raw_pointee_access(&self, ptr_expr: &Expr) -> (MemWidth, bool, bool) {
-        let Some(TypeKind::RawPtr { inner }) = self.type_of_expr(ptr_expr) else {
+        let Some(TypeKind::RawPtr { inner, .. }) = self.type_of_expr(ptr_expr) else {
             // Safe references point at VM slots, including internal f32 values.
             return (MemWidth::Qword, false, false);
         };
@@ -4112,7 +4112,7 @@ impl<'a> FnCompiler<'a> {
             }
             TypeKind::Ref { inner }
             | TypeKind::MutRef { inner }
-            | TypeKind::RawPtr { inner }
+            | TypeKind::RawPtr { inner, .. }
             | TypeKind::FlexibleArray { elem_ty: inner }
             | TypeKind::Slice { elem_ty: inner } => self.has_unresolved_layout_param(&inner.node),
             TypeKind::Array { elem_ty, .. } => self.has_unresolved_layout_param(&elem_ty.node),
@@ -9760,7 +9760,7 @@ impl<'a> FnCompiler<'a> {
                         ) {
                             return self.load_reference_value(ptr, pointer_ty);
                         }
-                        if let Some(TypeKind::RawPtr { inner }) = pointer_ty
+                        if let Some(TypeKind::RawPtr { inner, .. }) = pointer_ty
                             && let TypeKind::Named { name, .. } = self.resolve_type(&inner.node)
                             && self.repr_c_structs.contains(&name)
                         {
@@ -12031,7 +12031,7 @@ pub(crate) fn remap_instr_regs(
 fn type_contains_unrepresentable_runtime_type(ty: &TypeKind) -> bool {
     match ty {
         TypeKind::Any | TypeKind::Error => true,
-        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner } => {
+        TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
             type_contains_unrepresentable_runtime_type(&inner.node)
         }
         TypeKind::Array { elem_ty, .. }
@@ -12092,7 +12092,7 @@ fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {
         }
         TypeKind::Ref { inner }
         | TypeKind::MutRef { inner }
-        | TypeKind::RawPtr { inner }
+        | TypeKind::RawPtr { inner, .. }
         | TypeKind::FlexibleArray { elem_ty: inner }
         | TypeKind::Slice { elem_ty: inner } => type_kind_mentions_unresolved_param(&inner.node),
         TypeKind::Array { elem_ty, .. } => type_kind_mentions_unresolved_param(&elem_ty.node),
@@ -12294,7 +12294,7 @@ fn collect_type_name_segments(ty: &TypeKind, names: &mut HashSet<String>) {
         | TypeKind::Slice { elem_ty: inner }
         | TypeKind::Ref { inner }
         | TypeKind::MutRef { inner }
-        | TypeKind::RawPtr { inner } => collect_type_name_segments(&inner.node, names),
+        | TypeKind::RawPtr { inner, .. } => collect_type_name_segments(&inner.node, names),
         TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
             for param in params {
                 collect_type_name_segments(&param.node, names);
@@ -12495,7 +12495,7 @@ fn type_kind_base_name(ty: &TypeKind) -> String {
         TypeKind::Bytes => "bytes".to_string(),
         TypeKind::CFn { .. } => "C fn".to_string(),
         TypeKind::Ref { inner } | TypeKind::MutRef { inner } => type_kind_base_name(&inner.node),
-        TypeKind::RawPtr { inner } => type_kind_base_name(&inner.node),
+        TypeKind::RawPtr { inner, .. } => type_kind_base_name(&inner.node),
         other => format!("{}", other),
     }
 }
@@ -12587,7 +12587,7 @@ fn types_equal(a: &TypeKind, b: &TypeKind) -> bool {
             types_equal(&i1.node, &i2.node)
         }
         (Dyn { trait_name: t1 }, Dyn { trait_name: t2 }) => t1 == t2,
-        (RawPtr { inner: i1 }, RawPtr { inner: i2 }) => types_equal(&i1.node, &i2.node),
+        (RawPtr { inner: i1, .. }, RawPtr { inner: i2, .. }) => types_equal(&i1.node, &i2.node),
         (
             Array {
                 elem_ty: e1,
@@ -13447,6 +13447,7 @@ fn main() void { show("{}", 1); }"#;
             TypeKind::MutRef { inner: view(owner) },
             TypeKind::RawPtr {
                 inner: view(TypeKind::Uint8),
+                exclusive: false,
             },
             TypeKind::Ref {
                 inner: view(TypeKind::Ref {
@@ -15216,7 +15217,7 @@ fn take(value: Outer) void {}
             r#"
 type Scalar = f32;
 unsafe fn read(pointer: *Scalar) f32 { ret *(pointer as *Scalar); }
-unsafe fn write(pointer: *Scalar, value: f32) void { *pointer = value; }
+unsafe fn write(pointer: *Scalar!, value: f32) void { *pointer = value; }
 fn reference(pointer: &f32!) f32 { (*pointer)++; ret *pointer; }
 "#,
         );
@@ -15256,7 +15257,7 @@ fn reference(pointer: &f32!) f32 { (*pointer)++; ret *pointer; }
 @api("native_value") var external: f32;
 @repr(C) struct Cell { value: f32 }
 fn local(input: f64) f64 { var value = input; var old = value++; ret old + value; }
-unsafe fn raw(pointer: *f32) f32 { ret --(*pointer); }
+unsafe fn raw(pointer: *f32!) f32 { ret --(*pointer); }
 unsafe fn global() f32 { ret ++external; }
 fn field(cell: Cell) f32 { ret cell.value--; }
 "#,
@@ -15287,8 +15288,8 @@ fn field(cell: Cell) f32 { ret cell.value--; }
     fn raw_pointer_dereferences_use_pointee_width() {
         let chunks = compile(
             r#"unsafe fn read(p: *i8) i8 { ret *p; }
-               unsafe fn write(p: *u16, value: u16) void { *p = value; }
-               unsafe fn add(p: *i32, value: i32) void { *p += value; }"#,
+               unsafe fn write(p: *u16!, value: u16) void { *p = value; }
+               unsafe fn add(p: *i32!, value: i32) void { *p += value; }"#,
         );
 
         let read = chunks.iter().find(|chunk| chunk.name == "read").unwrap();
@@ -15628,7 +15629,7 @@ unsafe fn first(packet: *Packet) u8 { ret (*packet).data[0]; }
         let chunks = compile(
             r#"
 @repr(C) struct Packet { length: u32, data: [f32; ..] }
-unsafe fn update(packet: *Packet) void {
+unsafe fn update(packet: *Packet!) void {
     (*packet).data[0] = 1.5;
     (*packet).data[0] += 2.5;
 }

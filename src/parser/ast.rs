@@ -321,9 +321,11 @@ pub enum TypeKind {
     MutRef {
         inner: Box<Type>,
     },
-    /// `*T` — raw pointer (unsafe to dereference).
+    /// `*T` — raw pointer for reading, `*T!` for reading and writing
+    /// (unsafe to dereference).
     RawPtr {
         inner: Box<Type>,
+        exclusive: bool,
     },
     /// `!` — never type; function that never returns.
     Never,
@@ -383,8 +385,26 @@ impl std::fmt::Display for TypeKind {
             TypeKind::FlexibleArray { elem_ty } => write!(f, "[{}; ..]", elem_ty.node),
             TypeKind::Slice { elem_ty } => write!(f, "[{}]", elem_ty.node),
             TypeKind::Ref { inner } => write!(f, "&{}", inner.node),
-            TypeKind::MutRef { inner } => write!(f, "&{}!", inner.node),
-            TypeKind::RawPtr { inner } => write!(f, "*{}", inner.node),
+            // `&*T!` reads as a shared reference to a writable pointer; an
+            // exclusive reference to a read-only pointer has no source
+            // spelling and prints with parentheses.
+            TypeKind::MutRef { inner } => match &inner.node {
+                TypeKind::RawPtr { exclusive: false, .. } => write!(f, "&({})!", inner.node),
+                _ => write!(f, "&{}!", inner.node),
+            },
+            TypeKind::RawPtr { inner, exclusive } => {
+                // `**T!` lexes as `*(*T)!`; a writable inner pointer needs a
+                // space so it reparses as `*(*T!)`.
+                // Likewise `*&T!` reads as a pointer to `&T!`.
+                if *exclusive && matches!(inner.node, TypeKind::Ref { .. }) {
+                    return write!(f, "*({})!", inner.node);
+                }
+                let separator = match &inner.node {
+                    TypeKind::RawPtr { exclusive: true, .. } => " ",
+                    _ => "",
+                };
+                write!(f, "*{separator}{}{}", inner.node, if *exclusive { "!" } else { "" })
+            }
             TypeKind::Never => write!(f, "!"),
             TypeKind::Fn { params, return_ty } => {
                 write!(f, "fn(")?;
