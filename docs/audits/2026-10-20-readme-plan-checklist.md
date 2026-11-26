@@ -435,7 +435,9 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   the caller; loops recheck loans carried by outer views over the back edge;
   calls through function values stay lexical; `scripts/check_reference_results.py`).
 - [ ] Transitive fixed-point call-effect solver.
-- [ ] Closed-target indirect/callback/trait effects.
+- [ ] Closed-target indirect/callback/trait effects (2026-11-26: `dyn Trait`
+  calls in closed programs compose every implementation's effects,
+  `OwnershipCallTarget::Closed`; function values and callbacks remain open).
 - [ ] Verified QZI-only ownership certificates.
 - [x] Complete structural destruction including generic/enum/scalar shells
   (2026-11-17: enum payload drop glue, recursive enums and structs through

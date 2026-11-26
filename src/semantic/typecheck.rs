@@ -5488,6 +5488,7 @@ impl Analyzer {
                                 .and_then(|methods| methods.get(method))
                                 .cloned();
                             if let Some(signature) = signature {
+                                self.record_dynamic_call_site(expr.span, trait_name, method);
                                 let trait_is_generic = self
                                     .resolve_symbol(trait_name)
                                     .is_some_and(|symbol| !symbol.generic_params.is_empty());

@@ -1711,7 +1711,9 @@ fn main() void {}
         &|event| matches!(event, OwnershipFlowEvent::Invoke { span } if span.start == at("later())")),
     );
     let dynamic = block_with(
-        &|event| matches!(event, OwnershipFlowEvent::IndirectInvoke { span } if span.start == at("shape.scale")),
+        // The program is closed (one non-generic implementation), so the
+        // call is a modeled `DynamicInvoke`.
+        &|event| matches!(event, OwnershipFlowEvent::DynamicInvoke { span } if span.start == at("shape.scale")),
     );
     assert!(reachable(graph, first).contains(&second));
     assert!(reachable(graph, second).contains(&dynamic));
@@ -2711,4 +2713,68 @@ fn main() void {}
     }
     let mutable = callable("mutable").parameter_effects.clone().unwrap();
     assert!(mutable.unmodeled > 0, "{mutable:?}");
+}
+
+#[test]
+fn closed_dyn_calls_compose_every_implementation() {
+    // An executable whose every callable has a body: a `dyn` call reaches
+    // one of the trait's implementations, so its effects are their union.
+    let source = r#"
+trait Bump { fn bump(self: &Self!) void; fn peek(self: &Self) i32; }
+struct Counter { value: i32 }
+struct Quiet { value: i32 }
+impl Bump for Counter {
+    fn bump(self: &Counter!) void { self.value = self.value + 1; }
+    fn peek(self: &Counter) i32 { ret self.value; }
+}
+impl Bump for Quiet {
+    fn bump(self: &Quiet!) void {}
+    fn peek(self: &Quiet) i32 { ret 0; }
+}
+fn poke(item: &dyn Bump!) void { item.bump(); }
+fn look(item: &dyn Bump) i32 { ret item.peek(); }
+fn main() void {
+    var counter: dyn Bump = Counter { value: 1 };
+    poke(&counter!);
+    const seen: i32 = look(&counter);
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let effects = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+            .parameter_effects
+            .clone()
+            .unwrap()
+    };
+    let poke = effects("poke");
+    assert!(poke.written_through_reference.contains(&0), "{poke:?}");
+    assert_eq!(poke.unmodeled, 0, "{poke:?}");
+    assert!(!poke.callee_unmodeled, "{poke:?}");
+    let look = effects("look");
+    assert!(!look.written_through_reference.contains(&0), "{look:?}");
+    assert_eq!(look.unmodeled, 0, "{look:?}");
+}
+
+#[test]
+fn dyn_calls_stay_unmodeled_without_a_closed_program() {
+    // A library (no `main`) may meet implementations defined elsewhere.
+    let source = r#"
+trait Bump { fn bump(self: &Self!) void; }
+struct Counter { value: i32 }
+impl Bump for Counter { fn bump(self: &Counter!) void { self.value = 2; } }
+pub fn poke(item: &dyn Bump!) void { item.bump(); }
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    let poke = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "poke")
+        .and_then(|callable| callable.parameter_effects.clone())
+        .unwrap();
+    assert!(poke.unmodeled > 0, "{poke:?}");
 }

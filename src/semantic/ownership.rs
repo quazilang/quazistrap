@@ -52,6 +52,10 @@ pub(super) struct SourceOwnershipCall {
     pub(super) declaration: Option<String>,
     pub(super) target: Option<(String, Vec<TypeKind>)>,
     pub(super) arguments: Option<OwnershipCallArguments>,
+    /// A call through a `dyn Trait` receiver: (trait, method). Its targets
+    /// are every implementation of the method when the program is closed
+    /// (`Analyzer::closed_dynamic_targets`).
+    pub(super) dynamic: Option<(String, String)>,
 }
 
 impl Analyzer {
@@ -171,9 +175,70 @@ impl Analyzer {
                     declaration,
                     target,
                     arguments: None,
+                    dynamic: None,
                 },
             );
         }
+    }
+
+    /// A method call through a `dyn Trait` receiver.
+    pub(super) fn record_dynamic_call_site(&mut self, span: Span, trait_name: &str, method: &str) {
+        self.record_ownership_call_site(span, None);
+        if let Some(site) = self
+            .current_function
+            .last()
+            .and_then(|caller| self.ownership_call_sites.get_mut(caller))
+            .and_then(|sites| sites.get_mut(&(span.start, span.end)))
+        {
+            site.dynamic = Some((trait_name.to_string(), method.to_string()));
+        }
+    }
+
+    /// The implementations a `dyn trait_name` call of `method` can reach, when
+    /// that set is closed: an executable whose every callable has a source
+    /// body (no QZI dependency could add implementations) and whose
+    /// implementing types are not generic (their specializations would be
+    /// separate targets). `None` keeps the call opaque.
+    pub(super) fn closed_dynamic_targets(&self, trait_name: &str, method: &str) -> Option<Vec<String>> {
+        let main = self.resolve_symbol("main")?;
+        if main.kind != SymbolKind::Function {
+            return None;
+        }
+        let foreign = |name: &str| {
+            self.resolve_symbol(name).is_some_and(|symbol| {
+                symbol.attributes.iter().any(|attribute| {
+                    matches!(attribute.as_str(), "intrinsic" | "api" | "syscall")
+                })
+            })
+        };
+        if self
+            .ownership_signature_index
+            .iter()
+            .any(|(name, signature)| !signature.has_body && !foreign(name))
+        {
+            return None;
+        }
+        let short = trait_name.rsplit('.').next().unwrap_or(trait_name);
+        let mut targets = Vec::new();
+        let mut types: Vec<&String> = self
+            .trait_impls
+            .iter()
+            .filter(|(_, traits)| traits.contains(trait_name) || traits.contains(short))
+            .map(|(type_name, _)| type_name)
+            .collect();
+        types.sort();
+        for type_name in types {
+            if self.resolve_symbol(type_name).is_some_and(|symbol| !symbol.generic_params.is_empty()) {
+                return None;
+            }
+            let target = format!("{type_name}.{method}");
+            let signature = self.ownership_signature_index.get(&target)?;
+            if !signature.has_body {
+                return None;
+            }
+            targets.push(target);
+        }
+        Some(targets)
     }
 
     pub(super) fn record_source_call_declaration(&mut self, span: Span, declaration: &str) {
@@ -403,6 +468,28 @@ impl Analyzer {
                             }
                         } else {
                             OwnershipCallTarget::Unresolved(target_id)
+                        }
+                    } else if let Some((trait_name, method)) = &site.dynamic
+                        && let Some(names) = self.closed_dynamic_targets(trait_name, method)
+                    {
+                        let mut ids = Vec::new();
+                        let mut complete = true;
+                        for callee in names {
+                            let target_id = self.ownership_callable_id(&callee, &[]);
+                            if scheduled.contains(&target_id) {
+                            } else if scheduled.len() < limit {
+                                scheduled.insert(target_id.clone());
+                                pending.push_back((callee.clone(), Vec::new()));
+                            } else {
+                                overflow_span = Some(site.span);
+                                complete = false;
+                            }
+                            ids.push(target_id);
+                        }
+                        if complete {
+                            OwnershipCallTarget::Closed(ids)
+                        } else {
+                            OwnershipCallTarget::Opaque
                         }
                     } else {
                         OwnershipCallTarget::Opaque

@@ -7,18 +7,18 @@ import tempfile
 from pathlib import Path
 
 
-PRELUDE = """struct Owner { trace: *i32, digit: i32 }
+PRELUDE = """struct Owner { trace: *i32!, digit: i32 }
 impl Owner {
     fn free(self: Owner) void {
         unsafe { *self.trace = *self.trace * 10 + self.digit; }
     }
 }
 struct Pair { child: Owner }
-unsafe fn mark(trace: *i32, digit: i32) Owner {
+unsafe fn mark(trace: *i32!, digit: i32) Owner {
     ret Owner { trace: trace, digit: digit };
 }
 fn consume(value: Owner) void {}
-unsafe fn branch(trace: *i32, stop: bool) void {
+unsafe fn branch(trace: *i32!, stop: bool) void {
     for {
         var first = mark(trace, 1);
         if stop { break; }
@@ -26,17 +26,17 @@ unsafe fn branch(trace: *i32, stop: bool) void {
         break;
     }
 }
-unsafe fn choose(trace: *i32, enter: bool) Owner {
+unsafe fn choose(trace: *i32!, enter: bool) Owner {
     for var item = mark(trace, 5); enter; { ret item; }
     ret mark(trace, 7);
 }
-unsafe fn advance(trace: *i32, index: i32) i32 {
+unsafe fn advance(trace: *i32!, index: i32) i32 {
     if index == 0 && *trace != 1 { ret 99; }
     if index == 1 && *trace != 11 { ret 99; }
     if index == 2 && *trace != 111 { ret 99; }
     ret index + 1;
 }
-unsafe fn each_slice(trace: *i32, ...values: i32) void {
+unsafe fn each_slice(trace: *i32!, ...values: i32) void {
     for value : &values { var item = mark(trace, value); continue; }
 }
 """
@@ -135,9 +135,9 @@ def source():
     functions = []
     checks = []
     for index, (name, (body, expected)) in enumerate(CASES.items(), 1):
-        functions.append(f"unsafe fn {name}(trace: *i32) i32 {{ {body} ret 0; }}")
+        functions.append(f"unsafe fn {name}(trace: *i32!) i32 {{ {body} ret 0; }}")
         checks.append(f"""unsafe {{ var trace: i32 = 0;
-            if {name}(&trace) != 0 {{ ret {index}; }}
+            if {name}(&trace!) != 0 {{ ret {index}; }}
             if trace != {expected} {{ ret {index}; }} }}""")
     return PRELUDE + "\n".join(functions) + "\nfn main() i32 {" + "\n".join(checks) + "ret 0; }\n"
 
@@ -163,11 +163,11 @@ def check(qz, directory, before):
     if before:
         # Keep the old fixture within the old borrow checker's accepted language:
         # the full matrix also includes once-only initializer moves it rejected.
-        entry.write_text(PRELUDE + """unsafe fn test(trace: *i32) void {
+        entry.write_text(PRELUDE + """unsafe fn test(trace: *i32!) void {
             for { var item = mark(trace, 1); break; }
         }
         fn main() i32 {
-            var trace: i32 = 0; unsafe { test(&trace); }
+            var trace: i32 = 0; unsafe { test(&trace!); }
             if trace != 1 { ret 7; } ret 0;
         }""")
         run([str(before), *cache_args], root)

@@ -27,7 +27,7 @@ fn os_yield() void { unsafe { sched_yield(); } }
 @repr(C)
 type WorkerEntry = fn(*u8) *u8!;
 @repr(C)
-type TaskEntry = fn(*u8) void;
+type TaskEntry = fn(*u8!) void;
 
 // Scheduler state (runtime_state): +0 lock, +8 queue head, +16 queue tail, +24 started.
 // Task (512 bytes): +0 state (2 = joinable), +8 result, +16 fn value, +24 stack,
@@ -65,7 +65,7 @@ unsafe fn dequeue() *u8! {
 }
 
 @export("qo_proto_worker")
-pub unsafe fn worker_main(_arg: *u8!) *u8! {
+pub unsafe fn worker_main(_arg: *u8) *u8! {
     const context: *u8! = core.malloc(272);
     for (true) {
         const task = dequeue();
@@ -80,7 +80,7 @@ pub unsafe fn worker_main(_arg: *u8!) *u8! {
 
 @export("qo_proto_entry")
 pub unsafe fn task_entry(task: *u8!) void {
-    const runner: fn(*u8) void = *((task + 48) as *fn(*u8) void);
+    const runner: fn(*u8!) void = *((task + 48) as *fn(*u8!) void);
     runner(task);
     // The worker publishes completion after this switch leaves the task stack.
     *((task + 56) as *i64!) = 1;
@@ -105,7 +105,7 @@ unsafe fn spawn_i64(f: fn() i64) *u8! {
     core.memset(task, 0, 512);
     *((task + 16) as *fn() i64!) = f;
     const runner: fn(*u8!) void = |t| run_task[i64](t);
-    *((task + 48) as *fn(*u8) void!) = runner;
+    *((task + 48) as *fn(*u8!) void!) = runner;
     const stack: *u8! = core.malloc(65536);
     *((task + 24) as * *u8!!) = stack;
     const entry: TaskEntry = task_entry;

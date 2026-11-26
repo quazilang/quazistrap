@@ -12,34 +12,34 @@ fn logical_or(left: i32, right: i32) bool { ret left || right; }
 fn nested(left: i32, middle: i32, right: i32) bool {
     ret (left && middle) || right;
 }
-unsafe fn tick(counter: *i32, value: i32) i32 {
+unsafe fn tick(counter: *i32!, value: i32) i32 {
     *counter = *counter + 1;
     ret value;
 }
-unsafe fn marked(counter: *i32, succeed: bool) Result[i32, i32] {
+unsafe fn marked(counter: *i32!, succeed: bool) Result[i32, i32] {
     *counter = *counter + 1;
     if succeed { ret Ok(3); }
     ret Err(7);
 }
-unsafe fn optional(counter: *i32, succeed: bool) Option[i32] {
+unsafe fn optional(counter: *i32!, succeed: bool) Option[i32] {
     *counter = *counter + 1;
     if succeed { ret Some(3); }
     ret None;
 }
-unsafe fn guarded_and(counter: *i32, left: i32, succeed: bool) Result[bool, i32] {
+unsafe fn guarded_and(counter: *i32!, left: i32, succeed: bool) Result[bool, i32] {
     ret Ok(left && marked(counter, succeed)?);
 }
-unsafe fn guarded_or(counter: *i32, left: i32, succeed: bool) Result[bool, i32] {
+unsafe fn guarded_or(counter: *i32!, left: i32, succeed: bool) Result[bool, i32] {
     ret Ok(left || marked(counter, succeed)?);
 }
-unsafe fn guarded_option(counter: *i32, left: i32, succeed: bool) Option[bool] {
+unsafe fn guarded_option(counter: *i32!, left: i32, succeed: bool) Option[bool] {
     ret Some(left && optional(counter, succeed)?);
 }
-unsafe fn eager(counter: *i32, succeed: bool) Result[i32, i32] {
+unsafe fn eager(counter: *i32!, succeed: bool) Result[i32, i32] {
     ret Ok(tick(counter, 2) + (-((marked(counter, succeed)?) as i32)) + tick(counter, 4));
 }
 fn select(first: bool, second: i32) bool { ret first; }
-unsafe fn opaque_named(counter: *i32, succeed: bool) Result[bool, i32] {
+unsafe fn opaque_named(counter: *i32!, succeed: bool) Result[bool, i32] {
     ret Ok(select(second = 9, first = !(marked(counter, succeed)? == 0)));
 }
 fn check_booleans() i32 {
@@ -67,16 +67,16 @@ fn check_booleans() i32 {
 fn check_results() i32 {
     var count: i32 = 0;
     unsafe {
-        var skipped = guarded_and(&count, 0, false);
+        var skipped = guarded_and(&count!, 0, false);
         if match skipped { Ok(value) => value != false, Err(error) => true, } { ret 13; }
         if count != 0 { ret 14; }
-        var shortcut = guarded_or(&count, 2, false);
+        var shortcut = guarded_or(&count!, 2, false);
         if match shortcut { Ok(value) => value != true, Err(error) => true, } { ret 15; }
         if count != 0 { ret 16; }
-        var passed = guarded_and(&count, 2, true);
+        var passed = guarded_and(&count!, 2, true);
         if match passed { Ok(value) => value != true, Err(error) => true, } { ret 17; }
         if count != 1 { ret 18; }
-        var failed = guarded_or(&count, 0, false);
+        var failed = guarded_or(&count!, 0, false);
         if match failed { Ok(value) => true, Err(error) => error != 7, } { ret 19; }
         if count != 2 { ret 20; }
     }
@@ -85,13 +85,13 @@ fn check_results() i32 {
 fn check_options() i32 {
     var count: i32 = 0;
     unsafe {
-        var skipped_option = guarded_option(&count, 0, false);
+        var skipped_option = guarded_option(&count!, 0, false);
         if match skipped_option { Some(value) => value != false, None => true, } { ret 21; }
         if count != 0 { ret 22; }
-        var failed_option = guarded_option(&count, 2, false);
+        var failed_option = guarded_option(&count!, 2, false);
         if match failed_option { Some(value) => true, None => false, } { ret 23; }
         if count != 1 { ret 24; }
-        var passed_option = guarded_option(&count, 2, true);
+        var passed_option = guarded_option(&count!, 2, true);
         if match passed_option { Some(value) => value != true, None => true, } { ret 25; }
         if count != 2 { ret 26; }
     }
@@ -100,22 +100,22 @@ fn check_options() i32 {
 fn check_eager() i32 {
     var count: i32 = 0;
     unsafe {
-        var failed_eager = eager(&count, false);
+        var failed_eager = eager(&count!, false);
         if match failed_eager { Ok(value) => true, Err(error) => error != 7, } { ret 27; }
         if count != 2 { ret 28; }
-        var passed_eager = eager(&count, true);
+        var passed_eager = eager(&count!, true);
         if match passed_eager { Ok(value) => value != 3, Err(error) => true, } { ret 29; }
         if count != 5 { ret 30; }
-        var named = opaque_named(&count, true);
+        var named = opaque_named(&count!, true);
         if match named { Ok(value) => value != true, Err(error) => true, } { ret 31; }
         if count != 6 { ret 32; }
-        var failed_named = opaque_named(&count, false);
+        var failed_named = opaque_named(&count!, false);
         if match failed_named { Ok(value) => true, Err(error) => error != 7, } { ret 33; }
         if count != 7 { ret 34; }
     }
     ret 0;
 }
-unsafe fn stamp(log: *i32, digit: i32, value: i32) i32 {
+unsafe fn stamp(log: *i32!, digit: i32, value: i32) i32 {
     *log = *log * 10 + digit;
     ret value;
 }
@@ -125,7 +125,7 @@ struct Adder { base: i32 }
 impl Combine for Adder {
     fn combine(self: &Adder, left: i32, right: i32) i32 { ret self.base + left + right; }
 }
-unsafe fn stamped_values(log: *i32) [i32; 3] {
+unsafe fn stamped_values(log: *i32!) [i32; 3] {
     *log = *log * 10 + 1;
     ret [7, 8, 9];
 }
@@ -133,52 +133,59 @@ fn check_places() i32 {
     var log: i32 = 0;
     var values: [i32; 3] = [0, 0, 0];
     unsafe {
-        values[stamp(&log, 1, 1) as usize] = stamp(&log, 2, 7);
-        values[stamp(&log, 3, 1) as usize] += stamp(&log, 4, 1);
+        const pointer: *i32! = &log!;
+        values[stamp(pointer, 1, 1) as usize] = stamp(pointer, 2, 7);
+        values[stamp(pointer, 3, 1) as usize] += stamp(pointer, 4, 1);
     }
     // Place operands complete before the value, matching the source graph.
     if log != 1234 { ret 37; }
     if values[1] != 8 { ret 38; }
     log = 0;
     unsafe {
-        const item = stamped_values(&log)[stamp(&log, 2, 2) as usize];
+        const pointer: *i32! = &log!;
+        const item = stamped_values(pointer)[stamp(pointer, 2, 2) as usize];
         if item != 9 { ret 39; }
     }
     if log != 12 { ret 40; }
     log = 0;
     unsafe {
+        const pointer: *i32! = &log!;
         // Field values run in declaration order, not in written order.
-        const ordered = Ordered { first: stamp(&log, 1, 1), second: stamp(&log, 2, 2) };
-        const reversed = Ordered { second: stamp(&log, 4, 4), first: stamp(&log, 3, 3) };
+        const ordered = Ordered { first: stamp(pointer, 1, 1), second: stamp(pointer, 2, 2) };
+        const reversed = Ordered { second: stamp(pointer, 4, 4), first: stamp(pointer, 3, 3) };
         if ordered.second + reversed.first != 5 { ret 41; }
     }
     if log != 1234 { ret 42; }
     log = 0;
     var add: fn(i32, i32) i32 = |left, right| left + right;
     unsafe {
+        const pointer: *i32! = &log!;
         // Arguments of a call through a function value run left to right.
-        if add(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 43; }
+        if add(stamp(pointer, 1, 1), stamp(pointer, 2, 2)) != 3 { ret 43; }
     }
     if log != 12 { ret 44; }
     log = 0;
     var combiner: dyn Combine = Adder { base: 0 };
     unsafe {
+        const pointer: *i32! = &log!;
         // A dynamic method runs its arguments left to right after the receiver.
-        if combiner.combine(stamp(&log, 1, 1), stamp(&log, 2, 2)) != 3 { ret 45; }
+        if combiner.combine(stamp(pointer, 1, 1), stamp(pointer, 2, 2)) != 3 { ret 45; }
     }
     if log != 12 { ret 46; }
     log = 0;
     unsafe {
+        const pointer: *i32! = &log!;
         // A pure value intrinsic is an ordinary call: arguments run in
         // declared parameter order, also when named in another order.
-        const sum = wrapping(right = stamp(&log, 2, 2) as u64, left = stamp(&log, 1, 1) as u64);
+        const sum = wrapping(right = stamp(pointer, 2, 2) as u64, left = stamp(pointer, 1, 1) as u64);
         if sum != 3 { ret 47; }
     }
     if log != 12 { ret 48; }
     log = 0;
     unsafe {
+        const pointer: *i32! = &log!;
         // A qualified variant constructor runs its payloads left to right.
-        const both = Twin.Both(stamp(&log, 1, 1), stamp(&log, 2, 2));
+        const both = Twin.Both(stamp(pointer, 1, 1), stamp(pointer, 2, 2));
         if match both { Twin.Both(left, right) => left * 10 + right != 12, _ => true, } { ret 49; }
     }
     if log != 12 { ret 50; }

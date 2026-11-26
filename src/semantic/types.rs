@@ -432,6 +432,9 @@ pub enum OwnershipCallTarget {
     Unresolved(OwnershipCallableId),
     Opaque,
     Unavailable,
+    /// A `dyn Trait` call in a closed program: it reaches one of these
+    /// implementations, so its effects are their union.
+    Closed(Vec<OwnershipCallableId>),
 }
 
 /// Lexical spelling order is independent of declared parameter slot order.

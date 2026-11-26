@@ -143,6 +143,14 @@ pub enum OwnershipFlowEvent {
     ClosureInvoke {
         span: Span,
     },
+    /// A method call through a `dyn Trait` receiver in a closed program,
+    /// reached after the receiver and positional arguments complete. Its
+    /// targets are every implementation of the method; their effects compose
+    /// through the call site (`OwnershipCallTarget::Closed`), so the call is
+    /// modeled. An open program records an `IndirectInvoke` instead.
+    DynamicInvoke {
+        span: Span,
+    },
     /// The place an assignment or increment target reads or writes: its
     /// binding root and projections when classifiable. Aliasing, moves and
     /// destruction of the previous value remain unverified.
@@ -1421,9 +1429,19 @@ where
             &expression.node,
             ExprKind::Call { callee, .. } if self.closed_closure_call(callee)
         );
+        let dynamic_closed = matches!(&expression.node, ExprKind::MethodCall { .. })
+            && self
+                .sites
+                .and_then(|sites| sites.get(&(span.start, span.end)))
+                .and_then(|site| site.dynamic.as_ref())
+                .is_some_and(|(trait_name, method)| {
+                    self.analyzer.closed_dynamic_targets(trait_name, method).is_some()
+                });
         let invocation = self.block(scopes, span)?;
         self.graph.blocks[invocation].events.push(if closed {
             OwnershipFlowEvent::ClosureInvoke { span }
+        } else if dynamic_closed {
+            OwnershipFlowEvent::DynamicInvoke { span }
         } else {
             OwnershipFlowEvent::IndirectInvoke { span }
         });
@@ -1454,8 +1472,14 @@ where
                 .analyzer
                 .retention_annotation(object)
                 .and_then(|annotation| annotation.ty.as_ref())
-                .is_some_and(|ty| {
-                    matches!(self.analyzer.resolve_type_aliases(ty), TypeKind::Dyn { .. })
+                .is_some_and(|ty| match self.analyzer.resolve_type_aliases(ty) {
+                    TypeKind::Dyn { .. } => true,
+                    // `&dyn Trait` / `&dyn Trait!` dispatch the same way.
+                    TypeKind::Ref { inner } | TypeKind::MutRef { inner } => matches!(
+                        self.analyzer.resolve_type_aliases(&inner.node),
+                        TypeKind::Dyn { .. }
+                    ),
+                    _ => false,
                 })
     }
 

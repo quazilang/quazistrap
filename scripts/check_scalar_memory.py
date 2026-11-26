@@ -6,32 +6,32 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-PRELUDE = '''@intrinsic("quazi.malloc") fn allocate(size: usize) *u8;
+PRELUDE = '''@intrinsic("quazi.malloc") fn allocate(size: usize) *u8!;
 @intrinsic("quazi.free") fn release(pointer: *u8) void;
 @repr(C) struct Cell { value: f32, guard: u32 }
 @repr(C) struct Narrow { first:i8, second:u8, tail:u16 }
 type Scalar = f32;
 unsafe fn read(pointer: *Scalar) f32 { ret *(pointer); }
-unsafe fn write(pointer: *Scalar, value: f32) void { *pointer = value; }
-unsafe fn add(pointer: *Scalar, value: f32) void { *pointer += value; }
-unsafe fn post_inc(pointer: *Scalar) f32 { ret (*pointer)++; }
-unsafe fn pre_inc(pointer: *Scalar) f32 { ret ++(*pointer); }
-unsafe fn post_dec(pointer: *Scalar) f32 { ret (*pointer)--; }
-unsafe fn pre_dec(pointer: *Scalar) f32 { ret --(*pointer); }
-unsafe fn generic_store[T](pointer:*T,value:T)void{*pointer=value;}
+unsafe fn write(pointer: *Scalar!, value: f32) void { *pointer = value; }
+unsafe fn add(pointer: *Scalar!, value: f32) void { *pointer += value; }
+unsafe fn post_inc(pointer: *Scalar!) f32 { ret (*pointer)++; }
+unsafe fn pre_inc(pointer: *Scalar!) f32 { ret ++(*pointer); }
+unsafe fn post_dec(pointer: *Scalar!) f32 { ret (*pointer)--; }
+unsafe fn pre_dec(pointer: *Scalar!) f32 { ret --(*pointer); }
+unsafe fn generic_store[T](pointer:*T!,value:T)void{*pointer=value;}
 unsafe fn generic_read[T](pointer:*T)T{ret *pointer;}
 '''
 
 CASES = {
     "raw_load": "(*cell).value=1.5;ret read(memory as *Scalar)==1.5;",
-    "raw_store": "write(memory as *Scalar,1.5);ret (*cell).value==1.5&&(*cell).guard==123456;",
-    "raw_compound": "(*cell).value=1.5;add(memory as *Scalar,2.5);ret (*cell).value==4.0&&(*cell).guard==123456;",
-    "raw_post_inc": "(*cell).value=1.5;var old=post_inc(memory as *Scalar);ret old==1.5&&(*cell).value==2.5&&(*cell).guard==123456;",
-    "raw_pre_inc": "(*cell).value=1.5;var value=pre_inc(memory as *Scalar);ret value==2.5&&(*cell).value==2.5&&(*cell).guard==123456;",
-    "raw_post_dec": "(*cell).value=2.5;var old=post_dec(memory as *Scalar);ret old==2.5&&(*cell).value==1.5&&(*cell).guard==123456;",
-    "generic_raw": "generic_store[f32](memory as *f32,1.5);ret generic_read[f32](memory as *f32)==1.5&&(*cell).guard==123456;",
-    "narrow_signed": "var row=memory as *Narrow;(*row).second=77;(*row).tail=1234;var p=memory as *i8;*p=-7;var before=(*p)++;ret before==-7&&*p==-6&&(*row).second==77&&(*row).tail==1234&&(*cell).guard==123456;",
-    "raw_pre_dec": "(*cell).value=2.5;var value=pre_dec(memory as *Scalar);ret value==1.5&&(*cell).value==1.5&&(*cell).guard==123456;",
+    "raw_store": "write(memory as *Scalar!,1.5);ret (*cell).value==1.5&&(*cell).guard==123456;",
+    "raw_compound": "(*cell).value=1.5;add(memory as *Scalar!,2.5);ret (*cell).value==4.0&&(*cell).guard==123456;",
+    "raw_post_inc": "(*cell).value=1.5;var old=post_inc(memory as *Scalar!);ret old==1.5&&(*cell).value==2.5&&(*cell).guard==123456;",
+    "raw_pre_inc": "(*cell).value=1.5;var value=pre_inc(memory as *Scalar!);ret value==2.5&&(*cell).value==2.5&&(*cell).guard==123456;",
+    "raw_post_dec": "(*cell).value=2.5;var old=post_dec(memory as *Scalar!);ret old==2.5&&(*cell).value==1.5&&(*cell).guard==123456;",
+    "generic_raw": "generic_store[f32](memory as *f32!,1.5);ret generic_read[f32](memory as *f32)==1.5&&(*cell).guard==123456;",
+    "narrow_signed": "var row=memory as *Narrow!;(*row).second=77;(*row).tail=1234;var p=memory as *i8!;*p=-7;var before=(*p)++;ret before==-7&&*p==-6&&(*row).second==77&&(*row).tail==1234&&(*cell).guard==123456;",
+    "raw_pre_dec": "(*cell).value=2.5;var value=pre_dec(memory as *Scalar!);ret value==1.5&&(*cell).value==1.5&&(*cell).guard==123456;",
 }
 
 CONTROLS = '''fn increment[T](value:T)T{var local=value;local++;ret local;}
@@ -65,8 +65,8 @@ def source():
     functions = [PRELUDE, CONTROLS]
     conditions = []
     for index, (name, body) in enumerate(CASES.items(), 1):
-        functions.append(f'''unsafe fn {name}_inner(memory:*u8)bool {{
-            var cell=memory as *Cell;
+        functions.append(f'''unsafe fn {name}_inner(memory:*u8!)bool {{
+            var cell=memory as *Cell!;
             (*cell).guard=123456;
             {body}
         }}

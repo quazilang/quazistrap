@@ -14,7 +14,7 @@ import std.core;
 unsafe fn context_switch(save: *u8!, restore: *u8!) void;
 
 @repr(C)
-type Entry = fn(*u8) void;
+type Entry = fn(*u8!) void;
 
 // Shared block: [0..272) main context, [272..544) task context, [544] counter.
 @export("qroutine_test_entry")

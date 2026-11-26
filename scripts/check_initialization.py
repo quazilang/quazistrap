@@ -97,7 +97,7 @@ VALID = {
     "colliding_variant_names": ("enum OtherChoice{None,Some(i32),}fn colliding_variant_names()i32{var first:NestedValue[i32]=NestedValue.Some(1);var second:OtherChoice=OtherChoice.Some(1);ret (match first{Some(1)=>7,_=>0,})+(match second{Some(1)=>9,_=>0,});}", "colliding_variant_names()==16"),
     "void_payload_miss": ("enum VoidChoice{Some(i32),None,}fn void_payload_miss()i32{var value:VoidChoice=VoidChoice.Some(2);match value{Some(1)=>ignore(),Some(_)=>ignore(),None=>ignore(),};ret 7;}", "void_payload_miss()==7"),
     "field_target_schedule": ("struct TargetHolder{field:i32,}fn make_target(value:i32)TargetHolder{ret TargetHolder{field:value};}fn field_target_schedule()i32{var value:i32;make_target((value=7)).field=value;ret value;}", "field_target_schedule()==7"),
-    "deref_target_schedule": ("unsafe fn target_pointer(value:i32,slot:*i32)*i32{ret slot;}fn deref_target_schedule()i32{var value:i32;var slot=0;unsafe{*target_pointer((value=7),&slot)=value;}ret slot;}", "deref_target_schedule()==7"),
+    "deref_target_schedule": ("unsafe fn target_pointer(value:i32,slot:*i32!)*i32!{ret slot;}fn deref_target_schedule()i32{var value:i32;var slot=0;unsafe{*target_pointer((value=7),&slot!)=value;}ret slot;}", "deref_target_schedule()==7"),
     "range_shadow": ("fn range_shadow()i32{var index=7;for index:index..8{ret index;}ret 0;}", "range_shadow()==7"),
     "range_end_shadow": ("fn range_end_shadow()i32{var index=8;for index:7..index{ret index;}ret 0;}", "range_end_shadow()==7"),
     "absorbing_effect": ("fn absorbing_effect()i32{var value:i32;(value=7)*0;ret value;}", "absorbing_effect()==7"),
@@ -173,7 +173,7 @@ def check(qz, directory, before):
         invoke([str(binary)], root)
         print("PASS initialization cache: old invalid read rejected, guard fixed, exact hit executes")
         alias_root = directory / "alias-cache"
-        project(alias_root, "unsafe fn write(slot:*i32)void{*slot=7;}fn main()i32{var slot=0;unsafe{write(&slot);}ret slot;}")
+        project(alias_root, "unsafe fn write(slot:*i32!)void{*slot=7;}fn main()i32{var slot=0;unsafe{write(&slot!);}ret slot;}")
         alias_binary = alias_root / "native"
         alias_args = ["build", "--no-color", "--no-unicode", "-o", str(alias_binary)]
         invoke([str(before), *alias_args], alias_root)

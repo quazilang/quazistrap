@@ -2768,9 +2768,13 @@ impl Analyzer {
                 let mut callee_unmodeled = false;
                 let mut callee_writes_globals = false;
                 for site in &graph[caller].calls {
-                    let callee = match &site.target {
-                        OwnershipCallTarget::Direct(id) => by_id.get(id).copied(),
-                        OwnershipCallTarget::Unresolved(_) => None,
+                    let callees: Vec<Option<usize>> = match &site.target {
+                        OwnershipCallTarget::Direct(id) => vec![by_id.get(id).copied()],
+                        // A closed `dyn` call composes every implementation.
+                        OwnershipCallTarget::Closed(ids) => {
+                            ids.iter().map(|id| by_id.get(id).copied()).collect()
+                        }
+                        OwnershipCallTarget::Unresolved(_) => vec![None],
                         // Indirect, foreign and format calls are counted in the
                         // caller's own `unmodeled`; a bodiless callable's
                         // placeholder site has no callee.
@@ -2778,6 +2782,7 @@ impl Analyzer {
                             continue;
                         }
                     };
+                    for callee in callees {
                     let callee_effects =
                         callee.and_then(|callee| graph[callee].parameter_effects.as_ref());
                     let (Some(callee_effects), Some(arguments)) = (callee_effects, &site.arguments)
@@ -2821,6 +2826,7 @@ impl Analyzer {
                                 returned_values.push(own);
                             }
                         }
+                    }
                     }
                 }
                 let Some(effects) = graph[caller].parameter_effects.as_mut() else {

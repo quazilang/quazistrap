@@ -70,6 +70,16 @@ place accesses) and indirect (except closed calls of immutable local closures),
 foreign and format calls whose effects the sets omit; zero means every source
 effect of the body is modeled.
 
+A method call through a `dyn Trait` receiver (also `&dyn Trait` /
+`&dyn Trait!`) has a closed target set when the program is closed: it has
+`main`, every callable has a source body (no QZI dependency can add
+implementations) and no implementing type is generic. Its site then records
+`OwnershipCallTarget::Closed` with every implementation of the method, its
+flow event is `DynamicInvoke` (modeled), and the receiver and positional
+arguments map to slots 0, 1, ... Composition takes the union of the
+implementations' effects. Otherwise the call stays an unmodeled
+`IndirectInvoke`.
+
 Callee effects compose to a fixed point over resolved calls. Each caller
 instance composes the concrete specializations its own call sites resolved
 to, with argument places typed under its substitution; a call whose target or

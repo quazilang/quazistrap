@@ -827,7 +827,16 @@ impl Places<'_> {
         let mut overflow = false;
         for (role, expr) in expressions {
             checkpoint()?;
-            let parameter_slot = slot_by_expression.get(&(expr as *const Expr)).copied();
+            // A `dyn Trait` call has no declaration; trait methods take the
+            // receiver first, then the positional arguments.
+            let parameter_slot = slot_by_expression
+                .get(&(expr as *const Expr))
+                .copied()
+                .or_else(|| match (&site.dynamic, &role) {
+                    (Some(_), OwnershipArgumentRole::Receiver) => Some(0),
+                    (Some(_), OwnershipArgumentRole::Positional(index)) => Some(index + 1),
+                    _ => None,
+                });
             let mut operand = expr;
             let mut groups = 0;
             while let ExprKind::Group(inner) = &operand.node {
