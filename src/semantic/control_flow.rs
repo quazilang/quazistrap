@@ -426,7 +426,7 @@ pub(super) fn pure_value_intrinsic(
 }
 
 /// An integer, floating or boolean value type.
-fn is_plain_scalar(ty: &TypeKind) -> bool {
+pub(super) fn is_plain_scalar(ty: &TypeKind) -> bool {
     matches!(
         ty,
         TypeKind::Int8

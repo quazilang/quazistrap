@@ -84,10 +84,18 @@ A call through a value of `fn` type (a parameter, local or loaded function
 value) is closed the same way in a closed program: its targets are the
 non-generic functions named as values anywhere (`address_taken_functions`)
 whose signature has exactly the callee's parameter and result types, and
-its positional arguments map to slots 0, 1, ... Unknown facts fail closed
-to an open call: a generic or unknown candidate, or any closure literal of
-the same arity (`closure_value_types`; closure bodies are deferred graphs,
-not callables). An empty target set is sound: no value of that type exists.
+its positional arguments map to slots 0, 1, ... Closure literals of exactly
+that signature (`closure_values`) close the call too when the signature takes
+and returns only plain scalars and the closure's creator is a non-generic
+source callable: a closure body is a deferred graph of its creator, not a
+callable, so the creator is listed in `Closed { closure_creators }` and the
+call inherits the creator's global writes and unmodeled effects (a superset
+of the body's). Scalar arguments are copies, so the body cannot write
+through them or return borrows of them, and captures are never references.
+Unknown facts fail closed to an open call: a generic or unknown candidate,
+a closure literal of the same arity with an unknown type, or one with a
+non-scalar signature or a generic or missing creator. An empty target set
+is sound: no value of that type exists.
 `Type.method` named as a value has no lowering and is rejected (S06).
 
 Callee effects compose to a fixed point over resolved calls. Each caller

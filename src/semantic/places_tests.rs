@@ -307,9 +307,16 @@ fn main() void { unsafe { observe(external); } const keep: fn(i32) void = |x| ob
     assert_eq!(global.storage, OwnershipPlaceStorage::Global);
     assert!(matches!(global.ty, Some(TypeKind::Int32)));
     let node = callable(&report, "indirect");
-    assert!(matches!(node.calls[0].target, OwnershipCallTarget::Opaque));
+    // A closed program: the only closure of this type is plain-scalar, so
+    // the call is closed over its creator (`main`).
+    assert!(matches!(
+        &node.calls[0].target,
+        OwnershipCallTarget::Closed { callees, closure_creators }
+            if callees.is_empty() && closure_creators.iter().any(|id| id.callable == "main")
+    ));
     let actual = &arguments(&report, source, "indirect", "callback(value)").actuals[0];
-    assert_eq!(actual.parameter_slot, None);
+    // Closed calls assign argument slots.
+    assert_eq!(actual.parameter_slot, Some(0));
     assert_eq!(
         place(actual).root.storage,
         OwnershipPlaceStorage::Parameter(1)

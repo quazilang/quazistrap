@@ -432,9 +432,16 @@ pub enum OwnershipCallTarget {
     Unresolved(OwnershipCallableId),
     Opaque,
     Unavailable,
-    /// A `dyn Trait` call in a closed program: it reaches one of these
-    /// implementations, so its effects are their union.
-    Closed(Vec<OwnershipCallableId>),
+    /// A `dyn Trait` or `fn`-value call in a closed program: it reaches one
+    /// of these implementations, so its effects are their union. A closure
+    /// literal that may flow to a `fn` value is not a callable; its body is
+    /// summarized in its creator, listed in `closure_creators`, whose global
+    /// writes and unmodeled effects the call inherits (only plain-scalar
+    /// closure signatures qualify, so arguments carry no effects back).
+    Closed {
+        callees: Vec<OwnershipCallableId>,
+        closure_creators: Vec<OwnershipCallableId>,
+    },
 }
 
 /// Lexical spelling order is independent of declared parameter slot order.

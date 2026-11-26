@@ -290,9 +290,10 @@ pub struct Analyzer {
     /// the possible targets of calls through `fn` values in a closed program.
     /// Callees named in direct calls may be included too (a superset).
     pub(super) address_taken_functions: BTreeSet<String>,
-    /// Types of closure literals: a call through a `fn` value of such a type
-    /// may run a closure body, which is not a separate callable.
-    pub(super) closure_value_types: Vec<TypeKind>,
+    /// Closure literals: their type, and the source callable whose body
+    /// creates them (its summary includes the closure body's effects). A call
+    /// through a `fn` value of such a type may run that closure body.
+    pub(super) closure_values: Vec<(TypeKind, Option<String>)>,
     /// Methods called on bounded parameters: function -> (parameter, method).
     pub(super) bound_method_calls: HashMap<String, Vec<(String, String)>>,
     /// Spans of bounded calls whose trait method takes `self` by value; the
@@ -2696,7 +2697,7 @@ impl Analyzer {
             borrowed_dyn_arguments: Vec::new(),
             generic_dyn_vtables: HashMap::new(),
             address_taken_functions: BTreeSet::new(),
-            closure_value_types: Vec::new(),
+            closure_values: Vec::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
             bounded_trait_calls: std::collections::HashSet::new(),
@@ -2779,9 +2780,27 @@ impl Analyzer {
                 for site in &graph[caller].calls {
                     let callees: Vec<Option<usize>> = match &site.target {
                         OwnershipCallTarget::Direct(id) => vec![by_id.get(id).copied()],
-                        // A closed `dyn` call composes every implementation.
-                        OwnershipCallTarget::Closed(ids) => {
-                            ids.iter().map(|id| by_id.get(id).copied()).collect()
+                        // A closed call composes every implementation; a
+                        // closure creator contributes only what does not
+                        // depend on arguments.
+                        OwnershipCallTarget::Closed {
+                            callees,
+                            closure_creators,
+                        } => {
+                            for creator in closure_creators {
+                                match by_id
+                                    .get(creator)
+                                    .and_then(|index| graph[*index].parameter_effects.as_ref())
+                                {
+                                    Some(effects) => {
+                                        callee_unmodeled |=
+                                            effects.unmodeled > 0 || effects.callee_unmodeled;
+                                        callee_writes_globals |= effects.writes_globals;
+                                    }
+                                    None => callee_unmodeled = true,
+                                }
+                            }
+                            callees.iter().map(|id| by_id.get(id).copied()).collect()
                         }
                         OwnershipCallTarget::Unresolved(_) => vec![None],
                         // Indirect, foreign and format calls are counted in the
@@ -3592,7 +3611,7 @@ impl Analyzer {
         self.generic_bounds.clear();
         self.generic_dyn_vtables.clear();
         self.address_taken_functions.clear();
-        self.closure_value_types.clear();
+        self.closure_values.clear();
         self.borrowed_dyn_arguments.clear();
         self.checking_call_argument = false;
         self.bound_method_calls.clear();
@@ -3977,7 +3996,7 @@ impl Analyzer {
         Ok(())
     }
 
-    fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
+    pub(super) fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
         let mut params = self
             .impl_generic_params
             .get(fn_name)

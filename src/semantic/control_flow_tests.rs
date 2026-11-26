@@ -1623,8 +1623,8 @@ fn apply(value: Option[i32], callback: fn(i32, i32) i32) Option[i32] {
     const total = callback(step(value)?, later());
     ret Some(total);
 }
-// A closure of the callback type keeps calls through it open.
-fn main() void { const keep: fn(i32, i32) i32 = |a, b| a + b; }
+// A library (no `main`) is open: calls through fn values stay indirect.
+fn keep() void { const keep: fn(i32, i32) i32 = |a, b| a + b; }
 "#;
     let report = Analyzer::new().analyze_program(&parse(source));
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -2677,7 +2677,9 @@ fn mutable(value: i32) i32 {
     ret add(value);
 }
 fn callback(apply: fn(i32) i32) i32 { ret apply(1); }
-fn main() void {}
+// No `main`: an open library, so calls through fn values that are not
+// local closure bindings stay indirect (a closed program closes them over
+// the scalar closures' creators).
 "#;
     let report = Analyzer::new().analyze_program(&parse(source));
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -2828,4 +2830,89 @@ fn main() void {
         .and_then(|callable| callable.parameter_effects.clone())
         .unwrap();
     assert!(apply.unmodeled > 0, "{apply:?}");
+}
+
+#[test]
+fn scalar_closures_close_function_value_calls_through_their_creator() {
+    // A plain-scalar closure literal may flow to the `fn` value: its body is
+    // summarized in its creator (`main`), whose global writes the call
+    // inherits; the call itself is modeled.
+    let source = r#"
+@api("counter") var counter: i64;
+fn twice(x: i64) i64 { ret x * 2; }
+fn record(x: i64) i64 { unsafe { counter = x; } ret x; }
+fn apply(action: fn(i64) i64, value: i64) i64 { ret action(value); }
+fn main() void {
+    const a = apply(twice, 1);
+    const b = apply(|x| x + 1, 2);
+    const c = apply(|x| record(x), 3);
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let apply = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .unwrap();
+    let effects = apply.parameter_effects.clone().unwrap();
+    assert_eq!(effects.unmodeled, 0, "{effects:?}");
+    assert!(effects.writes_globals, "{effects:?}");
+    assert!(
+        apply.calls.iter().any(|site| matches!(
+            &site.target,
+            OwnershipCallTarget::Closed { callees, closure_creators }
+                if callees.iter().any(|id| id.callable == "twice")
+                    && closure_creators.iter().any(|id| id.callable == "main")
+        )),
+        "{:?}",
+        apply.calls.iter().map(|site| &site.target).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn closures_with_reference_signatures_keep_function_value_calls_open() {
+    // A closure taking a reference could write through its argument, which
+    // its creator's summary does not attribute to the caller.
+    let source = r#"
+struct Cell { value: i32 }
+fn set(cell: &Cell!) void { cell.value = 2; }
+fn apply(action: fn(&Cell!) void, cell: &Cell!) void { action(cell); }
+fn main() void {
+    var cell = Cell { value: 1 };
+    apply(|c| set(c), &cell!);
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    let apply = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .and_then(|callable| callable.parameter_effects.clone())
+        .unwrap();
+    assert!(apply.unmodeled > 0, "{apply:?}");
+}
+
+#[test]
+fn generic_function_value_parameters_keep_calls_open() {
+    // The site type `fn(T) T` is not concrete: no candidate matches it, so
+    // the call must stay open rather than look closed with no targets.
+    let source = r#"
+@api("counter") var counter: i64;
+fn record(x: i64) i64 { unsafe { counter = x; } ret x; }
+fn apply_g[T](action: fn(T) T, value: T) T { ret action(value); }
+fn main() void { const a = apply_g(record, 1); }
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let instances: Vec<_> = report
+        .ownership_call_graph
+        .iter()
+        .filter(|callable| callable.id.callable == "apply_g")
+        .collect();
+    assert!(!instances.is_empty());
+    for callable in instances {
+        let effects = callable.parameter_effects.clone().unwrap();
+        assert!(effects.unmodeled > 0 || effects.writes_globals, "{effects:?}");
+    }
 }

@@ -61,6 +61,12 @@ pub(super) struct SourceOwnershipCall {
     pub(super) function_value: Option<TypeKind>,
 }
 
+/// The targets of a closed indirect call (`OwnershipCallTarget::Closed`).
+pub(super) struct ClosedTargets {
+    pub(super) callees: Vec<String>,
+    pub(super) closure_creators: Vec<String>,
+}
+
 impl Analyzer {
     pub(super) fn has_monomorphization(
         &self,
@@ -211,28 +217,80 @@ impl Analyzer {
         }
     }
 
-    /// The functions a call through a `fn` value of type `ty` can reach, when
+    /// The targets a call through a `fn` value of type `ty` can reach, when
     /// that set is closed: a closed program (see `closed_dynamic_targets`)
-    /// where no closure literal has a type of the same shape and every
-    /// function named as a value with exactly this signature is a
-    /// non-generic source function. `None` keeps the call opaque.
-    pub(super) fn closed_function_value_targets(&self, ty: &TypeKind) -> Option<Vec<String>> {
+    /// where every function named as a value with exactly this signature is
+    /// a non-generic source function, and every closure literal of this
+    /// signature has a plain-scalar signature and a non-generic source
+    /// creator (its body is summarized there). A closure literal of the same
+    /// arity whose type is unknown keeps the call open. `None` keeps the call
+    /// opaque.
+    pub(super) fn closed_function_value_targets(&self, ty: &TypeKind) -> Option<ClosedTargets> {
         if !self.is_closed_program() {
             return None;
         }
         let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(ty) else {
             return None;
         };
-        let same_shape = |candidate: &TypeKind| match self.resolve_type_aliases(candidate) {
-            TypeKind::Fn { params: other, .. } => other.len() == params.len(),
-            _ => true,
-        };
-        if self.closure_value_types.iter().any(same_shape) {
+        // The site type is the declared one: inside a generic function a
+        // `fn(T)` would match no concrete candidate and look closed-empty.
+        if params
+            .iter()
+            .map(|param| &param.node)
+            .chain(std::iter::once(&return_ty.node))
+            .any(|ty| self.mentions_unknown_type_name(ty))
+        {
             return None;
         }
         let shape = |ty: &TypeKind| canonical_ownership_type(&self.resolve_type_aliases(ty));
         let wanted: Vec<String> = params.iter().map(|param| shape(&param.node)).collect();
         let wanted_return = shape(&return_ty.node);
+        let mut closure_creators = Vec::new();
+        for (closure_ty, creator) in &self.closure_values {
+            let TypeKind::Fn {
+                params: closure_params,
+                return_ty: closure_return,
+            } = self.resolve_type_aliases(closure_ty)
+            else {
+                return None;
+            };
+            if closure_params.len() != wanted.len() {
+                continue;
+            }
+            let same_signature = closure_params
+                .iter()
+                .zip(&wanted)
+                .all(|(actual, wanted)| shape(&actual.node) == *wanted)
+                && shape(&closure_return.node) == wanted_return;
+            if !same_signature {
+                continue;
+            }
+            // Plain-scalar arguments and results are copies: the body can
+            // neither write through them nor hand them back as borrows.
+            let scalar = |ty: &TypeKind| super::control_flow::is_plain_scalar(&self.resolve_type_aliases(ty));
+            let return_ty = self.resolve_type_aliases(&closure_return.node);
+            if !closure_params.iter().all(|param| scalar(&param.node))
+                || !(scalar(&return_ty) || matches!(return_ty, TypeKind::Void))
+            {
+                return None;
+            }
+            let creator = creator.as_ref()?;
+            let symbol = self.resolve_symbol(creator)?;
+            // Generic impl parameters count too (`impl Box[T]` methods).
+            if symbol.kind != SymbolKind::Function
+                || !self.generic_params_for_function(creator).is_empty()
+            {
+                return None;
+            }
+            match self.ownership_signature_index.get(creator) {
+                Some(signature) if signature.has_body => {
+                    if !closure_creators.contains(creator) {
+                        closure_creators.push(creator.clone());
+                    }
+                }
+                _ => return None,
+            }
+        }
         let mut targets = Vec::new();
         // Unknown facts fail closed (`None`): skipping a candidate would make
         // the target set too small, and the composed effects unsound.
@@ -262,7 +320,34 @@ impl Analyzer {
                 _ => return None,
             }
         }
-        Some(targets)
+        Some(ClosedTargets {
+            callees: targets,
+            closure_creators,
+        })
+    }
+
+    /// A named type without arguments that is not a declared type: a generic
+    /// parameter (or something unknown), so the type is not concrete.
+    fn mentions_unknown_type_name(&self, ty: &TypeKind) -> bool {
+        match self.resolve_type_aliases(ty) {
+            TypeKind::Named { name, type_args } => {
+                (type_args.is_empty()
+                    && !self
+                        .resolve_symbol(&name)
+                        .is_some_and(|symbol| symbol.kind == SymbolKind::TypeName))
+                    || type_args
+                        .iter()
+                        .any(|argument| self.mentions_unknown_type_name(&argument.node))
+            }
+            TypeKind::Ref { inner } | TypeKind::MutRef { inner } | TypeKind::RawPtr { inner, .. } => {
+                self.mentions_unknown_type_name(&inner.node)
+            }
+            TypeKind::Fn { params, return_ty } => {
+                params.iter().any(|param| self.mentions_unknown_type_name(&param.node))
+                    || self.mentions_unknown_type_name(&return_ty.node)
+            }
+            _ => false,
+        }
     }
 
     /// An executable whose every callable has a source body: no QZI
@@ -547,32 +632,44 @@ impl Analyzer {
                         } else {
                             OwnershipCallTarget::Unresolved(target_id)
                         }
-                    } else if let Some(names) = site
+                    } else if let Some(closed) = site
                         .dynamic
                         .as_ref()
                         .and_then(|(trait_name, method)| self.closed_dynamic_targets(trait_name, method))
+                        .map(|callees| ClosedTargets {
+                            callees,
+                            closure_creators: Vec::new(),
+                        })
                         .or_else(|| {
                             site.function_value
                                 .as_ref()
                                 .and_then(|ty| self.closed_function_value_targets(ty))
                         })
                     {
-                        let mut ids = Vec::new();
                         let mut complete = true;
-                        for callee in names {
-                            let target_id = self.ownership_callable_id(&callee, &[]);
-                            if scheduled.contains(&target_id) {
-                            } else if scheduled.len() < limit {
-                                scheduled.insert(target_id.clone());
-                                pending.push_back((callee.clone(), Vec::new()));
-                            } else {
-                                overflow_span = Some(site.span);
-                                complete = false;
+                        let mut schedule = |names: &[String]| {
+                            let mut ids = Vec::new();
+                            for callee in names {
+                                let target_id = self.ownership_callable_id(callee, &[]);
+                                if scheduled.contains(&target_id) {
+                                } else if scheduled.len() < limit {
+                                    scheduled.insert(target_id.clone());
+                                    pending.push_back((callee.clone(), Vec::new()));
+                                } else {
+                                    overflow_span = Some(site.span);
+                                    complete = false;
+                                }
+                                ids.push(target_id);
                             }
-                            ids.push(target_id);
-                        }
+                            ids
+                        };
+                        let callees = schedule(&closed.callees);
+                        let closure_creators = schedule(&closed.closure_creators);
                         if complete {
-                            OwnershipCallTarget::Closed(ids)
+                            OwnershipCallTarget::Closed {
+                                callees,
+                                closure_creators,
+                            }
                         } else {
                             OwnershipCallTarget::Opaque
                         }
