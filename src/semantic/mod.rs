@@ -10362,6 +10362,24 @@ fn main() i32 {
     }
 
     #[test]
+    fn trait_qualified_method_calls_are_reported() {
+        // `Trait.method(value)` crashed codegen ("no register is bound").
+        let report = analyze(
+            r#"trait Take { fn take(self: Self) i32; } struct A { v: i32 } impl Take for A { fn take(self: A) i32 { ret self.v; } } fn main() i32 { const a = A { v: 4 }; const n: i32 = Take.take(a); ret n; }"#,
+        );
+        assert!(
+            report.errors.iter().any(|error| error.code == "S06"
+                && error.message.contains("instead of `Take.take(value, ...)`")),
+            "{:?}",
+            report.errors
+        );
+        let method = analyze(
+            r#"trait Take { fn take(self: Self) i32; } struct A { v: i32 } impl Take for A { fn take(self: A) i32 { ret self.v; } } fn main() i32 { const a = A { v: 4 }; ret a.take(); }"#,
+        );
+        assert!(method.errors.is_empty(), "{:?}", method.errors);
+    }
+
+    #[test]
     fn unknown_methods_on_structs_and_scalars_are_reported() {
         // These calls were accepted with an unknown result type.
         let report = analyze(

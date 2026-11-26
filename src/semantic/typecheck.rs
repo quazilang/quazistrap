@@ -4332,6 +4332,26 @@ impl Analyzer {
                 args,
                 named_args,
             } => {
+                // `Trait.method(value)` has no lowering (codegen failed with an
+                // internal error); trait methods are called on the value.
+                if let ExprKind::Ident(trait_name) = &object.node
+                    && self.trait_method_signatures.contains_key(trait_name)
+                    && !self.resolve_symbol(trait_name).is_some_and(|symbol| {
+                        matches!(symbol.kind, SymbolKind::Variable { .. } | SymbolKind::Parameter)
+                    })
+                {
+                    self.push_error(
+                        expr.span,
+                        "S06",
+                        format!(
+                            "trait methods are called on a value, not through the trait: write `value.{method}(...)` instead of `{trait_name}.{method}(value, ...)`"
+                        ),
+                    );
+                    for arg in args {
+                        self.type_check_expr(arg, reachable);
+                    }
+                    return ExprEval::default();
+                }
                 self.record_ownership_call_site(expr.span, None);
                 // Receiver dispatch, including an inherent method, remains
                 // outside the unqualified direct-call ownership checkpoint.
