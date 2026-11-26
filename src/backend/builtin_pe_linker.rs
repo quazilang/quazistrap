@@ -33,6 +33,15 @@ mod tests {
     };
 
     #[test]
+    fn tls_imports_come_from_secur32_and_crypt32() {
+        assert_eq!(dll_for("InitializeSecurityContextA"), Some("SECUR32.dll"));
+        assert_eq!(dll_for("DecryptMessage"), Some("SECUR32.dll"));
+        assert_eq!(dll_for("CertGetCertificateChain"), Some("CRYPT32.dll"));
+        assert_eq!(dll_for("CryptStringToBinaryA"), Some("CRYPT32.dll"));
+        assert_eq!(dll_for("CreateFileA"), Some("KERNEL32.dll"));
+    }
+
+    #[test]
     fn links_minimal_coff_executable() {
         let mut object = Object::new(BinaryFormat::Coff, Architecture::X86_64, Endianness::Little);
         let text = object.add_section(Vec::new(), b".text".to_vec(), SectionKind::Text);
@@ -132,6 +141,36 @@ fn dll_for(symbol: &str) -> Option<&'static str> {
     }
     if matches!(symbol, "CommandLineToArgvW") {
         return Some("SHELL32.dll");
+    }
+    // Schannel (SSPI) and certificate verification used by std.tls.
+    if matches!(
+        symbol,
+        "AcquireCredentialsHandleA"
+            | "InitializeSecurityContextA"
+            | "DeleteSecurityContext"
+            | "FreeCredentialsHandle"
+            | "FreeContextBuffer"
+            | "QueryContextAttributesA"
+            | "EncryptMessage"
+            | "DecryptMessage"
+            | "ApplyControlToken"
+    ) {
+        return Some("SECUR32.dll");
+    }
+    if matches!(
+        symbol,
+        "CertOpenStore"
+            | "CertCloseStore"
+            | "CertAddEncodedCertificateToStore"
+            | "CertAddStoreToCollection"
+            | "CertGetCertificateChain"
+            | "CertFreeCertificateChain"
+            | "CertVerifyCertificateChainPolicy"
+            | "CertFreeCertificateContext"
+            | "CertFindCertificateInStore"
+            | "CryptStringToBinaryA"
+    ) {
+        return Some("CRYPT32.dll");
     }
     if matches!(
         symbol,
