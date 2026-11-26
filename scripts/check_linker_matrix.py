@@ -5,7 +5,9 @@ Every program is linked three ways and executed where that output runs:
 
 - Linux ELF from the built-in linker, run natively;
 - Linux ELF from the external GNU `ld` (when installed), run natively;
-- Windows PE32+ from the built-in linker, run under Wine (`--wine`).
+- Windows PE32+ from the built-in linker, run under Wine (`--wine`);
+- NetBSD ELF from the built-in NetBSD linker, run by `--netbsd-run CMD` (a
+  command prefix that runs a NetBSD executable, e.g. on a NetBSD machine).
 
 Standard output and exit status must be identical across the matrix. The
 programs are deterministic examples plus focused cases for arguments, exit
@@ -13,6 +15,7 @@ status, panics, heap traffic and threads.
 """
 
 import argparse
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -180,12 +183,14 @@ def normalize(stdout):
     return stdout.decode(errors="replace").replace("\r\n", "\n")
 
 
-def check(qz, wine, root):
+def check(qz, wine, root, netbsd_run=None):
     variants = [("linux-builtin", ["--target", "x86_64-linux", "--linker", "builtin"], None)]
     if shutil.which("ld"):
         variants.append(("linux-ld", ["--target", "x86_64-linux", "--linker", "ld"], None))
     if wine:
-        variants.append(("windows-builtin", ["--target", "x86_64-windows"], wine))
+        variants.append(("windows-builtin", ["--target", "x86_64-windows"], [str(wine)]))
+    if netbsd_run:
+        variants.append(("netbsd-builtin", ["--target", "x86_64-netbsd"], netbsd_run))
 
     cases = [(name, ROOT / "examples" / name, []) for name in EXAMPLES]
     for name, (source, arguments) in PROGRAMS.items():
@@ -200,12 +205,12 @@ def check(qz, wine, root):
     for name, project, arguments in cases:
         outcomes = {}
         for variant, flags, runner in variants:
-            suffix = ".exe" if runner else ""
+            suffix = ".exe" if variant.startswith("windows") else ""
             output = root / "out" / f"{name}-{variant}{suffix}"
             output.parent.mkdir(exist_ok=True)
             build(qz, project, output, flags)
-            command = ([str(runner)] if runner else []) + [str(output), *arguments]
-            result = run(command, project)
+            command = (runner or []) + [str(output), *arguments]
+            result = run(command, project, timeout=600 if runner else 120)
             outcomes[variant] = (result.returncode, normalize(result.stdout))
         reference = outcomes["linux-builtin"]
         for variant, outcome in outcomes.items():
@@ -224,9 +229,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
     parser.add_argument("--wine", type=Path, help="Wine executable for the Windows column")
+    parser.add_argument("--netbsd-run", help="command prefix that runs a NetBSD executable")
     args = parser.parse_args()
+    netbsd_run = shlex.split(args.netbsd_run) if args.netbsd_run else None
     with tempfile.TemporaryDirectory(prefix="quazi-linker-matrix-") as directory:
-        check(args.qz.resolve(), args.wine, Path(directory))
+        check(args.qz.resolve(), args.wine, Path(directory), netbsd_run)
 
 
 if __name__ == "__main__":
