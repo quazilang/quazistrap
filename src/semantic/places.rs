@@ -832,10 +832,21 @@ impl Places<'_> {
             let parameter_slot = slot_by_expression
                 .get(&(expr as *const Expr))
                 .copied()
-                .or_else(|| match (&site.dynamic, &role) {
-                    (Some(_), OwnershipArgumentRole::Receiver) => Some(0),
-                    (Some(_), OwnershipArgumentRole::Positional(index)) => Some(index + 1),
-                    _ => None,
+                .or_else(|| {
+                    // Only a closed call composes its targets' effects.
+                    let closed_dynamic = site.dynamic.as_ref().is_some_and(|(trait_name, method)| {
+                        self.analyzer.closed_dynamic_targets(trait_name, method).is_some()
+                    });
+                    let closed_value = site.function_value.as_ref().is_some_and(|ty| {
+                        self.analyzer.closed_function_value_targets(ty).is_some()
+                    });
+                    match &role {
+                        OwnershipArgumentRole::Receiver if closed_dynamic => Some(0),
+                        OwnershipArgumentRole::Positional(index) if closed_dynamic => Some(index + 1),
+                        // A call through a `fn` value: positional arguments only.
+                        OwnershipArgumentRole::Positional(index) if closed_value => Some(*index),
+                        _ => None,
+                    }
                 });
             let mut operand = expr;
             let mut groups = 0;

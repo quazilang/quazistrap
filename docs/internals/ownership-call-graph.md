@@ -80,6 +80,16 @@ arguments map to slots 0, 1, ... Composition takes the union of the
 implementations' effects. Otherwise the call stays an unmodeled
 `IndirectInvoke`.
 
+A call through a value of `fn` type (a parameter, local or loaded function
+value) is closed the same way in a closed program: its targets are the
+non-generic functions named as values anywhere (`address_taken_functions`)
+whose signature has exactly the callee's parameter and result types, and
+its positional arguments map to slots 0, 1, ... Unknown facts fail closed
+to an open call: a generic or unknown candidate, or any closure literal of
+the same arity (`closure_value_types`; closure bodies are deferred graphs,
+not callables). An empty target set is sound: no value of that type exists.
+`Type.method` named as a value has no lowering and is rejected (S06).
+
 Callee effects compose to a fixed point over resolved calls. Each caller
 instance composes the concrete specializations its own call sites resolved
 to, with argument places typed under its substitution; a call whose target or

@@ -1623,7 +1623,8 @@ fn apply(value: Option[i32], callback: fn(i32, i32) i32) Option[i32] {
     const total = callback(step(value)?, later());
     ret Some(total);
 }
-fn main() void {}
+// A closure of the callback type keeps calls through it open.
+fn main() void { const keep: fn(i32, i32) i32 = |a, b| a + b; }
 "#;
     let report = Analyzer::new().analyze_program(&parse(source));
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -2777,4 +2778,54 @@ pub fn poke(item: &dyn Bump!) void { item.bump(); }
         .and_then(|callable| callable.parameter_effects.clone())
         .unwrap();
     assert!(poke.unmodeled > 0, "{poke:?}");
+}
+
+#[test]
+fn closed_function_value_calls_compose_named_functions() {
+    // Every function named as a value with the callee's signature is a
+    // possible target; their effects compose.
+    let source = r#"
+struct Cell { value: i32 }
+fn bump(cell: &Cell!) void { cell.value = cell.value + 1; }
+fn keep(cell: &Cell!) void {}
+fn apply(action: fn(&Cell!) void, cell: &Cell!) void { action(cell); }
+fn main() void {
+    var cell = Cell { value: 1 };
+    apply(bump, &cell!);
+    apply(keep, &cell!);
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let apply = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .and_then(|callable| callable.parameter_effects.clone())
+        .unwrap();
+    assert!(apply.written_through_reference.contains(&1), "{apply:?}");
+    assert_eq!(apply.unmodeled, 0, "{apply:?}");
+    assert!(!apply.callee_unmodeled, "{apply:?}");
+}
+
+#[test]
+fn function_value_calls_stay_open_when_a_closure_may_flow() {
+    let source = r#"
+struct Cell { value: i32 }
+fn bump(cell: &Cell!) void { cell.value = cell.value + 1; }
+fn apply(action: fn(&Cell!) void, cell: &Cell!) void { action(cell); }
+fn main() void {
+    var cell = Cell { value: 1 };
+    apply(bump, &cell!);
+    apply(|c| bump(c), &cell!);
+}
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    let apply = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .and_then(|callable| callable.parameter_effects.clone())
+        .unwrap();
+    assert!(apply.unmodeled > 0, "{apply:?}");
 }

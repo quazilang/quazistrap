@@ -56,6 +56,9 @@ pub(super) struct SourceOwnershipCall {
     /// are every implementation of the method when the program is closed
     /// (`Analyzer::closed_dynamic_targets`).
     pub(super) dynamic: Option<(String, String)>,
+    /// A call through a value of this `fn` type (a local, parameter or field
+    /// holding a function): closed by `Analyzer::closed_function_value_targets`.
+    pub(super) function_value: Option<TypeKind>,
 }
 
 impl Analyzer {
@@ -176,6 +179,7 @@ impl Analyzer {
                     target,
                     arguments: None,
                     dynamic: None,
+                    function_value: None,
                 },
             );
         }
@@ -194,15 +198,81 @@ impl Analyzer {
         }
     }
 
-    /// The implementations a `dyn trait_name` call of `method` can reach, when
-    /// that set is closed: an executable whose every callable has a source
-    /// body (no QZI dependency could add implementations) and whose
-    /// implementing types are not generic (their specializations would be
-    /// separate targets). `None` keeps the call opaque.
-    pub(super) fn closed_dynamic_targets(&self, trait_name: &str, method: &str) -> Option<Vec<String>> {
-        let main = self.resolve_symbol("main")?;
-        if main.kind != SymbolKind::Function {
+    /// A call through a value of `fn` type `ty`.
+    pub(super) fn record_function_value_call_site(&mut self, span: Span, ty: TypeKind) {
+        self.record_ownership_call_site(span, None);
+        if let Some(site) = self
+            .current_function
+            .last()
+            .and_then(|caller| self.ownership_call_sites.get_mut(caller))
+            .and_then(|sites| sites.get_mut(&(span.start, span.end)))
+        {
+            site.function_value = Some(ty);
+        }
+    }
+
+    /// The functions a call through a `fn` value of type `ty` can reach, when
+    /// that set is closed: a closed program (see `closed_dynamic_targets`)
+    /// where no closure literal has a type of the same shape and every
+    /// function named as a value with exactly this signature is a
+    /// non-generic source function. `None` keeps the call opaque.
+    pub(super) fn closed_function_value_targets(&self, ty: &TypeKind) -> Option<Vec<String>> {
+        if !self.is_closed_program() {
             return None;
+        }
+        let TypeKind::Fn { params, return_ty } = self.resolve_type_aliases(ty) else {
+            return None;
+        };
+        let same_shape = |candidate: &TypeKind| match self.resolve_type_aliases(candidate) {
+            TypeKind::Fn { params: other, .. } => other.len() == params.len(),
+            _ => true,
+        };
+        if self.closure_value_types.iter().any(same_shape) {
+            return None;
+        }
+        let shape = |ty: &TypeKind| canonical_ownership_type(&self.resolve_type_aliases(ty));
+        let wanted: Vec<String> = params.iter().map(|param| shape(&param.node)).collect();
+        let wanted_return = shape(&return_ty.node);
+        let mut targets = Vec::new();
+        // Unknown facts fail closed (`None`): skipping a candidate would make
+        // the target set too small, and the composed effects unsound.
+        for name in &self.address_taken_functions {
+            let symbol = self.resolve_symbol(name)?;
+            if symbol.kind != SymbolKind::Function {
+                return None;
+            }
+            if symbol.params.len() != wanted.len() || symbol.variadic {
+                continue;
+            }
+            if !symbol.generic_params.is_empty() {
+                return None;
+            }
+            let actual_return = symbol.ty.clone().unwrap_or(TypeKind::Void);
+            let matches = symbol
+                .params
+                .iter()
+                .zip(&wanted)
+                .all(|(actual, wanted)| shape(actual) == *wanted)
+                && shape(&actual_return) == wanted_return;
+            if !matches {
+                continue;
+            }
+            match self.ownership_signature_index.get(name) {
+                Some(signature) if signature.has_body => targets.push(name.clone()),
+                _ => return None,
+            }
+        }
+        Some(targets)
+    }
+
+    /// An executable whose every callable has a source body: no QZI
+    /// dependency can add callables the analysis does not see.
+    pub(super) fn is_closed_program(&self) -> bool {
+        let Some(main) = self.resolve_symbol("main") else {
+            return false;
+        };
+        if main.kind != SymbolKind::Function {
+            return false;
         }
         let foreign = |name: &str| {
             self.resolve_symbol(name).is_some_and(|symbol| {
@@ -211,11 +281,19 @@ impl Analyzer {
                 })
             })
         };
-        if self
+        !self
             .ownership_signature_index
             .iter()
             .any(|(name, signature)| !signature.has_body && !foreign(name))
-        {
+    }
+
+    /// The implementations a `dyn trait_name` call of `method` can reach, when
+    /// that set is closed: an executable whose every callable has a source
+    /// body (no QZI dependency could add implementations) and whose
+    /// implementing types are not generic (their specializations would be
+    /// separate targets). `None` keeps the call opaque.
+    pub(super) fn closed_dynamic_targets(&self, trait_name: &str, method: &str) -> Option<Vec<String>> {
+        if !self.is_closed_program() {
             return None;
         }
         let short = trait_name.rsplit('.').next().unwrap_or(trait_name);
@@ -469,8 +547,15 @@ impl Analyzer {
                         } else {
                             OwnershipCallTarget::Unresolved(target_id)
                         }
-                    } else if let Some((trait_name, method)) = &site.dynamic
-                        && let Some(names) = self.closed_dynamic_targets(trait_name, method)
+                    } else if let Some(names) = site
+                        .dynamic
+                        .as_ref()
+                        .and_then(|(trait_name, method)| self.closed_dynamic_targets(trait_name, method))
+                        .or_else(|| {
+                            site.function_value
+                                .as_ref()
+                                .and_then(|ty| self.closed_function_value_targets(ty))
+                        })
                     {
                         let mut ids = Vec::new();
                         let mut complete = true;

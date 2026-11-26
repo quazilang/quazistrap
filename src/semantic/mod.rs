@@ -286,6 +286,13 @@ pub struct Analyzer {
     /// their type parameters: function → (parameter, trait). Each concrete
     /// specialization needs that type's vtable methods.
     pub(super) generic_dyn_vtables: HashMap<String, BTreeSet<(String, String)>>,
+    /// Functions named as values (`const f = helper;`, `apply(helper)`):
+    /// the possible targets of calls through `fn` values in a closed program.
+    /// Callees named in direct calls may be included too (a superset).
+    pub(super) address_taken_functions: BTreeSet<String>,
+    /// Types of closure literals: a call through a `fn` value of such a type
+    /// may run a closure body, which is not a separate callable.
+    pub(super) closure_value_types: Vec<TypeKind>,
     /// Methods called on bounded parameters: function -> (parameter, method).
     pub(super) bound_method_calls: HashMap<String, Vec<(String, String)>>,
     /// Spans of bounded calls whose trait method takes `self` by value; the
@@ -2688,6 +2695,8 @@ impl Analyzer {
             checking_call_argument: false,
             borrowed_dyn_arguments: Vec::new(),
             generic_dyn_vtables: HashMap::new(),
+            address_taken_functions: BTreeSet::new(),
+            closure_value_types: Vec::new(),
             bound_method_calls: HashMap::new(),
             consuming_bound_calls: std::collections::HashSet::new(),
             bounded_trait_calls: std::collections::HashSet::new(),
@@ -3582,6 +3591,8 @@ impl Analyzer {
         self.generic_trait_impls.clear();
         self.generic_bounds.clear();
         self.generic_dyn_vtables.clear();
+        self.address_taken_functions.clear();
+        self.closure_value_types.clear();
         self.borrowed_dyn_arguments.clear();
         self.checking_call_argument = false;
         self.bound_method_calls.clear();

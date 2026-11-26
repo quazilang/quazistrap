@@ -2992,6 +2992,23 @@ impl Analyzer {
         reachable: bool,
         expected: Option<&TypeKind>,
     ) -> ExprEval {
+        let eval = self.type_check_closure_expr_inner(expr, params, body, reachable, expected);
+        // A call through a `fn` value of this shape may run this body
+        // (`closed_function_value_targets`); an untyped literal counts for
+        // every shape.
+        self.closure_value_types
+            .push(eval.ty.clone().unwrap_or(TypeKind::Error));
+        eval
+    }
+
+    fn type_check_closure_expr_inner(
+        &mut self,
+        expr: &Expr,
+        params: &[String],
+        body: &Expr,
+        reachable: bool,
+        expected: Option<&TypeKind>,
+    ) -> ExprEval {
         let once = matches!(expr.node, ExprKind::Closure { once: true, .. });
         let mut captured_names = Vec::new();
         collect_expr_identifiers(body, &mut captured_names);
@@ -3201,6 +3218,7 @@ impl Analyzer {
 
     pub(super) fn type_check_expr(&mut self, expr: &Expr, reachable: bool) -> ExprEval {
         let result = self.type_check_expr_inner(expr, reachable);
+        self.record_function_value_facts(expr, &result);
         // `p.field` / `p[i]` on a raw pointer were never lowered through the
         // pointer (a read returned garbage, a write crashed): require `*`.
         if let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &expr.node
@@ -9234,6 +9252,61 @@ impl Analyzer {
                     && (bound == trait_name
                         || bound.rsplit('.').next() == trait_name.rsplit('.').next())
             })
+    }
+
+    /// Facts for closing calls through `fn` values (D-014): functions named
+    /// as values, closure literal types, and calls whose callee is a value.
+    fn record_function_value_facts(&mut self, expr: &Expr, result: &ExprEval) {
+        let fn_typed = |ty: Option<&TypeKind>, analyzer: &Self| {
+            ty.map(|ty| analyzer.resolve_type_aliases(ty))
+                .filter(|ty| matches!(ty, TypeKind::Fn { .. }))
+        };
+        // `Type.method` named as a value has no lowering (codegen failed with
+        // an internal error); reject it with a source fix instead.
+        if let ExprKind::Field { object, name } = &expr.node
+            && let ExprKind::Ident(type_name) = &object.node
+            && self
+                .resolve_symbol(type_name)
+                .is_some_and(|symbol| symbol.kind == SymbolKind::TypeName)
+            && self
+                .resolve_symbol(&format!("{type_name}.{name}"))
+                .is_some_and(|symbol| symbol.kind == SymbolKind::Function)
+        {
+            self.push_error(
+                expr.span,
+                "S06",
+                format!(
+                    "a method cannot be used as a function value yet; wrap it in a closure: `|value| {type_name}.{name}(value)`"
+                ),
+            );
+            return;
+        }
+        match &expr.node {
+            ExprKind::Ident(_) | ExprKind::Field { .. } => {
+                if fn_typed(result.ty.as_ref(), self).is_some()
+                    && let Some(name) = self
+                        .annotated_exprs
+                        .iter()
+                        .rev()
+                        .find(|annotation| annotation.span == expr.span)
+                        .and_then(|annotation| annotation.resolved_fn.clone())
+                {
+                    self.address_taken_functions.insert(name);
+                }
+            }
+            ExprKind::Call { callee, .. } => {
+                let callee_ty = self
+                    .annotated_exprs
+                    .iter()
+                    .rev()
+                    .find(|annotation| annotation.span == callee.span)
+                    .and_then(|annotation| annotation.ty.clone());
+                if let Some(ty) = fn_typed(callee_ty.as_ref(), self) {
+                    self.record_function_value_call_site(expr.span, ty);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `check_expr_compat` for a call argument (see `checking_call_argument`).

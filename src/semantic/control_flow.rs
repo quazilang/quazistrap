@@ -1429,14 +1429,17 @@ where
             &expression.node,
             ExprKind::Call { callee, .. } if self.closed_closure_call(callee)
         );
-        let dynamic_closed = matches!(&expression.node, ExprKind::MethodCall { .. })
-            && self
-                .sites
-                .and_then(|sites| sites.get(&(span.start, span.end)))
-                .and_then(|site| site.dynamic.as_ref())
-                .is_some_and(|(trait_name, method)| {
-                    self.analyzer.closed_dynamic_targets(trait_name, method).is_some()
-                });
+        let site = self.sites.and_then(|sites| sites.get(&(span.start, span.end)));
+        let dynamic_closed = site.is_some_and(|site| {
+            site.dynamic.as_ref().is_some_and(|(trait_name, method)| {
+                matches!(&expression.node, ExprKind::MethodCall { .. })
+                    && self.analyzer.closed_dynamic_targets(trait_name, method).is_some()
+            }) || site.function_value.as_ref().is_some_and(|ty| {
+                !closed
+                    && matches!(&expression.node, ExprKind::Call { .. })
+                    && self.analyzer.closed_function_value_targets(ty).is_some()
+            })
+        });
         let invocation = self.block(scopes, span)?;
         self.graph.blocks[invocation].events.push(if closed {
             OwnershipFlowEvent::ClosureInvoke { span }

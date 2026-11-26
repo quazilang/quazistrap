@@ -299,7 +299,7 @@ fn argument_places_classify_foreign_global_storage_and_indirect_actuals() {
 @api("counter") var external: i32;
 fn observe(x: i32) void {}
 fn indirect(callback: fn(i32) void, value: i32) void { callback(value); }
-fn main() void { unsafe { observe(external); } }
+fn main() void { unsafe { observe(external); } const keep: fn(i32) void = |x| observe(x); }
 "#;
     let report = analyze(source);
     let global = &place(&arguments(&report, source, "main", "observe(external)").actuals[0]).root;
