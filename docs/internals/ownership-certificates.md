@@ -29,7 +29,7 @@ These map onto D-014's required summary contents as follows:
 |---|---|---|
 | 1. capabilities, reads, writes, consumption, destruction | signature capabilities; `read`/`written`/`moved`/`borrowed` | destruction of overwritten values and drop effects |
 | 2. result ownership and reference provenance | `returned`/`returned_borrow` (direct and through returned calls) | provenance through other expressions (result retention covers parameter roots) |
-| 3. escape edges | `ret`, closure captures, global writes | aggregate/heap storage of parameter-derived references, foreign and task boundaries |
+| 3. escape edges | `ret`, closure captures, global writes | safe code cannot store a reference in a struct field, enum payload, generic argument, owned local aggregate or closure capture (S10; `safe_code_cannot_store_references_beyond_a_call`), so the remaining channels are raw pointers in `unsafe` code, `str` views (result retention) and foreign/task boundaries |
 | 4. closed indirect targets, transitive export effect | `unmodeled`, `callee_unmodeled`, composition | closing indirect/trait targets |
 | 5. exported type layout, move and drop facts | existing QZI interface layout | move/drop facts per exported type |
 

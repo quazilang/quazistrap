@@ -227,3 +227,7 @@ Decided 2026-11-26: [`*T` reads, `*T!` reads and writes; only literal 0 is a poi
 ## D-028: a `free` hook, then the remaining fields
 
 Decided 2026-11-26: [the compiler destroys the fields a `free` hook leaves; the type's own by-value methods may move fields out, which skips the hook](drop-hook-fields.md).
+
+## D-029: maintainer answers of 2026-11-26
+
+Decided 2026-11-26: [single-owner sockets, Schannel TLS on Windows, OS-thread lifecycle kept, borrowed and generic trait objects, unified std API](maintainer-answers-2026-11-26.md).

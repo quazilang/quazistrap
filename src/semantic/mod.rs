@@ -10433,6 +10433,25 @@ fn main() i32 {
     }
 
     #[test]
+    fn safe_code_cannot_store_references_beyond_a_call() {
+        // D-014 parameter summaries track `ret` and captures but not stores:
+        // they rely on safe code having no other place a reference can go.
+        for (source, message) in [
+            (r#"struct Holder { r: &i32 } fn main() void {}"#, "cannot store a shared reference"),
+            (r#"struct Holder { r: &i32! } fn main() void {}"#, "cannot store a shared reference"),
+            (r#"enum Slot { Some(&i32), None } fn main() void {}"#, "cannot store a shared reference"),
+            (r#"fn keep(v: &i32) void { var items: Array[&i32] = Array.new(); } fn main() void {}"#, "cannot own a value containing shared references"),
+        ] {
+            let report = analyze(source);
+            assert!(
+                report.errors.iter().any(|error| error.code == "S10" && error.message.contains(message)),
+                "{source}: {:?}",
+                report.errors
+            );
+        }
+    }
+
+    #[test]
     fn trait_qualified_method_calls_are_reported() {
         // `Trait.method(value)` crashed codegen ("no register is bound").
         let report = analyze(
