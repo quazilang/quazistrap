@@ -9030,21 +9030,8 @@ impl<'a> FnCompiler<'a> {
             .map(|panic| panic.resolved.clone())
             .filter(|name| self.fn_index.contains_key(name));
         if let Some(panic_name) = panic_name.as_deref() {
-            let message_idx = self
-                .chunk
-                .add_constant(ConstPoolEntry::Str(message.to_string()));
-            let message_reg = self.alloc_reg();
-            self.chunk
-                .emit(ri16(Opcode::MovConst, message_reg, message_idx));
-
-            let file_idx = self
-                .chunk
-                .add_constant(ConstPoolEntry::Str(source_file_for_span(
-                    span,
-                    self.source_files,
-                )));
-            let file_reg = self.alloc_reg();
-            self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
+            let message_reg = self.emit_str_constant(message.to_string());
+            let file_reg = self.emit_str_constant(source_file_for_span(span, self.source_files));
 
             let line = self
                 .source_files
@@ -9252,12 +9239,7 @@ impl<'a> FnCompiler<'a> {
                 if index == 0
                     && let Some(expanded) = &expanded
                 {
-                    let constant = self
-                        .chunk
-                        .add_constant(ConstPoolEntry::Str(expanded.clean_template.clone()));
-                    let reg = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovConst, reg, constant));
-                    return reg;
+                    return self.emit_str_constant(expanded.clean_template.clone());
                 }
                 if self.str_variadic_fns.contains(name)
                     && self.format_fixed_parameter_is_view(name, index)
@@ -9428,9 +9410,7 @@ impl<'a> FnCompiler<'a> {
         } else {
             expanded.clean_template
         };
-        let constant = self.chunk.add_constant(ConstPoolEntry::Str(template));
-        let template_reg = self.alloc_reg();
-        self.chunk.emit(ri16(Opcode::MovConst, template_reg, constant));
+        let template_reg = self.emit_str_constant(template);
         let _ = span;
         self.begin_format_scratch(true);
         let arguments = self.compile_format_arguments(&expanded.args, &expanded.specs);
@@ -10825,9 +10805,7 @@ impl<'a> FnCompiler<'a> {
                         let mut call_regs: Vec<u8> = vec![message];
                         // Inject file path string constant.
                         let file_path = source_file_for_span(expr.span, self.source_files);
-                        let file_idx = self.chunk.add_constant(ConstPoolEntry::Str(file_path));
-                        let file_reg = self.alloc_reg();
-                        self.chunk.emit(ri16(Opcode::MovConst, file_reg, file_idx));
+                        let file_reg = self.emit_str_constant(file_path);
                         call_regs.push(file_reg);
                         // Inject line number as integer constant (relative to source file).
                         let line = self
@@ -10899,9 +10877,7 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 expanded.clean_template
                             };
-                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
-                            let template_reg = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
+                            let template_reg = self.emit_str_constant(template);
 
                             // The function formats its template itself (D-024):
                             // it receives the template and each value's text.
@@ -11118,9 +11094,7 @@ impl<'a> FnCompiler<'a> {
                             } else {
                                 expanded.clean_template
                             };
-                            let idx = self.chunk.add_constant(ConstPoolEntry::Str(template));
-                            let template_reg = self.alloc_reg();
-                            self.chunk.emit(ri16(Opcode::MovConst, template_reg, idx));
+                            let template_reg = self.emit_str_constant(template);
 
                             // A variadic intrinsic receives the views themselves and
                             // may return one of them, so its digits stay static.
@@ -12461,6 +12435,37 @@ impl<'a> FnCompiler<'a> {
         self.emit_literal(&Literal::String(plain))
     }
 
+    /// Register slots of a `str` value (D-030: `{ptr, len}` once flipped).
+    fn str_slots(&self) -> usize {
+        crate::runtime_layout::runtime_value_layout(&TypeKind::Str)
+            .slot_count()
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// A `str` value for constant `text`: its address and, when `str` is
+    /// fat, its byte length (D-030).
+    fn emit_str_constant(&mut self, text: String) -> u8 {
+        let length = text.len() as u64;
+        let dst = self.reserve_reg_block(self.str_slots());
+        let idx = self.chunk.add_constant(ConstPoolEntry::Str(text));
+        self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+        if self.str_slots() > 1 {
+            self.emit_u64_into(dst + 1, length);
+        }
+        dst
+    }
+
+    /// Load constant `value` into `dst`.
+    fn emit_u64_into(&mut self, dst: u8, value: u64) {
+        if value <= u16::MAX as u64 {
+            self.chunk.emit(ri16(Opcode::MovI, dst, value as u16));
+        } else {
+            let idx = self.chunk.add_constant(ConstPoolEntry::Int(value as i64));
+            self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+        }
+    }
+
     fn emit_literal(&mut self, lit: &Literal) -> u8 {
         let dst = self.alloc_reg();
         match lit {
@@ -12476,8 +12481,8 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
             }
             Literal::String(s) => {
-                let idx = self.chunk.add_constant(ConstPoolEntry::Str(s.clone()));
-                self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+                // A `str` may be wider than the slot allocated above.
+                return self.emit_str_constant(s.clone());
             }
             Literal::Bytes(bytes) => {
                 let idx = self
@@ -12507,8 +12512,7 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
             }
             ConstValue::String(s) => {
-                let idx = self.chunk.add_constant(ConstPoolEntry::Str(s));
-                self.chunk.emit(ri16(Opcode::MovConst, dst, idx));
+                return self.emit_str_constant(s);
             }
             ConstValue::Bool(b) => {
                 self.chunk.emit(ri16(Opcode::MovI, dst, b as u16));
