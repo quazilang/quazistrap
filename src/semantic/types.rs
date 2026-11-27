@@ -435,13 +435,21 @@ pub enum OwnershipCallTarget {
     /// A `dyn Trait` or `fn`-value call in a closed program: it reaches one
     /// of these implementations, so its effects are their union. A closure
     /// literal that may flow to a `fn` value is not a callable; its body is
-    /// summarized in its creator, listed in `closure_creators`, whose global
-    /// writes and unmodeled effects the call inherits (only plain-scalar
-    /// closure signatures qualify, so arguments carry no effects back).
+    /// a deferred graph of its creator. The call inherits the creator's
+    /// global writes and unmodeled effects, and the closure's writes through
+    /// its reference parameters (`OwnershipCallable::closure_writes`).
     Closed {
         callees: Vec<OwnershipCallableId>,
-        closure_creators: Vec<OwnershipCallableId>,
+        closures: Vec<OwnershipClosureTarget>,
     },
+}
+
+/// A closure literal (identified by its source span) reachable through a
+/// `fn` value, and the callable whose body creates it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OwnershipClosureTarget {
+    pub creator: OwnershipCallableId,
+    pub span: (usize, usize),
 }
 
 /// Lexical spelling order is independent of declared parameter slot order.
@@ -558,6 +566,10 @@ pub struct OwnershipCallable {
     pub control_flow: Option<std::sync::Arc<super::OwnershipControlFlow>>,
     /// Source parameter effects collected from `control_flow`.
     pub parameter_effects: Option<super::OwnershipParameterEffects>,
+    /// For each closure literal this callable creates (by source span): its
+    /// parameter positions written through a reference, by its body or a
+    /// callee it passes them to.
+    pub closure_writes: std::collections::BTreeMap<(usize, usize), std::collections::BTreeSet<usize>>,
     /// Closure of the recorded source calls only. This neither verifies runtime
     /// cleanup/implicit calls nor proves provenance, escapes, or a QZI artifact.
     pub source_calls_closed: bool,

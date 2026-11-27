@@ -439,9 +439,10 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   calls in closed programs compose every implementation's effects,
   `OwnershipCallTarget::Closed`; calls through function values and callbacks
   close over the functions named as values with the same signature; since
-  2026-11-27 plain-scalar closure literals of that signature close them over
-  their creators' summaries; closures with reference or owned signatures,
-  generic creators and open programs keep such calls open).
+  2026-11-27 closure literals of that signature with a scalar or `void`
+  result close them over their creators' summaries plus per-closure
+  parameter writes; closures with owned or reference results, generic
+  creators and open programs keep such calls open).
 - [ ] Verified QZI-only ownership certificates.
 - [x] Complete structural destruction including generic/enum/scalar shells
   (2026-11-17: enum payload drop glue, recursive enums and structs through

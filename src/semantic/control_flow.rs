@@ -486,6 +486,46 @@ pub struct OwnershipParameterEffects {
 }
 
 impl OwnershipControlFlow {
+    /// Writes through a reference parameter of a closure literal in this
+    /// graph or its deferred graphs: closure span -> parameter positions.
+    /// `closure_parameters` names each closure's parameters by span.
+    pub fn closure_parameter_writes(
+        &self,
+        closure_parameters: &std::collections::BTreeMap<(usize, usize), &Vec<String>>,
+    ) -> std::collections::BTreeMap<(usize, usize), BTreeSet<usize>> {
+        let mut writes = std::collections::BTreeMap::<(usize, usize), BTreeSet<usize>>::new();
+        let mut pending: Vec<&OwnershipControlFlow> = vec![self];
+        while let Some(graph) = pending.pop() {
+            pending.extend(graph.deferred.iter().map(|deferred| deferred.graph.as_ref()));
+            for event in graph.blocks.iter().flat_map(|block| block.events.iter()) {
+                let OwnershipFlowEvent::PlaceAccess {
+                    access: OwnershipPlaceAccess::Write,
+                    place: OwnershipArgumentValue::Place(place),
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                if !matches!(place.root.storage, super::OwnershipPlaceStorage::ClosureParameter)
+                    || !place.projections.iter().any(|projection| {
+                        matches!(projection, super::OwnershipProjection::Deref { .. })
+                    })
+                {
+                    continue;
+                }
+                let binding = &place.root.binding;
+                let key = (binding.span.start, binding.span.end);
+                if let Some(index) = closure_parameters
+                    .get(&key)
+                    .and_then(|params| params.iter().position(|name| *name == binding.name))
+                {
+                    writes.entry(key).or_default().insert(index);
+                }
+            }
+        }
+        writes
+    }
+
     /// Collect parameter effects from this graph and its deferred graphs.
     pub fn parameter_effects(&self) -> OwnershipParameterEffects {
         let mut effects = OwnershipParameterEffects::default();

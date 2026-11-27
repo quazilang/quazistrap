@@ -64,7 +64,17 @@ pub(super) struct SourceOwnershipCall {
 /// The targets of a closed indirect call (`OwnershipCallTarget::Closed`).
 pub(super) struct ClosedTargets {
     pub(super) callees: Vec<String>,
-    pub(super) closure_creators: Vec<String>,
+    /// Closure literals: creator and source span.
+    pub(super) closures: Vec<(String, (usize, usize))>,
+}
+
+/// A closure literal seen by the type checker.
+pub(super) struct ClosureValue {
+    pub(super) ty: TypeKind,
+    /// The source callable whose body creates it.
+    pub(super) creator: Option<String>,
+    pub(super) span: (usize, usize),
+    pub(super) params: Vec<String>,
 }
 
 impl Analyzer {
@@ -245,8 +255,9 @@ impl Analyzer {
         let shape = |ty: &TypeKind| canonical_ownership_type(&self.resolve_type_aliases(ty));
         let wanted: Vec<String> = params.iter().map(|param| shape(&param.node)).collect();
         let wanted_return = shape(&return_ty.node);
-        let mut closure_creators = Vec::new();
-        for (closure_ty, creator) in &self.closure_values {
+        let mut closures = Vec::new();
+        for closure in &self.closure_values {
+            let (closure_ty, creator) = (&closure.ty, &closure.creator);
             let TypeKind::Fn {
                 params: closure_params,
                 return_ty: closure_return,
@@ -265,12 +276,11 @@ impl Analyzer {
             if !same_signature {
                 continue;
             }
-            // Plain-scalar arguments and results are copies: the body can
-            // neither write through them nor hand them back as borrows.
-            let scalar = |ty: &TypeKind| super::control_flow::is_plain_scalar(&self.resolve_type_aliases(ty));
+            // A plain-scalar (or void) result cannot hand an argument back;
+            // writes through reference parameters are tracked per closure.
             let return_ty = self.resolve_type_aliases(&closure_return.node);
-            if !closure_params.iter().all(|param| scalar(&param.node))
-                || !(scalar(&return_ty) || matches!(return_ty, TypeKind::Void))
+            if !(super::control_flow::is_plain_scalar(&return_ty)
+                || matches!(return_ty, TypeKind::Void))
             {
                 return None;
             }
@@ -284,9 +294,7 @@ impl Analyzer {
             }
             match self.ownership_signature_index.get(creator) {
                 Some(signature) if signature.has_body => {
-                    if !closure_creators.contains(creator) {
-                        closure_creators.push(creator.clone());
-                    }
+                    closures.push((creator.clone(), closure.span));
                 }
                 _ => return None,
             }
@@ -322,7 +330,7 @@ impl Analyzer {
         }
         Some(ClosedTargets {
             callees: targets,
-            closure_creators,
+            closures,
         })
     }
 
@@ -638,7 +646,7 @@ impl Analyzer {
                         .and_then(|(trait_name, method)| self.closed_dynamic_targets(trait_name, method))
                         .map(|callees| ClosedTargets {
                             callees,
-                            closure_creators: Vec::new(),
+                            closures: Vec::new(),
                         })
                         .or_else(|| {
                             site.function_value
@@ -664,12 +672,18 @@ impl Analyzer {
                             ids
                         };
                         let callees = schedule(&closed.callees);
-                        let closure_creators = schedule(&closed.closure_creators);
+                        let creators: Vec<String> =
+                            closed.closures.iter().map(|(creator, _)| creator.clone()).collect();
+                        let closures = schedule(&creators)
+                            .into_iter()
+                            .zip(&closed.closures)
+                            .map(|(creator, (_, span))| OwnershipClosureTarget {
+                                creator,
+                                span: *span,
+                            })
+                            .collect();
                         if complete {
-                            OwnershipCallTarget::Closed {
-                                callees,
-                                closure_creators,
-                            }
+                            OwnershipCallTarget::Closed { callees, closures }
                         } else {
                             OwnershipCallTarget::Opaque
                         }
@@ -713,6 +727,7 @@ impl Analyzer {
                     calls,
                     control_flow: None,
                     parameter_effects: None,
+                    closure_writes: Default::default(),
                     source_calls_closed: false,
                 },
             );

@@ -2812,14 +2812,16 @@ fn main() void {
 
 #[test]
 fn function_value_calls_stay_open_when_a_closure_may_flow() {
+    // A closure returning an owned value could hand its argument back; such
+    // closures keep calls through values of their type open.
     let source = r#"
 struct Cell { value: i32 }
-fn bump(cell: &Cell!) void { cell.value = cell.value + 1; }
-fn apply(action: fn(&Cell!) void, cell: &Cell!) void { action(cell); }
+fn bump(cell: &Cell!) Cell { cell.value = cell.value + 1; ret Cell { value: 0 }; }
+fn apply(action: fn(&Cell!) Cell, cell: &Cell!) Cell { ret action(cell); }
 fn main() void {
     var cell = Cell { value: 1 };
-    apply(bump, &cell!);
-    apply(|c| bump(c), &cell!);
+    const a = apply(bump, &cell!);
+    const b = apply(|c| bump(c), &cell!);
 }
 "#;
     let report = Analyzer::new().analyze_program(&parse(source));
@@ -2861,9 +2863,9 @@ fn main() void {
     assert!(
         apply.calls.iter().any(|site| matches!(
             &site.target,
-            OwnershipCallTarget::Closed { callees, closure_creators }
+            OwnershipCallTarget::Closed { callees, closures }
                 if callees.iter().any(|id| id.callable == "twice")
-                    && closure_creators.iter().any(|id| id.callable == "main")
+                    && closures.iter().any(|closure| closure.creator.callable == "main")
         )),
         "{:?}",
         apply.calls.iter().map(|site| &site.target).collect::<Vec<_>>()
@@ -2871,26 +2873,56 @@ fn main() void {
 }
 
 #[test]
-fn closures_with_reference_signatures_keep_function_value_calls_open() {
-    // A closure taking a reference could write through its argument, which
-    // its creator's summary does not attribute to the caller.
+fn closure_pointer_parameter_writes_are_summarized_per_closure() {
+    // Closure parameters are plain copies or raw pointers (references are
+    // S10). A closure passing its `*T!` parameter to a writing callee writes
+    // through that parameter: the creator records it per closure, and the
+    // call through the `fn` value is closed and modeled.
     let source = r#"
 struct Cell { value: i32 }
-fn set(cell: &Cell!) void { cell.value = 2; }
-fn apply(action: fn(&Cell!) void, cell: &Cell!) void { action(cell); }
+unsafe fn set(cell: *Cell!) void { (*cell).value = 2; }
+unsafe fn peek(cell: *Cell!) void { }
+unsafe fn apply(action: fn(*Cell!) void, cell: *Cell!) void { action(cell); }
 fn main() void {
     var cell = Cell { value: 1 };
-    apply(|c| set(c), &cell!);
+    unsafe {
+        apply(|c| set(c), &cell!);
+        apply(|c| peek(c), &cell!);
+    }
 }
 "#;
     let report = Analyzer::new().analyze_program(&parse(source));
-    let apply = report
-        .ownership_call_graph
-        .iter()
-        .find(|callable| callable.id.callable == "apply")
-        .and_then(|callable| callable.parameter_effects.clone())
-        .unwrap();
-    assert!(apply.unmodeled > 0, "{apply:?}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let node = |name: &str| {
+        report
+            .ownership_call_graph
+            .iter()
+            .find(|callable| callable.id.callable == name)
+            .unwrap()
+    };
+    let writer = source.find("|c| set").unwrap();
+    let reader = source.find("|c| peek").unwrap();
+    let writes = &node("main").closure_writes;
+    assert!(
+        writes.iter().any(|((start, _), slots)| *start == writer && slots.contains(&0)),
+        "{writes:?}"
+    );
+    assert!(
+        !writes.iter().any(|((start, _), slots)| *start == reader && !slots.is_empty()),
+        "{writes:?}"
+    );
+    let apply = node("apply");
+    let effects = apply.parameter_effects.clone().unwrap();
+    assert_eq!(effects.unmodeled, 0, "{effects:?}");
+    assert!(!effects.callee_unmodeled, "{effects:?}");
+    assert!(
+        apply.calls.iter().any(|site| matches!(
+            &site.target,
+            OwnershipCallTarget::Closed { closures, .. } if closures.len() == 2
+        )),
+        "{:?}",
+        apply.calls.iter().map(|site| &site.target).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -2915,4 +2947,25 @@ fn main() void { const a = apply_g(record, 1); }
         let effects = callable.parameter_effects.clone().unwrap();
         assert!(effects.unmodeled > 0 || effects.writes_globals, "{effects:?}");
     }
+}
+
+#[test]
+fn raw_pointer_argument_writes_compose_into_callers() {
+    // A callee writing through a `*T!` it was passed changes memory the
+    // caller's own pointer parameter reaches.
+    let source = r#"
+struct Cell { value: i32 }
+unsafe fn set(cell: *Cell!) void { (*cell).value = 2; }
+unsafe fn relay(cell: *Cell!) void { set(cell); }
+fn main() void { var cell = Cell { value: 1 }; unsafe { relay(&cell!); } }
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let relay = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "relay")
+        .and_then(|callable| callable.parameter_effects.clone())
+        .unwrap();
+    assert!(relay.written_through_reference.contains(&0), "{relay:?}");
 }

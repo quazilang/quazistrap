@@ -293,7 +293,7 @@ pub struct Analyzer {
     /// Closure literals: their type, and the source callable whose body
     /// creates them (its summary includes the closure body's effects). A call
     /// through a `fn` value of such a type may run that closure body.
-    pub(super) closure_values: Vec<(TypeKind, Option<String>)>,
+    pub(super) closure_values: Vec<ownership::ClosureValue>,
     /// Methods called on bounded parameters: function -> (parameter, method).
     pub(super) bound_method_calls: HashMap<String, Vec<(String, String)>>,
     /// Spans of bounded calls whose trait method takes `self` by value; the
@@ -2760,6 +2760,11 @@ impl Analyzer {
             .enumerate()
             .map(|(index, callable)| (callable.id.clone(), index))
             .collect();
+        let closure_parameters: std::collections::BTreeMap<(usize, usize), &Vec<String>> = self
+            .closure_values
+            .iter()
+            .map(|closure| (closure.span, &closure.params))
+            .collect();
         // Every round only adds facts to finite per-callable sets, so the
         // iteration reaches a fixed point; recursion through permuted
         // arguments may take one round per parameter slot.
@@ -2777,31 +2782,40 @@ impl Analyzer {
                     .unwrap_or(&no_returns);
                 let mut callee_unmodeled = false;
                 let mut callee_writes_globals = false;
+                let mut closure_inherited: Vec<((usize, usize), usize)> = Vec::new();
                 for site in &graph[caller].calls {
-                    let callees: Vec<Option<usize>> = match &site.target {
-                        OwnershipCallTarget::Direct(id) => vec![by_id.get(id).copied()],
-                        // A closed call composes every implementation; a
-                        // closure creator contributes only what does not
-                        // depend on arguments.
-                        OwnershipCallTarget::Closed {
-                            callees,
-                            closure_creators,
-                        } => {
-                            for creator in closure_creators {
-                                match by_id
-                                    .get(creator)
-                                    .and_then(|index| graph[*index].parameter_effects.as_ref())
-                                {
-                                    Some(effects) => {
-                                        callee_unmodeled |=
-                                            effects.unmodeled > 0 || effects.callee_unmodeled;
-                                        callee_writes_globals |= effects.writes_globals;
-                                    }
-                                    None => callee_unmodeled = true,
-                                }
-                            }
-                            callees.iter().map(|id| by_id.get(id).copied()).collect()
+                    let callees: Vec<Option<OwnershipParameterEffects>> = match &site.target {
+                        OwnershipCallTarget::Direct(id) => {
+                            vec![by_id
+                                .get(id)
+                                .and_then(|index| graph[*index].parameter_effects.clone())]
                         }
+                        // A closed call composes every implementation. A
+                        // closure target writes through its own reference
+                        // parameters and inherits its creator's flags.
+                        OwnershipCallTarget::Closed { callees, closures } => callees
+                            .iter()
+                            .map(|id| {
+                                by_id
+                                    .get(id)
+                                    .and_then(|index| graph[*index].parameter_effects.clone())
+                            })
+                            .chain(closures.iter().map(|closure| {
+                                let creator = &graph[*by_id.get(&closure.creator)?];
+                                let flags = creator.parameter_effects.as_ref()?;
+                                Some(OwnershipParameterEffects {
+                                    written_through_reference: creator
+                                        .closure_writes
+                                        .get(&closure.span)
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                    writes_globals: flags.writes_globals,
+                                    unmodeled: flags.unmodeled,
+                                    callee_unmodeled: flags.callee_unmodeled,
+                                    ..Default::default()
+                                })
+                            }))
+                            .collect(),
                         OwnershipCallTarget::Unresolved(_) => vec![None],
                         // Indirect, foreign and format calls are counted in the
                         // caller's own `unmodeled`; a bodiless callable's
@@ -2810,9 +2824,7 @@ impl Analyzer {
                             continue;
                         }
                     };
-                    for callee in callees {
-                    let callee_effects =
-                        callee.and_then(|callee| graph[callee].parameter_effects.as_ref());
+                    for callee_effects in callees {
                     let (Some(callee_effects), Some(arguments)) = (callee_effects, &site.arguments)
                     else {
                         callee_unmodeled = true;
@@ -2827,19 +2839,39 @@ impl Analyzer {
                         else {
                             continue;
                         };
-                        let OwnershipPlaceStorage::Parameter(own) = place.root.storage else {
-                            continue;
-                        };
                         // Only an argument that is itself a reference into the
                         // caller's memory carries the callee's write back: a
                         // borrow of a by-value parameter changes the callee's
                         // own copy.
+                        // A raw pointer argument points into memory the
+                        // caller can reach as well.
                         let through_reference = matches!(
                             place.root.ty,
-                            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. })
+                            Some(TypeKind::Ref { .. } | TypeKind::MutRef { .. } | TypeKind::RawPtr { .. })
                         ) || place.projections.iter().any(|projection| {
                             matches!(projection, OwnershipProjection::Deref { .. })
                         });
+                        let own = match place.root.storage {
+                            OwnershipPlaceStorage::Parameter(own) => own,
+                            // A parameter of a closure this caller creates:
+                            // the write belongs to that closure's summary.
+                            OwnershipPlaceStorage::ClosureParameter => {
+                                let binding = &place.root.binding;
+                                let key = (binding.span.start, binding.span.end);
+                                if through_reference
+                                    && callee_effects.written_through_reference.contains(&slot)
+                                    && let Some(index) = closure_parameters
+                                        .get(&key)
+                                        .and_then(|params| {
+                                            params.iter().position(|name| *name == binding.name)
+                                        })
+                                {
+                                    closure_inherited.push((key, index));
+                                }
+                                continue;
+                            }
+                            _ => continue,
+                        };
                         if through_reference
                             && callee_effects.written_through_reference.contains(&slot)
                         {
@@ -2856,6 +2888,9 @@ impl Analyzer {
                         }
                     }
                     }
+                }
+                for (key, index) in closure_inherited {
+                    changed |= graph[caller].closure_writes.entry(key).or_default().insert(index);
                 }
                 let Some(effects) = graph[caller].parameter_effects.as_mut() else {
                     continue;
@@ -3191,9 +3226,17 @@ impl Analyzer {
             self.derive_callable_ownership_body_effects(&callable_ownership_summaries);
         let mut ownership_call_graph =
             self.build_ownership_call_graph(&callable_ownership_summaries, &mut checkpoint)?;
+        let closure_parameters: std::collections::BTreeMap<(usize, usize), &Vec<String>> = self
+            .closure_values
+            .iter()
+            .map(|closure| (closure.span, &closure.params))
+            .collect();
         for callable in &mut ownership_call_graph {
             checkpoint()?;
             callable.control_flow = source_control_flow.get(&callable.id.callable).cloned();
+            if let Some(control_flow) = callable.control_flow.as_deref() {
+                callable.closure_writes = control_flow.closure_parameter_writes(&closure_parameters);
+            }
             callable.parameter_effects = match callable.control_flow.as_deref() {
                 Some(control_flow) => Some(control_flow.parameter_effects()),
                 None if self.pure_value_intrinsics.contains(&callable.id.callable) => {

@@ -311,8 +311,8 @@ fn main() void { unsafe { observe(external); } const keep: fn(i32) void = |x| ob
     // the call is closed over its creator (`main`).
     assert!(matches!(
         &node.calls[0].target,
-        OwnershipCallTarget::Closed { callees, closure_creators }
-            if callees.is_empty() && closure_creators.iter().any(|id| id.callable == "main")
+        OwnershipCallTarget::Closed { callees, closures }
+            if callees.is_empty() && closures.iter().any(|closure| closure.creator.callable == "main")
     ));
     let actual = &arguments(&report, source, "indirect", "callback(value)").actuals[0];
     // Closed calls assign argument slots.

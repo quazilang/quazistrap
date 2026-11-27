@@ -2996,9 +2996,12 @@ impl Analyzer {
         // A call through a `fn` value of this shape may run this body
         // (`closed_function_value_targets`); an untyped literal counts for
         // every shape.
-        let creator = self.current_function.last().cloned();
-        self.closure_values
-            .push((eval.ty.clone().unwrap_or(TypeKind::Error), creator));
+        self.closure_values.push(super::ownership::ClosureValue {
+            ty: eval.ty.clone().unwrap_or(TypeKind::Error),
+            creator: self.current_function.last().cloned(),
+            span: (expr.span.start, expr.span.end),
+            params: params.to_vec(),
+        });
         eval
     }
 
