@@ -65,7 +65,7 @@ Do not use its `CStr` or raw pointer after either operation. Do not call
 owner may release its allocation.
 
 ```quazi
-import std.ffi;
+import std.ffi.{CString, CStringError};
 
 fn open_name() Result[usize, CStringError] {
     var name: CString = CString.try_from_str("config.json")?;

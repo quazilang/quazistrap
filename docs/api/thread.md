@@ -63,7 +63,7 @@ an extracted handle remains an unsafe low-level operation.
 - `sleep(ms: u64)` suspends the current thread for approximately the requested
   number of milliseconds using `std.core`.
 - `yield_now()` asks the operating-system scheduler to yield the current thread:
-  Linux uses `sched_yield`, while Windows uses `Sleep(0)`. It is not a
+  Linux and NetBSD use `sched_yield`, while Windows uses `Sleep(0)`. It is not a
   synchronization primitive.
 - `current_tid()` returns the kernel thread identifier: Linux `gettid`,
   NetBSD `_lwp_self`; Windows returns `-1`.
@@ -185,13 +185,13 @@ match and returns the value it saw). `Mutex.new()` is a non-reentrant,
 non-fair spin lock that yields the processor while waiting: `lock`,
 `try_lock` (true on success) and `unlock` (panics if the lock is not held).
 
-Both free their cell when the owner goes out of scope. Until `JoinHandle[T]`
-can move values into threads, share them by passing `unsafe as_ptr()` to a
+Both free their cell when the owner goes out of scope. Moving owned values
+into threads waits for D-014, so share them by passing `unsafe as_ptr()` to a
 thread (for example with `thread_spawn_arg`) and opening it there with
 `unsafe AtomicI64.at(ptr)` / `Mutex.at(ptr)`, which return non-owning views
 with the same operations. Join every thread that uses a view before the owner
 is dropped.
 
 `thread_spawn_arg(callback, arg)` passes `arg` to the C-ABI callback instead of
-`NULL`. See [D-019](../decisions/qoroutines.md) for the planned `JoinHandle[T]`,
-`qo` qoroutines and `Channel[T]`.
+`NULL`. See [D-019](../decisions/qoroutines.md) for `qo` qoroutines and
+`Channel[T]`.

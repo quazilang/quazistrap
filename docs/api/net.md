@@ -19,8 +19,8 @@ Fallible APIs return `NetError`. Common conditions have stable variants
 `message()` for display rather than matching its text.
 
 Text receive APIs validate UTF-8 before constructing `String`. Invalid bytes
-return `InvalidUtf8`; binary protocols must use the unsafe/raw boundaries not
-yet exposed as a complete high-level binary-stream API. Receive limits are byte
+return `InvalidUtf8`; binary protocols use `TcpStream.send_bytes` and the
+`stream.Reader`/`Writer` implementations of `TcpStream`. Receive limits are byte
 limits. A `TcpStream.receive` may read additional bytes only to complete a
 trailing UTF-8 scalar, and returns `LimitExceeded` if that scalar would exceed
 the requested limit. `receive_all` reads until EOF and accepts at most `limit`
@@ -176,4 +176,5 @@ HTTPS through this module fails with `TlsUnavailable`; use [`std.tls`](tls.md),
 which verifies certificates and host names. Do not send credentials over HTTP. Linux
 and NetBSD use native sockets and Windows uses Winsock; error normalization is best-effort,
 so portable applications must handle `Native` and `Unsupported`. Blocking
-operations may wait indefinitely without external OS-level controls.
+operations wait indefinitely unless `set_read_timeout`/`set_write_timeout`
+bound them (`TimedOut`).

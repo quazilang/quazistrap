@@ -39,7 +39,7 @@ fn main() i32 {
 | `spawn()` | Starts the child and returns a `Child`; a failed `execve` (missing program, no permission) is reported before returning. |
 | `status()` | Spawns and waits, returning the `ExitStatus`. |
 
-`Command` uses fork/execve on Linux and `CreateProcessW` with a UTF-16
+`Command` uses fork/execve on Linux and NetBSD and `CreateProcessW` with a UTF-16
 command line on Windows; standard streams are inherited.
 
 ## Launching
@@ -87,7 +87,7 @@ recommendation to construct a command string or rely on a shell.
 | `free()` | Scope cleanup: a child that was neither waited for nor closed is closed when its owner leaves scope (a live child is killed and reaped). Close errors are discarded; call `close()` to observe them. |
 | `handle()` | Exposes the raw platform handle through a shared receiver for narrowly scoped target-specific interoperation. Do not close or wait on it outside `Child`. |
 
-`ExitStatus.Code(i32)` is a normal exit code. Linux also reports
+`ExitStatus.Code(i32)` is a normal exit code. Linux and NetBSD also report
 `ExitStatus.Signal(i32)` for signal termination. Windows reports only
 `Code`.
 

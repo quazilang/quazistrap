@@ -80,11 +80,14 @@ itself a `Reader`, and `read_until(delimiter)` returns the bytes up to and
 including the next delimiter (or the rest of the input; empty at the end).
 
 `BufWriter[W: Writer]` collects writes and passes them on whenever the buffer
-reaches its capacity. **Buffered bytes reach the inner writer only on
-`flush` or when the buffer fills**: there is no flush when the writer is
-dropped, because a failure could not be reported. `buffered()` is the number
-of waiting bytes; `into_inner()` passes them on and returns the wrapped
-writer.
+reaches its capacity. Buffered bytes reach the inner writer on `flush`, when
+the buffer fills, or when the writer is dropped: dropping passes them on and
+flushes the inner writer, ignoring errors (like closing a file), so call
+`flush` to see failures ([D-028](../decisions/drop-hook-fields.md)).
+`buffered()` is the number of waiting bytes; `into_inner()` returns
+`Result[W, IoError]`: it passes the bytes on (without flushing) and returns
+the wrapped writer, or, when passing them fails, the error, dropping the
+writer without passing the bytes again.
 
 Both adapters lend their inner stream with `get_ref()`. `into_inner()` on
 `BufReader` returns its reader and drops bytes still buffered.

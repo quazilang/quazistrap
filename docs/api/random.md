@@ -32,8 +32,9 @@ requested bytes from secure random words.
 `choose[T](items)` consumes its `Array[T]` and returns an element or
 `EmptyCollection`. `shuffle[T](items)` consumes and returns an `Array[T]` after
 an in-place Fisher–Yates permutation. These generic collection APIs are
-currently suitable only for plain-copy element types: recursive element
-destruction and borrowed element access are not implemented yet. Do not use
+currently suitable only for plain-copy element types: their implementation
+reads elements by value (`items[index]`), which the compiler rejects for owned
+elements (S10, use `get_ref` or `remove`). Do not use
 them with owned aggregate elements, and do not retain aliases to an array after
 passing it to either function.
 

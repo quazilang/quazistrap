@@ -32,8 +32,8 @@ return a fresh value without changing the original duration.
 ## `Instant`
 
 `Instant.now()` returns `Result[Instant, TimeError]`. It reads a monotonic
-clock: Linux uses `clock_gettime(CLOCK_MONOTONIC)` and Windows uses
-`GetTickCount64`. The epoch is opaque, and values from different system boots
+clock: Linux and NetBSD use `clock_gettime(CLOCK_MONOTONIC)` and Windows
+uses `GetTickCount64`. The epoch is opaque, and values from different system boots
 must not be compared or serialized as timestamps.
 
 - `duration_since(earlier)` returns `ClockWentBackwards` when `earlier` is

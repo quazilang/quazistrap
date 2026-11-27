@@ -14,17 +14,17 @@ exit(code) terminates the current process and does not return. sleep(ms)
 blocks for at least approximately the requested millisecond duration subject to
 operating-system scheduling; it is unsuitable for precise timing. Use
 std.time.Instant for elapsed-time measurement. yield_cpu() requests a scheduler
-yield through the Linux syscall layer or Windows Sleep(0). It must not be used
+yield through `sched_yield` on Linux and NetBSD or Windows Sleep(0). It must not be used
 as a cross-platform synchronization primitive.
 
-`sleep` accepts the full `u64` millisecond range on both supported targets. On
+`sleep` accepts the full `u64` millisecond range on every supported target. On
 Windows, where one `Sleep` call accepts only a 32-bit duration and its all-ones
 value means “infinite”, longer waits are issued as finite chunks of at most
 4,294,967,294 milliseconds. This avoids truncation and never requests the
 Windows infinite-wait sentinel.
 
-getpid() returns the current process identifier through Linux getpid or Windows
-GetCurrentProcessId. getppid() returns the parent on Linux and NetBSD and `-1` on Windows. This limitation is tracked as
+getpid() returns the current process identifier through getpid on Linux and
+NetBSD or Windows GetCurrentProcessId. getppid() returns the parent on Linux and NetBSD and `-1` on Windows. This limitation is tracked as
 standard-library portability debt rather than a portable parent-PID contract.
 
 ## Arguments

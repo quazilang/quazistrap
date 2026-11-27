@@ -39,7 +39,7 @@ then call it according to the native ABI. The address is borrowed from the
 library and becomes invalid after close; Quazi cannot enforce that lifetime.
 
 ```quazi
-import std.dylib;
+import std.dylib.{DynamicLibrary, DynamicLibraryError};
 
 fn load_plugin(path: str) Result[DynamicLibrary, DynamicLibraryError] {
     ret DynamicLibrary.open(path);
