@@ -2504,6 +2504,22 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+        // D-030: the startup code hands `main` an `Array[str]` of C string
+        // pointers (one word each); with a fat `str` rewrite it in place
+        // into `{ptr, len}` elements, once, before anything reads it.
+        if name == "main"
+            && fc.str_slots() > 1
+            && let [param] = params
+            && matches!(
+                fc.resolve_type(&param.ty.node),
+                TypeKind::Named { ref name, ref type_args }
+                    if name == "Array" && type_args.len() == 1
+                        && matches!(fc.resolve_type(&type_args[0].node), TypeKind::Str)
+            )
+        {
+            let header = fc.reg_of(&param.name);
+            fc.emit_fat_main_args(header);
+        }
         // Guards must follow the complete ABI prefix, including variadic slots.
         for (parameter, reg, action, hook) in parameter_drops {
             fc.register_drop_action(&parameter, reg, action, true);
@@ -12654,6 +12670,55 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(rrr(Opcode::StrLen, length, value, 0));
         }
         length
+    }
+
+    /// Rewrite an `Array[str]` header whose elements are C string pointers
+    /// into fat `{ptr, len}` elements (see the `main` prologue).
+    fn emit_fat_main_args(&mut self, header: u8) {
+        const MALLOC: u16 = 3;
+        const FREE: u16 = 4;
+        const STRLEN: u16 = 10;
+        let old = self.alloc_reg();
+        self.chunk.emit(field_load(old, header, 0));
+        let len = self.alloc_reg();
+        self.chunk.emit(field_load(len, header, 8));
+        let sixteen = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, sixteen, 16));
+        let fresh = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, fresh, len, sixteen));
+        let mut allocate = ri16(Opcode::Intrinsic, fresh, MALLOC);
+        allocate.flags = 1;
+        self.chunk.emit(allocate);
+        let index = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, index, 0));
+        let eight = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+        let top = self.chunk.len() as u16;
+        self.chunk.emit(rrr(Opcode::Cmp, 0, index, len));
+        let exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
+        let source = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, source, index, eight));
+        self.chunk.emit(rrr(Opcode::Add, source, source, old));
+        let pointer = self.alloc_reg();
+        self.chunk.emit(mem_load(source, pointer, 0));
+        let target = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, target, index, sixteen));
+        self.chunk.emit(rrr(Opcode::Add, target, target, fresh));
+        self.chunk.emit(mem_store(target, pointer, 0));
+        let measure = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mov, measure, pointer, 0));
+        let mut strlen = ri16(Opcode::Intrinsic, measure, STRLEN);
+        strlen.flags = 1;
+        self.chunk.emit(strlen);
+        self.chunk.emit(mem_store(target, measure, 8));
+        self.chunk.emit(rrr(Opcode::Inc, index, index, 0));
+        self.chunk.emit(ri16(Opcode::Jmp, 0, top));
+        self.chunk.patch_jump(exit, self.chunk.len() as u16);
+        let mut release = ri16(Opcode::Intrinsic, old, FREE);
+        release.flags = 1;
+        self.chunk.emit(release);
+        self.chunk.emit(field_store(fresh, header, 0));
+        self.chunk.emit(field_store(len, header, 16));
     }
 
     /// Load constant `value` into `dst`.
