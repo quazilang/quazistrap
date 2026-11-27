@@ -9489,6 +9489,9 @@ impl Analyzer {
                 if self.types_compatible(&expected_resolved, &actual_resolved) =>
             {
                 let trait_name = trait_name.clone();
+                // The trait object's vtable references every trait method of
+                // the concrete type, called directly or not.
+                self.request_dyn_vtable_methods(&trait_name, &actual_resolved);
                 if let Some(annotation) = self
                     .annotated_exprs
                     .iter_mut()

@@ -104,6 +104,24 @@ fn main() i32 { const counter = Counter { value: 3 }; const view = same(&counter
 """
 
 
+# Methods reached only through trait objects (never called directly) must
+# still be compiled for the vtables: a plain conversion, `Array[dyn T]` and
+# `Box[dyn T]` failed with "missing vtable implementation".
+UNCALLED = """trait Show { fn show(self: &Self) i32; }
+struct C { v: i32 }
+impl Show for C { fn show(self: &C) i32 { ret self.v; } }
+fn take(s: dyn Show) i32 { ret 3; }
+fn main() i32 {
+    var items: Array[dyn Show] = Array.new();
+    items.push(C { v: 1 });
+    const boxed: Box[dyn Show] = Box.new(C { v: 2 });
+    const plain: dyn Show = C { v: 4 };
+    if (take(C { v: 3 }) != 3 || items.len() != 1) { ret 1; }
+    ret 0;
+}
+"""
+
+
 def project(root, name, source, *, unmangled=False, library=False):
     (root / "src").mkdir(parents=True)
     manifest = (
@@ -167,6 +185,14 @@ def borrowed_dispatch(qz, root):
     print("PASS borrowed &dyn arguments and generic dyn conversions; escaping result rejected")
 
 
+def uncalled_dispatch(qz, root):
+    project(root, "uncalled_dispatch", UNCALLED)
+    # `Array` and `Box` need the default library roots.
+    (root / "quazi.toml").write_text('[package]\nname = "uncalled_dispatch"\n')
+    portable_outputs(qz, root, "uncalled")
+    print("PASS vtable methods never called directly: conversion, Array[dyn T], Box[dyn T]")
+
+
 def incremental_dispatch(qz, root):
     project(root, "incremental_dispatch", CREATOR)
     implementation = root / "src/counter.qz"
@@ -223,6 +249,7 @@ def main():
         incremental_dispatch(qz, root / "incremental")
         reference_dispatch(qz, root / "references")
         borrowed_dispatch(qz, root / "borrowed")
+        uncalled_dispatch(qz, root / "uncalled")
         aliased_library_dispatch(qz, root / "aliased")
 
 
