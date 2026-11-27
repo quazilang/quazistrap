@@ -46,3 +46,28 @@ target/release/qz`); the debug compiler is several times slower.
 6. QZI format and QZC cache bump, JIT, Windows COFF/PE, NetBSD.
 7. Zero-copy `str` slicing; remove std/quazifetch workarounds for O(n)
    `bytes_len` (e.g. `raw_byte`).
+
+## Stage 3 inventory (measured 2026-11-28)
+
+After stages 1-2, flipping only the layout fails 19 compiler tests (one
+remaining gate: generic specializations passing variadic `str`,
+typecheck `record_fn_value_layout`). The runtime work is in the places
+that treat `str` as a NUL-terminated `char*`:
+
+| Site | Today | With `{ptr, len}` |
+|---|---|---|
+| string literal (`MovConst` of `ConstPoolEntry::Str`) | address | address + constant length |
+| `StrLen` / `quazi.strlen` on a `str` | scans for NUL | `Mov` of slot 1; the opcode stays for C pointers |
+| `StrAsStr` (`quazi.str.from_ptr`) | moves the pointer | pointer + one `strlen` |
+| `StrConcat` (`quazi.str_concat`) | strlen of both | lengths from slot 1 |
+| `PrimToStr` | static NUL buffer | buffer + its length |
+| `StrToInt` / `StrToFloat` | parse to NUL | parse `len` bytes |
+| `quazi.str.cmp`, `byte_at`, `rune_len`, `as_ptr` | NUL scans | lengths; `as_ptr` = slot 0 |
+| `core.write(fd, s)` and the print path | `strlen` | slot 1 |
+| `@api` parameters of type `str` | pointer passed | temporary NUL copy (or `CStr`) |
+| `@api` results of type `str` | pointer | pointer + `strlen` |
+| startup stubs building `main(args: Array[str])`, env access | 8-byte elements | 16-byte elements + `strlen` |
+| `String.data: str` and the checked String ABI | data at offset 0 | keep `data: str`; `as_str` builds `{data.ptr, len}` from `String.len` (the field's own length may be stale after in-place appends) |
+| panic messages and file names | constants | constants with lengths |
+| std raw uses (`core.str_as_ptr(s)` to C, `core.strlen(s)`) | rely on NUL | audit each (fs, os, netbsd, process, net, io, tls) |
+
