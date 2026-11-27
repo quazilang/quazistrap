@@ -129,10 +129,10 @@ assignment through `*reference`. While the conservative local borrow checker
 tracks that exclusive loan, the owner cannot be read, moved, mutated, or
 borrowed again; a shared loan and an exclusive loan cannot overlap.
 
-The current checker retains either loan through its enclosing lexical scope.
-An address-of expression used only as an argument of a resolved direct Quazi
-call instead has a call-length loan, because current safe references cannot
-escape that call.
+A loan ends after the last statement that uses a binding derived from it
+(flow-sensitive loan regions, see [safety](safety.md)). An address-of
+expression used only as an argument of a resolved direct Quazi call has a
+call-length loan, because current safe references cannot escape that call.
 It does not yet infer shorter use-based control-flow regions, reborrow regions,
 flow-sensitive receiver effects, cross-call effects, or QZI-only ownership
 summaries. A read-only method may explicitly declare `self: &T`; it can be
@@ -384,7 +384,7 @@ rules (D-021): integer to `f32`/`f64` rounds to nearest-even, directly to the
 target precision; `f32`/`f64` to integer truncates toward zero and saturates,
 so values beyond the target range become its minimum or maximum and NaN
 becomes 0. `f64 as f32` rounds to nearest. Integer casts to a narrower or
-differently signed type keep the low bits (`300 as u8` is 44, `-1 as u32` is
+differently signed type keep the low bits (`300 as u8` is 44, `(-1) as u32` is
 4294967295). `as` binds tighter than unary minus: `-1 as u16` is
 `-(1 as u16)`; write `(-1) as u16`. `f16` has no cross-family conversion. Integer overflow checking is not a substitute for input validation;
 parsing returns `Result` and rejects malformed or out-of-range values.

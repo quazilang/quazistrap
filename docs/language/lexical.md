@@ -35,7 +35,8 @@ The following identifiers are reserved keywords:
 `if`, `impl`, `import`, `match`, `platform`, `pub`, `qo`, `ret`, `struct`,
 `trait`, `true`, `type`, `union`, `unsafe`, `var`, `while`.
 
-The built-in type names `bool`, `str`, `bytes`, `void`, `isize` and `usize`
+The built-in type names `bool`, `str`, `bytes`, `void`, `isize`, `usize`,
+`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f16`, `f32` and `f64`
 are also keywords. `any` is reserved syntax and is rejected in declarations.
 `self` and `dyn` are ordinary identifiers with a special meaning in receiver
 and type positions.

@@ -117,7 +117,7 @@ pub struct Pair[A, B] { left: A, right: B, }
 ### Layout
 
 Ordinary structs use compiler-defined layout. `@repr(C)` gives target C
-layout for supported scalar fields and aggregates. See
+layout for C scalar fields and a final flexible array member. See
 [attributes](attributes.md) for `@repr(C)` details.
 
 ## Enums
@@ -147,7 +147,8 @@ pub trait Area {
 ```
 
 Traits declare method signatures. The `self` parameter names the receiver
-type explicitly. Trait methods may have default implementations.
+type explicitly. Trait methods have no default implementations: every
+implementation defines each method.
 
 A method marked `@associated` has no receiver at all; generic code calls it
 through a bound on the type parameter:

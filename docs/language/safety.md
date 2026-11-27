@@ -237,7 +237,8 @@ retention](../internals/source-result-retention.md) for the current boundary.
 
 - May be null, dangling, misaligned, or point to invalid storage.
 - Integer `0` is the null-pointer constant for any `*T`.
-- All raw pointer types are mutually compatible: `*T` converts to `*U`.
+- `*T!` converts implicitly to `*T` and `*U`; a read-only `*T` becomes
+  writable only with an explicit `as *T!` (see [types](types.md)).
 - Dereferencing requires an `unsafe` context.
 - A `&local` may be stored or passed as an exact raw pointer, but
   dereferencing that pointer still requires unsafe context.
@@ -254,8 +255,9 @@ retention](../internals/source-result-retention.md) for the current boundary.
 
 Current restrictions:
 
-- Function values cannot be placed inside arrays, structs, enums, or generic
-  type arguments (no recursive destruction yet).
+- Function values cannot be placed inside arrays, structs or enums (no
+  recursive destruction yet); a generic type argument may be a function type
+  (see [types](types.md)).
 - Closures capture plain scalars by copy and owned values by move; the
   environment destroys its owned captures. Borrowed captures and mutable
   captures are rejected.

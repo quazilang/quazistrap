@@ -81,7 +81,6 @@ aliases:
 ```quazi
 @repr(C) struct Point { x: f64, y: f64, }
 @repr(C, packed) struct Header { magic: u32, flags: u8, }
-@repr(C, align=16) struct Aligned { data: [u8; 64], }
 @repr(C) type Callback = fn(i32, i32) i32;
 ```
 
@@ -259,10 +258,12 @@ struct User {
 }
 ```
 
-Field attributes are opaque language metadata. Quazi assigns no built-in
-meaning to them. A library, derive implementation, or external tool defines
-the interpretation. No attribute registration is needed: choose an identifier,
-document its arguments, and apply it.
+Field attributes are language metadata for derive implementations and
+tools. The serialization attributes (`@serde`, `@json`, `@ini`) are checked:
+they are valid only on fields of a struct deriving `Serialize` or
+`Deserialize` (S06 otherwise, see [codec](../api/codec.md)), so the example
+above needs `@derive(Serialize, Deserialize)`. Other identifiers are not
+interpreted by the compiler.
 
 ## Package settings (not source attributes)
 

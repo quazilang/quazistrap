@@ -29,13 +29,14 @@ The default target matches the host system.
 @cfg(target_os="linux") fn separator() str { ret "/"; }
 ```
 
-Block form gates multiple declarations:
+At item level each declaration carries its own `@cfg` (an item-level block
+is not accepted, see [attributes](attributes.md)); imports work the same way:
 
 ```quazi
-@cfg(target_os="windows") {
-    import std.windows;
-    const platform_name: str = "Windows";
-}
+@cfg(target_os="windows")
+import std.windows;
+@cfg(target_os="windows")
+const platform_name: str = "Windows";
 ```
 
 Conditional imports are excluded from dependency discovery when the condition
@@ -135,14 +136,14 @@ implicitly; `libc = true` in `quazi.toml` is an explicit opt-in.
 
 The following features exist but have known limitations:
 
-- **Concurrency**: `std.thread` provides spawn/join but structured lifetime,
-  result propagation, cancellation, and synchronization are not designed.
-- **Serialization**: Limited `@derive(Serialize)` exists; `Deserialize`,
-  generic structs, nested types, and collections are not yet supported.
-- **Process management**: D-011 approves a minimal shell-free contract, but
-  the required runtime marshalling and `std.process` implementation are not
-  shipped.
-- **Civil time**: Only monotonic `Duration`/`Instant` exist; calendar, UTC,
-  and time zones are not implemented.
+- **Concurrency**: `std.thread` spawns OS threads with typed results
+  (`JoinHandle[T]`), joins on drop, returns panics from `join()`, supports
+  cooperative cancellation, `Mutex`, `AtomicI64` and channels
+  ([thread](../api/thread.md)); moving owned values into threads waits for
+  D-014 (D-007).
+- **Serialization**: `@derive(Serialize, Deserialize)` with `std.codec`
+  covers named non-generic structs with nested structs, `Array[T]` and
+  `Option[T]` fields; generic structs, borrowed `str` fields and nested
+  `Array`/`Option` are rejected ([codec](../api/codec.md)).
 - **Generic storage**: Values wider than 255 register slots require an
   explicit indirect-value design that is not yet implemented.
