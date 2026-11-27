@@ -494,6 +494,10 @@ pub struct Chunk {
     constant_pool_overflowed: bool,
     /// Symbolic operands exist during lowering and are bound before optimization.
     pending_calls: Vec<(usize, String)>,
+    /// Register blocks `(base, count)` holding one multi-slot value (a fixed
+    /// array, a fat `str`): register allocation must keep them contiguous.
+    /// Compile-time only; not serialized.
+    pub reserved_blocks: Vec<(u8, u8)>,
 }
 
 impl Chunk {
@@ -916,6 +920,7 @@ fn deserialize_qzi_legacy(buf: &[u8], allow_vtable_layouts: bool) -> Result<Vec<
             code,
             constant_pool_overflowed: false,
             pending_calls: Vec::new(),
+            reserved_blocks: Vec::new(),
         });
     }
 

@@ -229,26 +229,55 @@ fn compact_regs(chunk: &mut Chunk) {
 
     // Preserve calling-convention slots and every explicitly contiguous block.
     // Remapping these before linear scan would irreversibly destroy adjacency.
-    let pinned = compute_pinned(chunk);
+    // Multi-slot value blocks move as a unit: their numbering then does not
+    // depend on where inlining placed them (identical bodies stay identical).
+    let pinned = compute_fixed_pins(chunk);
+    let mut group_of: HashMap<u8, (u8, u8)> = HashMap::new();
+    for &(base, count) in &chunk.reserved_blocks {
+        if (0..count).any(|offset| pinned.contains(&base.wrapping_add(offset))) {
+            continue;
+        }
+        for offset in 0..count {
+            group_of.entry(base.wrapping_add(offset)).or_insert((base, count));
+        }
+    }
     let mut remap: HashMap<u8, u8> = HashMap::new();
     for &register in &pinned {
         remap.insert(register, register);
     }
     let mut next = 0u16;
-    for r in all_regs {
+    for r in all_regs.iter().copied().chain(group_of.keys().copied().collect::<BTreeSet<_>>()) {
         if remap.contains_key(&r) {
             continue;
         }
-        while next <= u8::MAX as u16 && pinned.contains(&(next as u8)) {
+        let (base, count) = group_of.get(&r).copied().unwrap_or((r, 1));
+        // Find `count` consecutive free numbers.
+        loop {
+            while next <= u8::MAX as u16 && pinned.contains(&(next as u8)) {
+                next += 1;
+            }
+            let fits = (0..count as u16)
+                .all(|offset| next + offset <= u8::MAX as u16 && !pinned.contains(&((next + offset) as u8)));
+            if fits {
+                break;
+            }
             next += 1;
+            assert!(next <= u8::MAX as u16, "register compaction exhausted the bytecode register space");
         }
         assert!(
-            next <= u8::MAX as u16,
+            next + count as u16 - 1 <= u8::MAX as u16,
             "register compaction exhausted the bytecode register space"
         );
-        remap.insert(r, next as u8);
-        next += 1;
+        for offset in 0..count {
+            remap.entry(base.wrapping_add(offset)).or_insert((next + offset as u16) as u8);
+        }
+        next += count as u16;
     }
+    chunk.reserved_blocks = chunk
+        .reserved_blocks
+        .iter()
+        .map(|&(base, count)| (*remap.get(&base).unwrap_or(&base), count))
+        .collect();
 
     for instr in &mut chunk.code {
         super::codegen::remap_instr_regs(instr, |r| *remap.get(&r).unwrap_or(&r));
@@ -374,6 +403,18 @@ pub fn order_slots_by_use(chunk: &mut Chunk) {
 // return ABI must stay consecutive because the encoder infers adjacent slots by
 // arithmetic.
 fn compute_pinned(chunk: &Chunk) -> HashSet<u8> {
+    let mut pinned = compute_fixed_pins(chunk);
+    // Multi-slot values (fixed arrays, fat `str`) are addressed as base + k.
+    for &(base, count) in &chunk.reserved_blocks {
+        for offset in 0..count {
+            pinned.insert(base.wrapping_add(offset));
+        }
+    }
+    pinned
+}
+
+/// Registers whose numbers are fixed: parameters and ABI-addressed blocks.
+fn compute_fixed_pins(chunk: &Chunk) -> HashSet<u8> {
     let mut pinned = HashSet::new();
 
     // Params r0..r_{param_count-1} are fixed by the calling convention.

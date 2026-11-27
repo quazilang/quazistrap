@@ -364,10 +364,12 @@ impl Analyzer {
                         base
                     }
                 };
-                // Record the resolved internal-ABI layout of ordinary concrete
-                // functions. Foreign functions follow the C ABI, and generic
+                // Record the resolved internal-ABI layout of concrete
+                // functions, foreign ones included: Quazi callers reach
+                // `@api`/`@syscall`/`@intrinsic` through ordinary wrapper
+                // chunks, which adapt to the C or backend convention. Generic
                 // templates are recorded per specialization at call sites.
-                if !is_foreign && generic_params.is_empty() {
+                if generic_params.is_empty() && !*c_variadic {
                     let (fixed_params, variadic_element) = match params.last() {
                         Some(last) if last.variadic => {
                             let fixed = &params[..params.len() - 1];

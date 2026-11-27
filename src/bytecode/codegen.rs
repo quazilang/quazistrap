@@ -1909,6 +1909,12 @@ impl<'a> Codegen<'a> {
 
                     // Remap and inline.
                     let remap = |r: u8| base + r;
+                    let inlined_blocks: Vec<(u8, u8)> = callee
+                        .reserved_blocks
+                        .iter()
+                        .map(|&(block, count)| (base + block, count))
+                        .collect();
+                    chunk.reserved_blocks.extend(inlined_blocks);
 
                     let mut inlined: Vec<crate::bytecode::instruction::Instruction> = Vec::new();
 
@@ -2581,6 +2587,25 @@ impl<'a> Codegen<'a> {
         };
         let idx = chunk.add_constant(entry);
         let arg_count = params.len() as u8;
+        // D-030: a fat `str` argument passes its pointer; compact the first
+        // word of every parameter into r0, r1, ... as the kernel expects.
+        let empty = HashMap::new();
+        let mut source = 0usize;
+        for (index, param) in params.iter().enumerate() {
+            if source != index {
+                chunk.emit(rrr(Opcode::Mov, index as u8, source as u8, 0));
+            }
+            source += crate::runtime_layout::runtime_value_layout(
+                &self.resolve_type_for_layout(&param.ty.node, &empty),
+            )
+            .slot_count()
+            .unwrap_or(1)
+            .max(1);
+        }
+        if source != params.len() {
+            chunk.param_count = source;
+            chunk.reg_count = chunk.reg_count.max(source as u8);
+        }
         let mut instr = ri16(Opcode::Syscall, 0, idx);
         instr.flags = arg_count;
         chunk.emit(instr);
@@ -5243,6 +5268,11 @@ impl<'a> FnCompiler<'a> {
         let base = self.next_reg_slot();
         for _ in 0..count {
             let _ = self.alloc_reg();
+        }
+        // D-030: with a fat `str` every multi-slot value keeps its block
+        // through register allocation (serialized with the QZI format bump).
+        if count > 1 && self.str_slots() > 1 {
+            self.chunk.reserved_blocks.push((base, count.min(u8::MAX as usize) as u8));
         }
         base
     }
@@ -8172,8 +8202,8 @@ impl<'a> FnCompiler<'a> {
                     // block, so the binding can take that block directly; other fixed
                     // array initializers require an element-wise block copy.
                     let slots = self.value_slot_count(expr);
-                    let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
-                        &local_ty
+                    let reg = if let Some(ty) =
+                        local_ty.as_ref().filter(|ty| is_multi_slot_value(ty))
                     {
                         if matches!(expr.node, ExprKind::ArrayLit(_)) {
                             self.regs.insert(name.clone(), coerced);
@@ -8201,8 +8231,8 @@ impl<'a> FnCompiler<'a> {
                     self.register_reserved_drop_local(name, reg, local_ty, early);
                 } else {
                     let local_ty = ty.as_ref().map(|t| self.resolve_type(&t.node));
-                    let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
-                        &local_ty
+                    let reg = if let Some(ty) =
+                        local_ty.as_ref().filter(|ty| is_multi_slot_value(ty))
                     {
                         let block_length = crate::runtime_layout::runtime_value_layout(ty)
                             .slot_count()
@@ -8244,8 +8274,8 @@ impl<'a> FnCompiler<'a> {
                         .or(declared),
                 };
                 let slots = self.value_slot_count(value);
-                let reg = if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
-                    &local_ty
+                let reg = if let Some(ty) =
+                    local_ty.as_ref().filter(|ty| is_multi_slot_value(ty))
                 {
                     if matches!(value.node, ExprKind::ArrayLit(_)) {
                         self.regs.insert(name.clone(), src);
@@ -10724,8 +10754,8 @@ impl<'a> FnCompiler<'a> {
                     }
                     self.drop_local_now(name);
                     let dst = self.reg_of(name);
-                    if let Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) =
-                        self.local_types.get(name).cloned()
+                    if let Some(ty) =
+                        self.local_types.get(name).cloned().filter(is_multi_slot_value)
                     {
                         let slots = crate::runtime_layout::runtime_value_layout(&ty)
                             .slot_count()
@@ -12992,6 +13022,15 @@ fn type_kind_mentions_unresolved_param_with(ty: &TypeKind, declared: &dyn Fn(&st
         }
         _ => false,
     }
+}
+
+/// A local of this type occupies a register block (fixed arrays, slices
+/// and, with D-030, `str`).
+fn is_multi_slot_value(ty: &TypeKind) -> bool {
+    matches!(ty, TypeKind::Array { .. } | TypeKind::Slice { .. })
+        || crate::runtime_layout::runtime_value_layout(ty)
+            .slot_count()
+            .is_some_and(|slots| slots > 1)
 }
 
 fn is_generic_param_name(name: &str) -> bool {
