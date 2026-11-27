@@ -231,3 +231,11 @@ Decided 2026-11-26: [the compiler destroys the fields a `free` hook leaves; the 
 ## D-029: maintainer answers of 2026-11-26
 
 Decided 2026-11-26: [single-owner sockets, Schannel TLS on Windows, OS-thread lifecycle kept, borrowed and generic trait objects, unified std API](maintainer-answers-2026-11-26.md).
+
+## D-030: `str` without a terminating NUL
+
+Decided 2026-11-27: [`str` is `{ptr, len}`, no NUL; zero-copy slices; explicit C strings at FFI](fat-str.md).
+
+## D-031: effect-driven call-length loans
+
+Decided 2026-11-27: [the temporary-loan rule uses complete effect summaries for methods, module calls and certified QZI](effect-driven-loans.md).
