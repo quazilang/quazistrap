@@ -4442,6 +4442,9 @@ impl<'a> FnEncoder<'a> {
                         return Err(BackendError(format!("unknown intrinsic id {id}")));
                     }
                 }
+                // Intrinsic bodies use rax freely (strlen walks its pointer
+                // in rax): it no longer caches any slot.
+                self.rax_slot.set(None);
             }
 
             Some(Opcode::CallExt) => {

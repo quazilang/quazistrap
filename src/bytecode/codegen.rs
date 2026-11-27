@@ -2457,6 +2457,8 @@ impl<'a> Codegen<'a> {
                 let reg = if param_slots > 1 {
                     let base = fc.reserve_reg_block(param_slots);
                     fc.regs.insert(p.name.clone(), base);
+                    // Reads of the parameter copy its whole block.
+                    fc.binding_slots.insert(base, param_slots);
                     base
                 } else {
                     fc.bind(p.name.clone())
@@ -2811,12 +2813,14 @@ impl<'a> Codegen<'a> {
             chunk.emit(instr);
         }
         if sret {
-            // r0 holds the pointer: store it, then measure it once.
-            chunk.emit(field_store(0, scratch, 0));
+            // r0 holds the pointer: store it, then measure it once. The
+            // result block is a register block: slot k lies 8k bytes below
+            // slot 0.
+            chunk.emit(mem_store(scratch, 0, 0));
             let mut measure = ri16(Opcode::Intrinsic, 0, STRLEN_CASE);
             measure.flags = 1;
             chunk.emit(measure);
-            chunk.emit(field_store(0, scratch, 8));
+            chunk.emit(mem_store(scratch, 0, -8));
         }
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         chunk.intrinsic = true;
@@ -3089,11 +3093,12 @@ impl<'a> Codegen<'a> {
             let pointer = register as u8;
             chunk.emit(rrr(Opcode::Mov, pointer, 0, 0));
             chunk.emit(instr);
-            chunk.emit(field_store(0, pointer, 0));
+            // Register-block result: slot k lies 8k bytes below slot 0.
+            chunk.emit(mem_store(pointer, 0, 0));
             let mut measure = ri16(Opcode::Intrinsic, 0, 10);
             measure.flags = 1;
             chunk.emit(measure);
-            chunk.emit(field_store(0, pointer, 8));
+            chunk.emit(mem_store(pointer, 0, -8));
             chunk.reg_count = chunk.reg_count.max(pointer + 1);
         } else {
             chunk.emit(instr);
@@ -5016,6 +5021,12 @@ impl<'a> FnCompiler<'a> {
         match ty {
             Some(TypeKind::Array { elem_ty, .. } | TypeKind::Slice { elem_ty }) => {
                 let element = self.resolve_type(&elem_ty.node);
+                // An erased `...values: Display` element is the value's text.
+                if matches!(&element, TypeKind::Any)
+                    || matches!(&element, TypeKind::Named { name, .. } if name == "Display")
+                {
+                    return self.str_slots();
+                }
                 crate::runtime_layout::runtime_value_layout(&element)
                     .slot_count()
                     .unwrap_or(1)
@@ -5501,9 +5512,23 @@ impl<'a> FnCompiler<'a> {
         declared_target: &str,
         place: Option<u8>,
     ) -> u8 {
+        // A `str` receiver (also `&str`, which shares its representation) is
+        // a whole `str` value; other by-value receivers copy their slots.
+        let slots = match receiver_ty.as_ref().map(|ty| self.resolve_type(ty)) {
+            Some(TypeKind::Str) => self.str_slots(),
+            Some(TypeKind::Ref { inner } | TypeKind::MutRef { inner })
+                if matches!(self.resolve_type(&inner.node), TypeKind::Str) =>
+            {
+                self.str_slots()
+            }
+            Some(ty @ (TypeKind::Array { .. } | TypeKind::Slice { .. })) => {
+                crate::runtime_layout::runtime_value_layout(&ty).slot_count().unwrap_or(1).max(1)
+            }
+            _ => 1,
+        };
         let prepared =
             self.prepare_method_receiver_storage(receiver, receiver_ty, declared_target, place);
-        self.snapshot_slots(prepared, 1)
+        self.snapshot_slots(prepared, slots)
     }
 
     fn prepare_method_receiver_storage(
@@ -9491,7 +9516,8 @@ impl<'a> FnCompiler<'a> {
                     .map(|expanded| expanded.specs.as_slice())
                     .unwrap_or(&[]);
                 let registers = self.compile_format_arguments(var_args, specs);
-                self.pack_variadic_block(&registers)
+                // Display variadics carry each value's text (a `str`).
+                self.pack_variadic_block_with(&registers, self.str_slots())
             } else {
                 self.compile_consuming_variadic_block(var_args)
             }
@@ -9648,7 +9674,7 @@ impl<'a> FnCompiler<'a> {
         arguments: &[u8],
         dst: u8,
     ) {
-        let (pointer, count) = self.pack_variadic_block(arguments);
+        let (pointer, count) = self.pack_variadic_block_with(arguments, self.str_slots());
         let mut call_args: Vec<u8> = receiver.into_iter().collect();
         call_args.extend([template, pointer, count]);
         self.emit_call_by_name(target, &call_args, dst);
@@ -11061,7 +11087,7 @@ impl<'a> FnCompiler<'a> {
                                 })
                                 .collect()
                         };
-                        let (r_ptr, r_len) = self.pack_variadic_block(&extra);
+                        let (r_ptr, r_len) = self.pack_variadic_block_with(&extra, self.str_slots());
                         call_regs.push(r_ptr);
                         call_regs.push(r_len);
                         self.emit_call_by_name(call_name, &call_regs, dst);

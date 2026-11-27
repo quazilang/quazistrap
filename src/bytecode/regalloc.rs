@@ -232,13 +232,29 @@ fn compact_regs(chunk: &mut Chunk) {
     // Multi-slot value blocks move as a unit: their numbering then does not
     // depend on where inlining placed them (identical bodies stay identical).
     let pinned = compute_fixed_pins(chunk);
+    // Overlapping blocks (codegen reuses released registers) merge into one
+    // group that moves as a unit.
+    let mut spans: Vec<(u16, u16)> = chunk
+        .reserved_blocks
+        .iter()
+        .filter(|&&(base, count)| !(0..count).any(|offset| pinned.contains(&base.wrapping_add(offset))))
+        .map(|&(base, count)| (base as u16, base as u16 + count as u16))
+        .collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(u16, u16)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
     let mut group_of: HashMap<u8, (u8, u8)> = HashMap::new();
-    for &(base, count) in &chunk.reserved_blocks {
-        if (0..count).any(|offset| pinned.contains(&base.wrapping_add(offset))) {
+    for (start, end) in merged {
+        if end > u8::MAX as u16 + 1 {
             continue;
         }
-        for offset in 0..count {
-            group_of.entry(base.wrapping_add(offset)).or_insert((base, count));
+        for register in start..end {
+            group_of.insert(register as u8, (start as u8, (end - start) as u8));
         }
     }
     let mut remap: HashMap<u8, u8> = HashMap::new();
