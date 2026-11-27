@@ -71,3 +71,31 @@ that treat `str` as a NUL-terminated `char*`:
 | panic messages and file names | constants | constants with lengths |
 | std raw uses (`core.str_as_ptr(s)` to C, `core.strlen(s)`) | rely on NUL | audit each (fs, os, netbsd, process, net, io, tls) |
 
+
+## Stage 3 plan (transitional NUL invariant)
+
+D-030 removes the NUL guarantee from the language contract. Until zero-copy
+slicing (stage 7) exists, every `str` the implementation creates still ends
+with a NUL byte (constant pool entries, `String` buffers of `len + 1`,
+`str_from_ptr` sources). Stage 3 therefore changes representation and ABI
+only; the NUL-dependent consumers below keep working and must be converted
+before stage 7 makes NUL-less views possible:
+
+- `quazi.str_concat` (`__string_str_concat`), `getenv`, `__net_connect`
+  (IP text), `process_spawn` (`program`), `quazi.str.cmp`,
+  `StrToInt`/`StrToFloat`, every `@api` `str` parameter (needs a temporary
+  NUL copy or `CStr`).
+
+Stage 3 steps (each green in both modes before the flip, `str_slots()`):
+
+1. Intrinsic chunks: a fat `str` parameter passes only its pointer to the
+   backend implementation; a fat `str` result is completed with one
+   `strlen`; `strlen`/`__string_strlen`/`__panic_strlen` read slot 1.
+2. The 5 direct opcode sites in codegen (`StrLen` in string patterns,
+   `PrimToStr` x2, `StrAsStr`).
+3. `@api` imports/exports: `str` parameters pass the pointer, `str` results
+   are measured.
+4. Runtime startup: `main(args: Array[str])` elements become 16 bytes
+   (`{ptr, strlen}`); std `process_spawn` passes a `char**` it builds.
+5. Flip `runtime_layout` (`Str` -> `Slice`), fix remaining tests, QZI/QZC
+   version bump, full verification (release compiler, Wine, NetBSD).
