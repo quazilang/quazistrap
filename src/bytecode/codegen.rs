@@ -5951,14 +5951,10 @@ impl<'a> FnCompiler<'a> {
                     }
                     LiteralValue::Str(s) => {
                         // Load the literal constant.
-                        let lit_reg = self.alloc_reg();
-                        let const_idx = self.chunk.add_constant(ConstPoolEntry::Str(s.clone()));
-                        self.chunk.emit(ri16(Opcode::MovConst, lit_reg, const_idx));
+                        let lit_reg = self.emit_str_constant(s.clone());
                         // Compare lengths first — fast-path for mismatches.
-                        let len_a = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::StrLen, len_a, value_reg, 0));
-                        let len_b = self.alloc_reg();
-                        self.chunk.emit(rrr(Opcode::StrLen, len_b, lit_reg, 0));
+                        let len_a = self.emit_str_len(value_reg);
+                        let len_b = self.emit_str_len(lit_reg);
                         self.chunk.emit(rrr(Opcode::Cmp, 0, len_a, len_b));
                         skip_patches.push(self.chunk.emit(ri16(Opcode::Jne, 0, 0)));
                         // Byte-by-byte comparison loop.
@@ -9632,7 +9628,21 @@ impl<'a> FnCompiler<'a> {
     /// Emit a numeric-to-text conversion. Inside a format call it writes into
     /// a fresh heap buffer, because the instruction's static scratch would be
     /// shared by every thread running the same code.
-    fn emit_prim_to_str(&mut self, mut instruction: super::instruction::Instruction) {
+    /// Emit `PrimToStr` and return the resulting `str` (with its length when
+    /// `str` is fat: the text is a fresh NUL-terminated buffer).
+    fn emit_prim_to_str(&mut self, instruction: super::instruction::Instruction) -> u8 {
+        let dst = instruction.ops[0];
+        self.emit_prim_to_str_raw(instruction);
+        if self.str_slots() > 1 {
+            let block = self.reserve_reg_block(2);
+            self.chunk.emit(rrr(Opcode::Mov, block, dst, 0));
+            self.chunk.emit(rrr(Opcode::StrLen, block + 1, dst, 0));
+            return block;
+        }
+        dst
+    }
+
+    fn emit_prim_to_str_raw(&mut self, mut instruction: super::instruction::Instruction) {
         if matches!(self.format_scratch.last(), Some(Some(_))) {
             let buffer = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, buffer, 80));
@@ -9812,8 +9822,7 @@ impl<'a> FnCompiler<'a> {
             if tag == 0 && unsigned {
                 instr.flags |= UNSIGNED_FLAG;
             }
-            self.emit_prim_to_str(instr);
-            dst
+            self.emit_prim_to_str(instr)
         } else {
             reg
         }
@@ -9919,8 +9928,7 @@ impl<'a> FnCompiler<'a> {
         if let Some(t) = tag {
             let reg = self.load_reference_value(reg, source_ty);
             let dst = self.alloc_reg();
-            self.emit_prim_to_str(rrr(Opcode::PrimToStr, dst, reg, t));
-            dst
+            self.emit_prim_to_str(rrr(Opcode::PrimToStr, dst, reg, t))
         } else {
             self.coerce_to_display_str(reg, span)
         }
@@ -11658,6 +11666,10 @@ impl<'a> FnCompiler<'a> {
                             return dst;
                         }
                         PrimitiveMethod::AsStr => {
+                            if self.str_slots() > 1 {
+                                // A fat `str` is already its own view.
+                                return obj;
+                            }
                             let dst = self.alloc_reg();
                             self.chunk.emit(rrr(Opcode::StrAsStr, dst, obj, 0));
                             return dst;
@@ -12542,6 +12554,18 @@ impl<'a> FnCompiler<'a> {
             self.emit_u64_into(dst + 1, length);
         }
         dst
+    }
+
+    /// The byte length of the `str` value in `value`: its length slot when
+    /// `str` is fat (D-030), a scan otherwise.
+    fn emit_str_len(&mut self, value: u8) -> u8 {
+        let length = self.alloc_reg();
+        if self.str_slots() > 1 {
+            self.chunk.emit(rrr(Opcode::Mov, length, value + 1, 0));
+        } else {
+            self.chunk.emit(rrr(Opcode::StrLen, length, value, 0));
+        }
+        length
     }
 
     /// Load constant `value` into `dst`.
