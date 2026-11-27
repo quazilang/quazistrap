@@ -2595,6 +2595,21 @@ impl Analyzer {
                                 if let Some(element) = &prelude_array {
                                     self.record_array_loop(expr, iter_eval.ty.as_ref(), element);
                                 }
+                                // A fixed array's loop variable copies each
+                                // element in place: owning elements would be
+                                // destroyed twice (by the loop and the array).
+                                if let Some(TypeKind::Array { elem_ty, .. }) = iter_ty
+                                    && self.bc_is_move_type(&self.resolve_type_aliases(&elem_ty.node))
+                                {
+                                    self.push_error(
+                                        expr.span,
+                                        "S10",
+                                        format!(
+                                            "cannot iterate over a fixed array of `{}` by value: its elements own resources; iterate it by index",
+                                            elem_ty.node
+                                        ),
+                                    );
+                                }
                                 match iter_ty {
                                     Some(TypeKind::Array { elem_ty, .. }) => elem_ty.node.clone(),
                                     Some(TypeKind::Slice { elem_ty }) => elem_ty.node.clone(),

@@ -165,7 +165,9 @@ Iterating an `Array[T]` by value consumes it: elements that own resources
 may keep them (`kept.push(name)`); elements left after `break` are released
 with the array. Iterating a borrowed array (`for value : &values`, or a
 `values: &Array[T]` parameter) reads copyable elements in place; a borrowed
-array of owning elements is rejected (S10), iterate it by index instead.
+array of owning elements is rejected (S10), iterate it by index instead. A
+fixed array (`[T; N]`) of owning elements cannot be iterated by value either
+(S10); iterate it by index.
 
 Besides these, `for` accepts any value whose type has
 `has_next(self: &I!) bool` and `next(self: &I!) Option[T]` methods (`I` is

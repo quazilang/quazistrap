@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Check fixed arrays: nested arrays are laid out flat and index correctly
+(literal and dynamic indices, reads, writes, compound assignment, bounds);
+owned call results move into array literals (they were destroyed as
+temporaries: use after free); arrays of owned elements are destroyed with
+their owner (they leaked) and once when moved; iterating a fixed array of
+owned elements by value is rejected (it read freed memory). Native and QZI;
+with --valgrind also under memcheck with libc's allocator."""
+
+import argparse
+import subprocess
+import tempfile
+from pathlib import Path
+
+NESTED = r'''import std.io.println;
+fn sum(m: [[i64; 3]; 3]) i64 {
+    var t: i64 = 0;
+    var i: usize = 0;
+    for (i < 3) { var j: usize = 0; for (j < 3) { t = t + m[i][j]; j = j + 1; } i = i + 1; }
+    ret t;
+}
+fn main() i32 {
+    var m: [[i64; 3]; 3] = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+    var i: usize = 2;
+    var j: usize = 1;
+    println("{} {} {}", m[2][1], m[i][j], m[1][2]);
+    m[i][j] = 80;
+    m[0][0] = 10;
+    m[i][0] += 3;
+    println("{} {} {} {}", m[2][1], m[0][0], m[2][0], sum(m));
+    0
+}
+'''
+NESTED_OUT = "8 8 6\n80 10 10 129\n"
+OWNED = r'''import std.io.println;
+struct R { id: i32 }
+impl R { fn free(self: R) void { println("drop {self.id}"); } }
+fn ms(v: str) String { String.from(v) }
+fn take(a: [R; 2]) void { println("took"); }
+fn main() i32 {
+    const t = String.from("t");
+    const s: [String; 3] = [ms("one"), String.from("p"), t];
+    const filler = String.from("ZZZZZZZZ");
+    println("[{}] [{}] [{}] {}", s[0], s[1], s[2], filler);
+    const a: [R; 2] = [R { id: 1 }, R { id: 2 }];
+    const b: [R; 2] = [R { id: 3 }, R { id: 4 }];
+    take(b);
+    println("{}", a[1].id);
+    0
+}
+'''
+OWNED_OUT = "[one] [p] [t] ZZZZZZZZ\ntook\ndrop 3\ndrop 4\n2\ndrop 1\ndrop 2\n"
+ITERATE = r'''struct P { x: i64, y: i64, }
+fn main() i32 {
+    const c: [P; 2] = [P { x: 1, y: 10 }, P { x: 2, y: 20 }];
+    for p : c { const x = p.x; }
+    0
+}
+'''
+
+
+def run(command, cwd, expected=0):
+    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, timeout=600)
+    assert result.returncode == expected, (command, result.stdout + result.stderr)
+    return result.stdout + result.stderr
+
+
+def project(root, name, source, libc):
+    path = root / name
+    (path / "src").mkdir(parents=True)
+    manifest = f'[package]\nname="{name}"\n[build]\nentry="src/main.qz"\n'
+    if libc:
+        manifest += '[target.x86_64-linux.link]\nlibc = true\n'
+    (path / "quazi.toml").write_text(manifest)
+    (path / "src/main.qz").write_text(source)
+    return path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--qz", type=Path, default=Path("target/debug/qz"))
+    parser.add_argument("--valgrind", type=Path, help="valgrind executable (memcheck run)")
+    args = parser.parse_args()
+    qz = str(args.qz.resolve())
+    common = ["--no-incremental", "--no-color", "--silent"]
+    with tempfile.TemporaryDirectory(prefix="quazi-fixed-arrays-") as directory:
+        root = Path(directory)
+        for name, source, expected in (("nested", NESTED, NESTED_OUT), ("owned", OWNED, OWNED_OUT)):
+            path = project(root, name, source, bool(args.valgrind))
+            run([qz, "build", *common, "-o", str(path / "native")], path)
+            assert run([str(path / "native")], path) == expected, name
+            run([qz, "build", *common, "-i", "-o", str(path / "program.qzi")], path)
+            run([qz, "build", str(path / "program.qzi"), *common, "-o", str(path / "portable")], path)
+            assert run([str(path / "portable")], path) == expected, name
+            if args.valgrind:
+                run([str(args.valgrind), "--leak-check=full", "--errors-for-leak-kinds=definite",
+                     "--error-exitcode=9", str(path / "native")], path)
+        path = project(root, "iterate", ITERATE, False)
+        output = run([qz, "check"], path, expected=1)
+        assert "cannot iterate over a fixed array of `P` by value" in output, output
+    checked = ", valgrind clean" if args.valgrind else ""
+    print("PASS fixed arrays: nested layout and indexing, owned literal elements, "
+          f"destruction, owning by-value iteration rejected; native and QZI{checked}")
+
+
+if __name__ == "__main__":
+    main()

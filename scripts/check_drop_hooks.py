@@ -27,8 +27,11 @@ ROOTS_OUT = "bag\ndrop 3\ncell\ndrop 2\ndrop 1\n"
 TRY = 'import std.io.println;\nstruct Res { id: i32 }\nimpl Res { fn free(self: Res) void { println("drop {self.id}"); } }\nstruct P { a: Res, b: Res }\nstruct H { a: Res, b: Res, n: i32 }\nimpl H {\n    fn free(self: H) void { println("hook {self.n}"); }\n    fn checked(self: H, fail: bool) Result[i32, i32] { const v: i32 = chk(fail)?; ret Ok(v); }\n    fn pick(self: H, k: i32) i32 {\n        const got: Res = match k { 0 => self.a, 1 => self.b, _ => Res { id: 0 } };\n        ret got.id;\n    }\n}\nfn chk(fail: bool) Result[i32, i32] { if fail { ret Err(1); } ret Ok(2); }\nfn param(r: Res, fail: bool) Result[i32, i32] { const v: i32 = chk(fail)?; ret Ok(v + r.id); }\nfn local(k: i32) i32 {\n    const h = P { a: Res { id: 20 }, b: Res { id: 21 } };\n    const got: Res = match k { 0 => h.a, _ => Res { id: 0 } };\n    ret got.id;\n}\nfn mk(n: i32) H { ret H { a: Res { id: n }, b: Res { id: n + 1 }, n: n * 10 }; }\nfn main() i32 {\n    println("== param"); const p = param(Res { id: 3 }, true);\n    println("== try t"); const t = mk(4).checked(true);\n    println("== try f"); const f = mk(6).checked(false);\n    println("== pick 0"); println("{}", mk(8).pick(0));\n    println("== pick 2"); println("{}", mk(10).pick(2));\n    println("== local 0"); println("{}", local(0));\n    println("== local 1"); println("{}", local(1));\n    ret 0;\n}\n'
 TRY_OUT = '== param\ndrop 3\n== try t\nhook 40\ndrop 5\ndrop 4\n== try f\nhook 60\ndrop 7\ndrop 6\n== pick 0\ndrop 8\ndrop 9\n8\n== pick 2\ndrop 0\nhook 100\ndrop 11\ndrop 10\n0\n== local 0\ndrop 20\ndrop 21\n20\n== local 1\ndrop 0\ndrop 21\ndrop 20\n0\n'
 CAPTURE = 'struct Res { id: i32 }\nimpl Res { fn free(self: Res) void {} }\nstruct H { a: Res, b: Res }\nimpl H {\n    fn free(self: H) void {}\n    fn peek(self: H) i32 { const r: Res = self.a; const f: fn() i32 = || self.b.id; ret f(); }\n}\nfn main() i32 { ret 0; }\n'
+UPPERCASE = 'import std.io.println;\nstruct R { id: i32 }\nimpl R { fn free(self: R) void { println("free {self.id}"); } }\nstruct W[T] { v: T }\nstruct Plain { r: R }\nfn main() i32 {\n    const w: W[R] = W { v: R { id: 1 } };\n    const p: Plain = Plain { r: R { id: 2 } };\n    const o: Option[R] = Some(R { id: 3 });\n    const q = Some(R { id: 4 });\n    println("end");\n    0\n}\n'
+UPPERCASE_OUT = "end\nfree 4\nfree 3\nfree 2\nfree 1\n"
 PROGRAMS = (("receiver", RECEIVER, RECEIVER_OUT), ("hook_fields", HOOK_FIELDS, HOOK_FIELDS_OUT),
-            ("roots", ROOTS, ROOTS_OUT), ("try_match", TRY, TRY_OUT))
+            ("roots", ROOTS, ROOTS_OUT), ("try_match", TRY, TRY_OUT),
+            ("uppercase", UPPERCASE, UPPERCASE_OUT))
 
 
 def run(command, cwd):
@@ -74,7 +77,7 @@ def main():
         assert "cannot capture partially moved value 'self'" in check.stdout + check.stderr, check.stdout + check.stderr
     checked = ", valgrind clean" if args.valgrind else ""
     print("PASS drop hooks: hook then remaining fields, receiver field moves skip the hook, "
-          f"field destructors behind hooks compiled, `?` keeps parameters, match-arm moves are conditional, partial captures rejected; native and QZI{checked}")
+          f"field destructors behind hooks compiled, `?` keeps parameters, match-arm moves are conditional, partial captures rejected, all-caps type names (`R`) in generic containers destroyed; native and QZI{checked}")
 
 
 if __name__ == "__main__":

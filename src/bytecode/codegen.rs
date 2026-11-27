@@ -1314,7 +1314,7 @@ impl<'a> Codegen<'a> {
 
         // Index monomorphized specializations.
         for mono in &self.report.monomorphizations {
-            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics) {
+            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics, self.report) {
                 continue;
             }
             let mono_name = &mono.mangled_name;
@@ -1534,7 +1534,7 @@ impl<'a> Codegen<'a> {
         // Compile monomorphized specializations (top-level fns and impl methods).
         let monos: Vec<_> = self.report.monomorphizations.clone();
         for mono in &monos {
-            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics) {
+            if is_unresolved_layout_intrinsic_mono(mono, &self.layout_intrinsics, self.report) {
                 continue;
             }
             let mono_name = &mono.mangled_name;
@@ -3028,6 +3028,13 @@ struct ExpressionTemporary {
     borrowed_dyn: bool,
 }
 
+/// A flat slot index into a fixed-array register block.
+#[derive(Clone, Copy)]
+enum FlatIndex {
+    Literal(u64),
+    Register(u8),
+}
+
 #[derive(Clone)]
 struct DropLocal {
     name: String,
@@ -3082,6 +3089,13 @@ enum DropAction {
     /// consumed it, `DYN_DESTROY_STORAGE` when only the value's storage is
     /// released, and otherwise the address of the concrete type's drop glue.
     DynObject,
+    /// A fixed array in a register block: destroy each element (its
+    /// `element_slots` consecutive registers) in order.
+    FixedArray {
+        len: u8,
+        element_slots: u8,
+        element: Box<DropAction>,
+    },
 }
 
 /// The destroy word of a trait object whose value needs only its storage
@@ -4591,6 +4605,34 @@ impl<'a> FnCompiler<'a> {
                     let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
                     LvalueAddr::IndexSlice { ptr, idx }
+                } else if let Some(TypeKind::Array { elem_ty, .. }) = &obj_ty
+                    && let Some((base, flat, total)) = self.nested_fixed_array_place(target)
+                {
+                    let element = self.resolve_type(&elem_ty.node);
+                    if crate::runtime_layout::runtime_value_layout(&element)
+                        .slot_count()
+                        .unwrap_or(1)
+                        > 1
+                    {
+                        self.codegen_error.get_or_insert_with(|| {
+                            "assigning a whole nested fixed-array row is not supported yet; assign its elements".to_string()
+                        });
+                    }
+                    let block_length = self.fixed_array_block_length(total as u64);
+                    match flat {
+                        FlatIndex::Literal(n) => LvalueAddr::IndexFixed {
+                            base,
+                            idx: 0,
+                            literal: Some(n),
+                            block_length,
+                        },
+                        FlatIndex::Register(idx) => LvalueAddr::IndexFixed {
+                            base,
+                            idx,
+                            literal: None,
+                            block_length,
+                        },
+                    }
                 } else {
                     let array_length = match &obj_ty {
                         Some(TypeKind::Array { len, .. }) => Some(*len),
@@ -4702,6 +4744,73 @@ impl<'a> FnCompiler<'a> {
                 dst
             }
         }
+    }
+
+    /// `a[i][j]...` where `a` is a fixed array of fixed arrays: the root
+    /// register block, the flat slot index of the element (bounds-checked at
+    /// every level) and the root's total slot count. `None` when the chain
+    /// has a single level (the ordinary path handles it).
+    fn nested_fixed_array_place(&mut self, expr: &Expr) -> Option<(u8, FlatIndex, usize)> {
+        let ExprKind::Index { object, .. } = &expr.node else {
+            return None;
+        };
+        let ExprKind::Index { .. } = &object.node else {
+            return None;
+        };
+        self.fixed_array_place(expr)
+    }
+
+    fn fixed_array_place(&mut self, expr: &Expr) -> Option<(u8, FlatIndex, usize)> {
+        let ExprKind::Index { object, indices } = &expr.node else {
+            return None;
+        };
+        let index = indices.first()?;
+        let Some(TypeKind::Array { len, elem_ty }) = self.receiver_value_type(object) else {
+            return None;
+        };
+        let element = self.resolve_type(&elem_ty.node);
+        let element_slots = crate::runtime_layout::runtime_value_layout(&element)
+            .slot_count()?
+            .max(1);
+        let (base, parent, total) = match self.fixed_array_place(object) {
+            Some(place) => place,
+            None => {
+                let total = usize::try_from(len).ok()?.checked_mul(element_slots)?;
+                (self.compile_expr(object), FlatIndex::Literal(0), total)
+            }
+        };
+        let step = match &index.node {
+            ExprKind::Literal(Literal::Int(n)) if *n < len => {
+                FlatIndex::Literal(n.checked_mul(element_slots as u64)?)
+            }
+            _ => {
+                let idx = self.compile_value(index);
+                let length_reg = self.emit_length_constant(len);
+                self.emit_bounds_guard(idx, length_reg, index.span);
+                let scaled = self.alloc_reg();
+                let slots = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, slots, element_slots as u16));
+                self.chunk.emit(rrr(Opcode::Mul, scaled, idx, slots));
+                FlatIndex::Register(scaled)
+            }
+        };
+        let flat = match (parent, step) {
+            (FlatIndex::Literal(a), FlatIndex::Literal(b)) => FlatIndex::Literal(a.checked_add(b)?),
+            (FlatIndex::Literal(a), FlatIndex::Register(r))
+            | (FlatIndex::Register(r), FlatIndex::Literal(a)) => {
+                let sum = self.alloc_reg();
+                let constant = self.alloc_reg();
+                self.chunk.emit(ri16(Opcode::MovI, constant, u16::try_from(a).ok()?));
+                self.chunk.emit(rrr(Opcode::Add, sum, r, constant));
+                FlatIndex::Register(sum)
+            }
+            (FlatIndex::Register(a), FlatIndex::Register(b)) => {
+                let sum = self.alloc_reg();
+                self.chunk.emit(rrr(Opcode::Add, sum, a, b));
+                FlatIndex::Register(sum)
+            }
+        };
+        Some((base, flat, total))
     }
 
     /// Store `src` into an lvalue address.
@@ -5744,6 +5853,18 @@ impl<'a> FnCompiler<'a> {
         if matches!(resolved, TypeKind::Dyn { .. }) {
             return Some(DropAction::DynObject);
         }
+        if let TypeKind::Array { elem_ty, len } = resolved {
+            let element_ty = self.resolve_type(&elem_ty.node);
+            let element = self.drop_action_for_resolved_type(&element_ty)?;
+            let element_slots = crate::runtime_layout::runtime_value_layout(&element_ty)
+                .slot_count()
+                .and_then(|slots| u8::try_from(slots).ok())?;
+            return Some(DropAction::FixedArray {
+                len: u8::try_from(*len).ok()?,
+                element_slots,
+                element: Box::new(element),
+            });
+        }
         let TypeKind::Named { name, type_args } = resolved else {
             return None;
         };
@@ -5803,7 +5924,7 @@ impl<'a> FnCompiler<'a> {
         }
         let has_unresolved_type_arg = type_args
             .iter()
-            .any(|argument| type_kind_mentions_unresolved_param(&argument.node));
+            .any(|argument| self.mentions_unresolved_param(&argument.node));
         let release = if type_args.is_empty() || has_unresolved_type_arg {
             base_release
         } else {
@@ -5827,7 +5948,7 @@ impl<'a> FnCompiler<'a> {
         // known and are never a valid fallback for a concrete cleanup call.
         // Their specialized copies resolve `T` and revisit this action.
         if element_action.is_none()
-            && !type_kind_mentions_unresolved_param(&concrete_element)
+            && !self.mentions_unresolved_param(&concrete_element)
             && self.type_requires_structural_drop(&concrete_element)
         {
             return Some(DropAction::UnsupportedContiguousElement {
@@ -5842,6 +5963,15 @@ impl<'a> FnCompiler<'a> {
             element_action: element_action.map(Box::new),
             release,
         })
+    }
+
+    fn mentions_unresolved_param(&self, ty: &TypeKind) -> bool {
+        let declared = |name: &str| {
+            self.struct_defs.contains_key(name)
+                || self.enum_defs.contains_key(name)
+                || self.type_aliases.contains_key(name)
+        };
+        type_kind_mentions_unresolved_param_with(ty, &declared)
     }
 
     fn has_consuming_drop_hook(&self, base: &str, resolved_name: &str) -> bool {
@@ -5867,7 +5997,7 @@ impl<'a> FnCompiler<'a> {
         // types; templates with unresolved parameters stay out.
         if type_args
             .iter()
-            .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
+            .any(|argument| self.mentions_unresolved_param(&argument.node))
             || self.repr_c_structs.contains(name)
         {
             return None;
@@ -5946,7 +6076,7 @@ impl<'a> FnCompiler<'a> {
         .to_string();
         if type_args
             .iter()
-            .any(|argument| type_kind_mentions_unresolved_param(&argument.node))
+            .any(|argument| self.mentions_unresolved_param(&argument.node))
         {
             return None;
         }
@@ -6318,6 +6448,24 @@ impl<'a> FnCompiler<'a> {
 
     fn emit_drop_action(&mut self, reg: u8, action: DropAction) {
         match action {
+            DropAction::FixedArray {
+                len,
+                element_slots,
+                element,
+            } => {
+                for index in 0..len {
+                    let Some(slot) = (index as usize)
+                        .checked_mul(element_slots as usize)
+                        .and_then(|offset| u8::try_from(reg as usize + offset).ok())
+                    else {
+                        self.codegen_error.get_or_insert_with(|| {
+                            "fixed array exceeds the 255-register QZI block limit".to_string()
+                        });
+                        return;
+                    };
+                    self.emit_drop_action(slot, (*element).clone());
+                }
+            }
             DropAction::ReleaseStorage => {
                 let argument = self.alloc_reg();
                 self.chunk.emit(rrr(Opcode::Mov, argument, reg, 0));
@@ -11329,23 +11477,44 @@ impl<'a> FnCompiler<'a> {
             }
 
             ExprKind::ArrayLit(elems) => {
-                let base = self.reserve_reg_block(elems.len());
+                // Elements are laid out flat: a multi-slot element (a nested
+                // fixed array) occupies consecutive registers.
+                let element_slots = if elems.is_empty() {
+                    1
+                } else {
+                    (self.known_value_slot_count(expr).unwrap_or(elems.len()) / elems.len()).max(1)
+                };
+                let base = self.reserve_reg_block(elems.len() * element_slots);
                 for (i, elem) in elems.iter().enumerate() {
+                    // An owned element (a call result) moves into the array:
+                    // it is no longer an expression temporary to destroy.
+                    let owned = self
+                        .type_of_expr(elem)
+                        .is_some_and(|ty| self.drop_action_for_type(&ty).is_some());
+                    if owned {
+                        self.mark_consumed_expr(elem);
+                    }
                     let val = self.compile_expr(elem);
-                    let dst = u8::try_from(i)
-                        .ok()
-                        .and_then(|i| base.checked_add(i))
-                        .unwrap_or_else(|| {
+                    if owned {
+                        self.transfer_expression_temporary(val);
+                    }
+                    for slot in 0..element_slots {
+                        let dst = u8::try_from(i * element_slots + slot)
+                            .ok()
+                            .and_then(|offset| base.checked_add(offset));
+                        let source = u8::try_from(slot).ok().and_then(|slot| val.checked_add(slot));
+                        let (Some(dst), Some(source)) = (dst, source) else {
                             self.codegen_error.get_or_insert_with(|| {
                                 format!(
                                     "array literal in `{}` exceeds the 256-register QZI limit",
                                     self.chunk.name
                                 )
                             });
-                            0
-                        });
-                    if val != dst {
-                        self.chunk.emit(rrr(Opcode::Mov, dst, val, 0));
+                            break;
+                        };
+                        if source != dst {
+                            self.chunk.emit(rrr(Opcode::Mov, dst, source, 0));
+                        }
                     }
                 }
                 base
@@ -11438,17 +11607,27 @@ impl<'a> FnCompiler<'a> {
                     return dst;
                 }
                 // Fallback: raw static-array register arithmetic (single index only).
-                let array_length = match object_value_ty {
-                    Some(TypeKind::Array { len, .. }) => Some(len),
-                    _ => None,
+                let (array_length, element_slots) = match &object_value_ty {
+                    Some(TypeKind::Array { len, elem_ty }) => {
+                        let element = self.resolve_type(&elem_ty.node);
+                        let slots = crate::runtime_layout::runtime_value_layout(&element)
+                            .slot_count()
+                            .unwrap_or(1)
+                            .max(1);
+                        (Some(*len), slots)
+                    }
+                    _ => (None, 1),
                 };
                 let base = self.compile_expr(object);
                 if let ExprKind::Literal(Literal::Int(n)) = &index.node
-                    && *n <= u8::MAX as u64
+                    && let Some(offset) = usize::try_from(*n)
+                        .ok()
+                        .and_then(|n| n.checked_mul(element_slots))
+                        .and_then(|offset| u8::try_from(offset).ok())
                 {
-                    return base + *n as u8;
+                    return base + offset;
                 }
-                // Dynamic index: Lea + scale + Sub + Load
+                // Dynamic index: Lea + scale + Sub + Load of each element slot.
                 let idx = self.compile_value(index);
                 if let Some(length) = array_length {
                     let length_reg = self.emit_length_constant(length);
@@ -11456,18 +11635,23 @@ impl<'a> FnCompiler<'a> {
                 }
                 let ptr = self.alloc_reg();
                 if let Some(length) = array_length {
-                    let block_length = self.fixed_array_block_length(length);
+                    let block_length = self.fixed_array_block_length(length.saturating_mul(element_slots as u64));
                     self.chunk.emit(mem_lea_block(base, ptr, 0, block_length));
                 } else {
                     self.chunk.emit(mem_lea_block(base, ptr, 0, 1));
                 }
-                let eight = self.alloc_reg();
-                self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+                let stride = self.alloc_reg();
+                self.chunk
+                    .emit(ri16(Opcode::MovI, stride, (8 * element_slots).min(u16::MAX as usize) as u16));
                 let offset = self.alloc_reg();
-                self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
+                self.chunk.emit(rrr(Opcode::Mul, offset, idx, stride));
                 self.chunk.emit(rrr(Opcode::Sub, ptr, ptr, offset));
-                let dst = self.alloc_reg();
-                self.chunk.emit(mem_load(ptr, dst, 0));
+                let dst = self.reserve_reg_block(element_slots);
+                for slot in 0..element_slots {
+                    // Register-block slot `k` sits 8*k bytes below slot 0.
+                    let displacement = -((slot * 8).min(i16::MAX as usize) as i16);
+                    self.chunk.emit(mem_load(ptr, dst + slot as u8, displacement));
+                }
                 dst
             }
 
@@ -12164,9 +12348,18 @@ fn layout_intrinsic_declared_by(attributes: &[Attribute]) -> Option<&'static str
 fn is_unresolved_layout_intrinsic_mono(
     mono: &crate::semantic::MonomorphizationInfo,
     layout_intrinsics: &HashMap<String, &'static str>,
+    report: &SemanticReport,
 ) -> bool {
+    let declared = |name: &str| {
+        report.struct_defs.contains_key(name)
+            || report.enum_defs.contains_key(name)
+            || report.type_aliases.contains_key(name)
+    };
     layout_intrinsics.contains_key(&mono.fn_name)
-        && mono.type_args.iter().any(type_kind_mentions_unresolved_param)
+        && mono
+            .type_args
+            .iter()
+            .any(|ty| type_kind_mentions_unresolved_param_with(ty, &declared))
 }
 
 /// An expression whose value nothing else owns: a call result or a value
@@ -12181,25 +12374,24 @@ fn is_owned_temporary_expr(expr: &Expr) -> bool {
     }
 }
 
-fn type_kind_mentions_unresolved_param(ty: &TypeKind) -> bool {
+/// Whether `ty` still names a generic parameter. A parameter looks like one
+/// (`T`, `K2`, `OUT`) and is not a declared type: a user `struct R` or
+/// `struct ID` is concrete (its values were skipped by cleanup before).
+fn type_kind_mentions_unresolved_param_with(ty: &TypeKind, declared: &dyn Fn(&str) -> bool) -> bool {
+    let recurse = |ty: &TypeKind| type_kind_mentions_unresolved_param_with(ty, declared);
     match ty {
         TypeKind::Named { name, type_args } => {
-            (type_args.is_empty() && is_generic_param_name(name))
-                || type_args
-                    .iter()
-                    .any(|arg| type_kind_mentions_unresolved_param(&arg.node))
+            (type_args.is_empty() && is_generic_param_name(name) && !declared(name))
+                || type_args.iter().any(|arg| recurse(&arg.node))
         }
         TypeKind::Ref { inner }
         | TypeKind::MutRef { inner }
         | TypeKind::RawPtr { inner, .. }
         | TypeKind::FlexibleArray { elem_ty: inner }
-        | TypeKind::Slice { elem_ty: inner } => type_kind_mentions_unresolved_param(&inner.node),
-        TypeKind::Array { elem_ty, .. } => type_kind_mentions_unresolved_param(&elem_ty.node),
+        | TypeKind::Slice { elem_ty: inner } => recurse(&inner.node),
+        TypeKind::Array { elem_ty, .. } => recurse(&elem_ty.node),
         TypeKind::Fn { params, return_ty } | TypeKind::CFn { params, return_ty } => {
-            params
-                .iter()
-                .any(|param| type_kind_mentions_unresolved_param(&param.node))
-                || type_kind_mentions_unresolved_param(&return_ty.node)
+            params.iter().any(|param| recurse(&param.node)) || recurse(&return_ty.node)
         }
         _ => false,
     }
