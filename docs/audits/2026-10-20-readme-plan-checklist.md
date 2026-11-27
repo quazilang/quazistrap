@@ -5,7 +5,13 @@ Revalidated on 2026-10-25 against the
 Previous committed source: `5f0d284`.
 README statuses are updated before committing this checkpoint, as requested.
 
-**Complete: 99.1%. Remaining: 0.9%.**
+**Complete: 99.3%. Remaining: 0.7%.**
+
+On 2026-11-27 closed-target indirect/callback/trait effects were credited
+(Ownership 14/16, 99.3%): in a closed program calls through `dyn`, function
+values and callbacks compose the effects of every possible target, closure
+literals included (per-closure parameter writes, generic creators through
+all their instances); unknown facts fail closed.
 
 On 2026-11-25 reproducible Zed runtime validation was credited (LSP 20/20,
 99.1%): `../zed-quazi/tests/runtime-smoke.py` runs Zed 1.28 on Xvfb with Mesa's
@@ -435,14 +441,20 @@ Evidence: [docs/decisions/whole-program-ownership.md](../decisions/whole-program
   the caller; loops recheck loans carried by outer views over the back edge;
   calls through function values stay lexical; `scripts/check_reference_results.py`).
 - [ ] Transitive fixed-point call-effect solver.
-- [ ] Closed-target indirect/callback/trait effects (2026-11-26: `dyn Trait`
+- [x] Closed-target indirect/callback/trait effects (2026-11-26: `dyn Trait`
   calls in closed programs compose every implementation's effects,
   `OwnershipCallTarget::Closed`; calls through function values and callbacks
-  close over the functions named as values with the same signature; since
-  2026-11-27 closure literals of that signature with a scalar or `void`
-  result close them over their creators' summaries plus per-closure
-  parameter writes; closures with owned or reference results, generic
-  creators and open programs keep such calls open).
+  close over the functions named as values with the same signature;
+  2026-11-27: closure literals of that signature close them too, over their
+  creators' summaries plus per-closure parameter writes, including closures
+  of generic creators (every concrete instance). Boundary: open programs
+  (no `main`, QZI dependencies: the certificate item) and closures returning
+  a raw pointer stay open, fail-closed. Tests in
+  `src/semantic/control_flow_tests.rs`: closed_dyn_calls_compose_every_implementation,
+  closed_function_value_calls_compose_named_functions,
+  scalar_closures_close_function_value_calls_through_their_creator,
+  closure_pointer_parameter_writes_are_summarized_per_closure,
+  closures_of_generic_creators_compose_every_instance).
 - [ ] Verified QZI-only ownership certificates.
 - [x] Complete structural destruction including generic/enum/scalar shells
   (2026-11-17: enum payload drop glue, recursive enums and structs through

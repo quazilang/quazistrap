@@ -2801,19 +2801,28 @@ impl Analyzer {
                                     .and_then(|index| graph[*index].parameter_effects.clone())
                             })
                             .chain(closures.iter().map(|closure| {
-                                let creator = &graph[*by_id.get(&closure.creator)?];
-                                let flags = creator.parameter_effects.as_ref()?;
-                                Some(OwnershipParameterEffects {
-                                    written_through_reference: creator
-                                        .closure_writes
-                                        .get(&closure.span)
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                    writes_globals: flags.writes_globals,
-                                    unmodeled: flags.unmodeled,
-                                    callee_unmodeled: flags.callee_unmodeled,
-                                    ..Default::default()
-                                })
+                                let instances: Vec<&OwnershipCallable> = if closure.every_instance {
+                                    graph
+                                        .iter()
+                                        .filter(|node| node.id.callable == closure.creator.callable)
+                                        .collect()
+                                } else {
+                                    vec![&graph[*by_id.get(&closure.creator)?]]
+                                };
+                                if instances.is_empty() {
+                                    return None;
+                                }
+                                let mut united = OwnershipParameterEffects::default();
+                                for creator in instances {
+                                    let flags = creator.parameter_effects.as_ref()?;
+                                    if let Some(writes) = creator.closure_writes.get(&closure.span) {
+                                        united.written_through_reference.extend(writes);
+                                    }
+                                    united.writes_globals |= flags.writes_globals;
+                                    united.unmodeled += flags.unmodeled;
+                                    united.callee_unmodeled |= flags.callee_unmodeled;
+                                }
+                                Some(united)
                             }))
                             .collect(),
                         OwnershipCallTarget::Unresolved(_) => vec![None],

@@ -65,7 +65,9 @@ pub(super) struct SourceOwnershipCall {
 pub(super) struct ClosedTargets {
     pub(super) callees: Vec<String>,
     /// Closure literals: creator and source span.
-    pub(super) closures: Vec<(String, (usize, usize))>,
+    /// Closure literals: creator, source span, and whether the creator is
+    /// generic (every concrete instance then counts).
+    pub(super) closures: Vec<(String, (usize, usize), bool)>,
 }
 
 /// A closure literal seen by the type checker.
@@ -268,6 +270,17 @@ impl Analyzer {
             if closure_params.len() != wanted.len() {
                 continue;
             }
+            // A closure typed over a generic parameter (`fn(T) T` in a
+            // generic creator) may flow to a concrete `fn` value of any
+            // specialization: its shape cannot be compared.
+            if closure_params
+                .iter()
+                .map(|param| &param.node)
+                .chain(std::iter::once(&closure_return.node))
+                .any(|ty| self.mentions_unknown_type_name(ty))
+            {
+                return None;
+            }
             let same_signature = closure_params
                 .iter()
                 .zip(&wanted)
@@ -286,15 +299,16 @@ impl Analyzer {
             }
             let creator = creator.as_ref()?;
             let symbol = self.resolve_symbol(creator)?;
-            // Generic impl parameters count too (`impl Box[T]` methods).
-            if symbol.kind != SymbolKind::Function
-                || !self.generic_params_for_function(creator).is_empty()
-            {
+            if symbol.kind != SymbolKind::Function {
                 return None;
             }
+            // A generic creator (impl generics included) composes every
+            // concrete instance in the graph: the closure exists only once
+            // some instance ran.
+            let generic = !self.generic_params_for_function(creator).is_empty();
             match self.ownership_signature_index.get(creator) {
                 Some(signature) if signature.has_body => {
-                    closures.push((creator.clone(), closure.span));
+                    closures.push((creator.clone(), closure.span, generic));
                 }
                 _ => return None,
             }
@@ -672,14 +686,31 @@ impl Analyzer {
                             ids
                         };
                         let callees = schedule(&closed.callees);
-                        let creators: Vec<String> =
-                            closed.closures.iter().map(|(creator, _)| creator.clone()).collect();
-                        let closures = schedule(&creators)
-                            .into_iter()
-                            .zip(&closed.closures)
-                            .map(|(creator, (_, span))| OwnershipClosureTarget {
-                                creator,
+                        // Generic creators are not scheduled here: their
+                        // concrete instances come from ordinary calls.
+                        let creators: Vec<String> = closed
+                            .closures
+                            .iter()
+                            .filter(|(_, _, generic)| !generic)
+                            .map(|(creator, _, _)| creator.clone())
+                            .collect();
+                        let mut scheduled_creators = schedule(&creators).into_iter();
+                        let closures = closed
+                            .closures
+                            .iter()
+                            .map(|(creator, span, generic)| OwnershipClosureTarget {
+                                creator: if *generic {
+                                    OwnershipCallableId {
+                                        callable: creator.clone(),
+                                        type_arguments: Vec::new(),
+                                    }
+                                } else {
+                                    scheduled_creators
+                                        .next()
+                                        .expect("one scheduled id per non-generic creator")
+                                },
                                 span: *span,
+                                every_instance: *generic,
                             })
                             .collect();
                         if complete {

@@ -2969,3 +2969,35 @@ fn main() void { var cell = Cell { value: 1 }; unsafe { relay(&cell!); } }
         .unwrap();
     assert!(relay.written_through_reference.contains(&0), "{relay:?}");
 }
+
+#[test]
+fn closures_of_generic_creators_compose_every_instance() {
+    // `make[T]` creates a concrete `fn(i64) i64` closure; every concrete
+    // instance of `make` may have created it, so their effects unite.
+    let source = r#"
+@api("counter") var counter: i64;
+fn record(x: i64) i64 { unsafe { counter = x; } ret x; }
+fn apply(action: fn(i64) i64, value: i64) i64 { ret action(value); }
+fn make[T](seed: T) i64 { ret apply(|x| record(x), 1); }
+fn main() void { const a = make(1); const b = make(true); }
+"#;
+    let report = Analyzer::new().analyze_program(&parse(source));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let apply = report
+        .ownership_call_graph
+        .iter()
+        .find(|callable| callable.id.callable == "apply")
+        .unwrap();
+    let effects = apply.parameter_effects.clone().unwrap();
+    assert_eq!(effects.unmodeled, 0, "{effects:?}");
+    assert!(effects.writes_globals, "{effects:?}");
+    assert!(
+        apply.calls.iter().any(|site| matches!(
+            &site.target,
+            OwnershipCallTarget::Closed { closures, .. }
+                if closures.iter().any(|closure| closure.every_instance && closure.creator.callable == "make")
+        )),
+        "{:?}",
+        apply.calls.iter().map(|site| &site.target).collect::<Vec<_>>()
+    );
+}

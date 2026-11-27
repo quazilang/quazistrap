@@ -87,8 +87,10 @@ whose signature has exactly the callee's parameter and result types, and
 its positional arguments map to slots 0, 1, ... Closure literals of exactly
 that signature (`closure_values`, with span and parameter names) close the
 call too when the closure's result is a plain scalar or `void` (it cannot
-hand an argument back) and its creator is a non-generic source callable
-(impl generics included). A closure body is a deferred graph of its
+hand an argument back) and its creator is a source callable. A generic
+creator (impl generics included) contributes every concrete instance in the
+graph (`every_instance`): the closure exists only once some instance ran,
+so the union of their effects is a superset. A closure body is a deferred graph of its
 creator, not a callable, so the target is
 `Closed { closures: [OwnershipClosureTarget { creator, span }] }`: the call
 inherits the creator's global writes and unmodeled effects (a superset of
@@ -101,8 +103,9 @@ plain copies or raw pointers today (reference parameters are S10); captures
 are never references.
 Unknown facts fail closed to an open call: a generic or unknown candidate,
 a closure literal of the same arity with an unknown type, one with a
-non-scalar result, a generic or missing creator, or a site type that is not
-concrete (`fn(T) T` inside a generic function). An empty target set is
+non-scalar result, a closure type over a generic parameter (S10 in the
+language today), a missing creator or one with no instance, or a site type
+that is not concrete (`fn(T) T` inside a generic function). An empty target set is
 sound: no value of that type exists.
 
 An argument whose root is a reference or a raw pointer carries a callee's

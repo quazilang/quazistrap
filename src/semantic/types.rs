@@ -450,6 +450,9 @@ pub enum OwnershipCallTarget {
 pub struct OwnershipClosureTarget {
     pub creator: OwnershipCallableId,
     pub span: (usize, usize),
+    /// The creator is generic: every concrete instance of `creator.callable`
+    /// in the graph may have created the closure, so their effects unite.
+    pub every_instance: bool,
 }
 
 /// Lexical spelling order is independent of declared parameter slot order.
