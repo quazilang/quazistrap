@@ -2635,6 +2635,9 @@ impl<'a> Codegen<'a> {
                     m.insert("quazi.atomic.cas", Opcode::AtomicCas);
                     m
                 });
+            if let Some(fat) = self.compile_fat_str_intrinsic(name, params, instr_name, type_subst)? {
+                return Ok(fat);
+            }
             if let Some(&op) = INTRINSIC_OPCODE_MAP.get(instr_name) {
                 // RRR: ops[0]=val/dst, ops[1]=base_ptr, ops[2]=idx
                 // Params are bound to r0, r1, r2 in declaration order.
@@ -2701,6 +2704,91 @@ impl<'a> Codegen<'a> {
         chunk.reg_count = arg_count; // ensure frame covers all param slots
         chunk.variadic = params.last().map(|p| p.variadic).unwrap_or(false);
         Ok(chunk)
+    }
+
+    /// D-030 adapter for intrinsics whose signature has a fat `str`: the
+    /// backend implementations take one word per parameter, so a `str`
+    /// parameter passes its pointer, and a `str` result is completed with
+    /// its length (one `strlen`). `strlen` itself reads the length slot.
+    /// `None` when no parameter or result is wider than one slot.
+    fn compile_fat_str_intrinsic(
+        &self,
+        name: &str,
+        params: &[crate::parser::ast::Param],
+        instr_name: &str,
+        type_subst: &HashMap<String, TypeKind>,
+    ) -> Result<Option<Chunk>, String> {
+        const STRLEN_CASE: u16 = 10;
+        let slots_of = |ty: &TypeKind| {
+            let resolved = self.resolve_type_for_layout(ty, type_subst);
+            (
+                crate::runtime_layout::runtime_value_layout(&resolved).slot_count().unwrap_or(1),
+                matches!(resolved, TypeKind::Str),
+            )
+        };
+        if params.iter().any(|param| param.variadic) {
+            return Ok(None);
+        }
+        let shapes: Vec<(usize, bool)> = params.iter().map(|param| slots_of(&param.ty.node)).collect();
+        let result_slots = self
+            .fn_value_layouts
+            .get(name)
+            .and_then(|layout| layout.result.layout.slot_count())
+            .unwrap_or(1);
+        if shapes.iter().all(|(slots, _)| *slots <= 1) && result_slots <= 1 {
+            return Ok(None);
+        }
+        if let Some((slots, is_str)) = shapes.iter().find(|(slots, is_str)| *slots > 1 && !(*slots == 2 && *is_str)) {
+            let _ = (slots, is_str);
+            return Err(format!("intrinsic `{name}` takes a multi-slot value other than `str`"));
+        }
+        if result_slots > 2 {
+            return Err(format!("intrinsic `{name}` returns a value wider than `str`"));
+        }
+        let total: usize = usize::from(result_slots > 1) + shapes.iter().map(|(slots, _)| *slots).sum::<usize>();
+        let mut chunk = Chunk::with_params(name, total);
+        if instr_name == "quazi.strlen" && shapes == [(2, true)] && result_slots == 1 {
+            chunk.emit(rrr(Opcode::Mov, 0, 1, 0));
+            chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+            chunk.reg_count = 2;
+            chunk.param_count = 2;
+            return Ok(Some(chunk));
+        }
+        let scratch = u8::try_from(total).map_err(|_| format!("intrinsic `{name}` has too many parameter slots"))?;
+        let sret = result_slots > 1;
+        if sret {
+            chunk.emit(rrr(Opcode::Mov, scratch, 0, 0));
+        }
+        // Compact the first word of every parameter into r0, r1, ...
+        let mut source = usize::from(sret);
+        for (index, (slots, _)) in shapes.iter().enumerate() {
+            if source != index {
+                chunk.emit(rrr(Opcode::Mov, index as u8, source as u8, 0));
+            }
+            source += slots;
+        }
+        if instr_name == "quazi.str.from_ptr" {
+            // `str_from_ptr` is a pure reinterpretation of its pointer.
+        } else {
+            let id = intrinsic_id_by_name(instr_name)
+                .ok_or_else(|| format!("unknown intrinsic `{instr_name}` on function `{name}`"))?;
+            let mut instr = ri16(Opcode::Intrinsic, 0, id);
+            instr.flags = params.len() as u8;
+            chunk.emit(instr);
+        }
+        if sret {
+            // r0 holds the pointer: store it, then measure it once.
+            chunk.emit(field_store(0, scratch, 0));
+            let mut measure = ri16(Opcode::Intrinsic, 0, STRLEN_CASE);
+            measure.flags = 1;
+            chunk.emit(measure);
+            chunk.emit(field_store(0, scratch, 8));
+        }
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        chunk.intrinsic = true;
+        chunk.reg_count = scratch.saturating_add(1).max(params.len() as u8);
+        chunk.param_count = total;
+        Ok(Some(chunk))
     }
 
     /// Number of QZI slots occupied by the element type of an array intrinsic.
@@ -8382,7 +8470,7 @@ impl<'a> FnCompiler<'a> {
                                 } else {
                                     ptr
                                 };
-                                let mut bind_value = |codegen: &mut Self, name: &String| {
+                                let bind_value = |codegen: &mut Self, name: &String| {
                                     if element_slots > 1 {
                                         let block = codegen.reserve_reg_block(element_slots);
                                         codegen.regs.insert(name.clone(), block);
@@ -12760,7 +12848,7 @@ fn extract_field_chain(expr: &Expr) -> Option<(String, Vec<String>)> {
 }
 
 /// Maps `@intrinsic("quazi.X")` attribute strings to case IDs for the `Intrinsic` opcode.
-fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
+fn intrinsic_id_by_name(name: &str) -> Option<u16> {
     static INTRINSIC_MAP: LazyLock<HashMap<&'static str, u16>> = LazyLock::new(|| {
         let mut m = HashMap::new();
         m.insert("quazi.write", 0);
@@ -12823,6 +12911,10 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
         m.insert("quazi.thread.current", 69);
         m
     });
+    INTRINSIC_MAP.get(name).copied()
+}
+
+fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
     let name = attr
         .args
         .first()
@@ -12833,7 +12925,7 @@ fn intrinsic_id(attr: &crate::parser::ast::Attribute) -> Option<u16> {
             _ => None,
         })
         .unwrap_or("");
-    INTRINSIC_MAP.get(name).copied()
+    intrinsic_id_by_name(name)
 }
 
 fn api_symbol(attr: &crate::parser::ast::Attribute) -> Option<String> {

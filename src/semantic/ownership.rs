@@ -71,7 +71,7 @@ pub(super) struct ClosedTargets {
 }
 
 /// A closure literal seen by the type checker.
-pub(super) struct ClosureValue {
+pub(crate) struct ClosureValue {
     pub(super) ty: TypeKind,
     /// The source callable whose body creates it.
     pub(super) creator: Option<String>,
