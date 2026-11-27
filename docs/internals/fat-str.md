@@ -3,8 +3,8 @@
 Audience: compiler developers.
 
 Status: stage 1 landed for concrete plain structs (fixed-array fields,
-2026-11-27); stage 2 variadics landed (multi-slot elements packed with
-their stride); enum payloads and stages 3-7 open. Decision: [D-030](../decisions/fat-str.md)
+2026-11-27); stage 2 landed (variadics with element stride; inline enum payloads;
+multi-slot fn-value calls and raw-pointer moves); stages 3-7 open. Decision: [D-030](../decisions/fat-str.md)
 (`str` is `{ptr, len}`, no terminating NUL).
 
 ## Measured starting point (2026-11-27)

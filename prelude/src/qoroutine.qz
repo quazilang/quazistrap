@@ -407,7 +407,8 @@ pub unsafe fn __qo_entry(task: *u8) void {
 unsafe fn __qo_run[T](task: *u8) void {
     const f: fn() T = *((task + 16) as *fn() T);
     const value: T = f();
-    *((task + 8) as *T!) = value;
+    // The result follows the fixed task record: it may span several words.
+    *((task + __qo_task_size()) as *T!) = value;
 }
 
 // Map the stack arena and start the workers exactly once.
@@ -657,7 +658,7 @@ pub struct Qoroutine[T] {
 pub fn __qo_spawn[T](f: fn() T) Qoroutine[T] {
     var task: *u8 = 0;
     unsafe {
-        task = __qo_malloc(__qo_task_size());
+        task = __qo_malloc(__qo_task_size() + size_of[T]());
         if (task == 0) { panic("qoroutine allocation failed"); }
         __qo_memset(task, 0, __qo_task_size());
         *((task + 16) as *fn() T!) = f;
@@ -701,7 +702,7 @@ impl Qoroutine[T] {
         // Only a finished qoroutine wrote its (possibly owned) result.
         var value: T;
         unsafe {
-            value = *((task + 8) as *T);
+            value = *((task + __qo_task_size()) as *T);
             __qo_free(task);
         }
         Ok(value)

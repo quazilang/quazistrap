@@ -837,8 +837,8 @@ impl Analyzer {
                         // Enum storage reserves one slot per payload value.
                         let resolved = self.resolve_type_aliases(&payload.node);
                         if !matches!(resolved, TypeKind::Error)
-                            && !crate::runtime_layout::runtime_value_layout(&resolved)
-                                .fits_single_slot()
+                            && crate::runtime_layout::runtime_value_layout(&resolved)
+                                .slot_count().is_none()
                         {
                             self.push_error(
                                 payload.span,
@@ -2956,7 +2956,7 @@ impl Analyzer {
             let layout_type = inferred_payload.as_ref().map_or(parameter, |(_, actual)| actual);
             let resolved = self.resolve_type_aliases(layout_type);
             if !matches!(resolved, TypeKind::Error)
-                && !crate::runtime_layout::runtime_value_layout(&resolved).fits_single_slot()
+                && crate::runtime_layout::runtime_value_layout(&resolved).slot_count().is_none()
             {
                 self.push_error(
                     expr.span,
@@ -4941,8 +4941,8 @@ impl Analyzer {
                                 }
                                 let resolved = self.resolve_type_aliases(payload_ty);
                                 if !matches!(resolved, TypeKind::Error)
-                                    && !crate::runtime_layout::runtime_value_layout(&resolved)
-                                        .fits_single_slot()
+                                    && crate::runtime_layout::runtime_value_layout(&resolved)
+                                        .slot_count().is_none()
                                 {
                                     self.push_error(
                                         arg.span,
@@ -7483,8 +7483,8 @@ impl Analyzer {
             let span = args.first().map_or(callee_span, |arg| arg.span);
             let resolved_payload = self.resolve_type_aliases(&payload);
             if !matches!(resolved_payload, TypeKind::Error)
-                && !crate::runtime_layout::runtime_value_layout(&resolved_payload)
-                    .fits_single_slot()
+                && crate::runtime_layout::runtime_value_layout(&resolved_payload)
+                    .slot_count().is_none()
             {
                 self.push_error(
                     span,
@@ -8761,8 +8761,8 @@ impl Analyzer {
                         let argument = self.resolve_type_aliases(&argument.node);
                         if !matches!(argument, TypeKind::Error)
                             && !self.mentions_unresolved_type_parameter(&argument)
-                            && !crate::runtime_layout::runtime_value_layout(&argument)
-                                .fits_single_slot()
+                            && crate::runtime_layout::runtime_value_layout(&argument)
+                                .slot_count().is_none()
                         {
                             return Some((resolved.clone(), argument));
                         }

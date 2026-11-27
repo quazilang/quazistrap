@@ -7966,16 +7966,13 @@ fn main() void {}
     }
 
     #[test]
-    fn specializations_reject_multi_slot_enum_payloads() {
+    fn specializations_accept_multi_slot_enum_payloads() {
+        // Enum payloads are stored inline with their slot count (D-030
+        // stage 2), so a specialization may carry a fixed array.
         let report = analyze(
             "fn wrap[T](x: T) Option[T] { ret Some(x); }\nfn main() i32 { const w = wrap([1, 2, 3]); const s = wrap(5); 0 }\n",
         );
-        let errors: Vec<_> = report
-            .errors
-            .iter()
-            .filter(|e| e.code == "S14" && e.message.contains("one-slot representation"))
-            .collect();
-        assert_eq!(errors.len(), 1, "{:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]
@@ -9985,7 +9982,7 @@ fn main() void {
     }
 
     #[test]
-    fn multi_slot_enum_payloads_are_rejected() {
+    fn multi_slot_enum_payloads_are_accepted() {
         let report = analyze(
             r#"
 enum Wrap { Val([i32; 3]), }
@@ -9993,15 +9990,7 @@ enum Wrap { Val([i32; 3]), }
 fn main() void { ret; }
 "#,
         );
-        assert!(
-            report.errors.iter().any(|error| {
-                error.code == "S14"
-                    && error.message.contains("Wrap.Val")
-                    && error.message.contains("one-slot enum representation")
-            }),
-            "multi-slot enum payload reached codegen: {:?}",
-            report.errors
-        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
     }
 
     #[test]
@@ -10068,51 +10057,14 @@ fn main() void {
     }
 
     #[test]
-    fn multi_slot_option_payloads_are_rejected() {
-        let contextual = analyze(
-            r#"
-fn main() void {
-    var value: Option[[i32; 3]] = Some([1, 2, 3]);
-}
-"#,
-        );
-        assert!(
-            contextual.errors.iter().any(|error| {
-                error.code == "S14" && error.message.contains("one-slot enum representation")
-            }),
-            "contextual multi-slot Option payload reached codegen: {:?}",
-            contextual.errors
-        );
-
-        let direct = analyze(
-            r#"
-fn main() void {
-    var value = Some([1, 2, 3]);
-}
-"#,
-        );
-        assert!(
-            direct.errors.iter().any(|error| {
-                error.code == "S14" && error.message.contains("one-slot enum representation")
-            }),
-            "direct multi-slot Option payload reached codegen: {:?}",
-            direct.errors
-        );
-
-        let qualified = analyze(
-            r#"
-fn main() void {
-    var value = Option.Some([1, 2, 3]);
-}
-"#,
-        );
-        assert!(
-            qualified.errors.iter().any(|error| {
-                error.code == "S14" && error.message.contains("one-slot enum representation")
-            }),
-            "qualified multi-slot Option payload reached codegen: {:?}",
-            qualified.errors
-        );
+    fn multi_slot_option_payloads_are_accepted() {
+        for source in [
+            "fn main() void { var value: Option[[i32; 3]] = Some([1, 2, 3]); }",
+            "fn main() void { var value = Some([1, 2, 3]); }",
+        ] {
+            let report = analyze(source);
+            assert!(report.errors.is_empty(), "{source}: {:?}", report.errors);
+        }
     }
 
     #[test]

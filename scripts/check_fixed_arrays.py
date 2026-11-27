@@ -72,6 +72,8 @@ fn main() i32 {
 FIELDS_OUT = "10 11 12 13\n8 13\n107 108 107\n"
 VARIADIC = 'import std.io.println;\nfn by_value(...pairs: [i64; 2]) i64 {\n    var t: i64 = 0;\n    for p : pairs { t = t + p[0] * 10 + p[1]; }\n    ret t;\n}\nfn by_index(...pairs: [i64; 2]) i64 {\n    var t: i64 = 0;\n    var i: usize = 0;\n    for (i < pairs.len()) { t = t + pairs[i][1]; i = i + 1; }\n    ret t;\n}\nfn main() i32 {\n    println("{} {}", by_value([1, 2], [3, 4], [5, 6]), by_index([1, 2], [3, 4], [5, 6]));\n    println("{}", by_value());\n    const m: [[i64; 2]; 2] = [[1, 2], [3, 4]];\n    for row : m { println("{} {}", row[0], row[1]); }\n    0\n}\n'
 VARIADIC_OUT = "102 12\n0\n1 2\n3 4\n"
+ENUMS = 'import std.io.println;\nimport std.thread;\nenum Shape { Pair([i64; 2], i64), Single(i64) }\nfn first(v: Option[[i64; 2]]) i64 {\n    match v { Some(p) => p[0] + p[1], None => -1 }\n}\nfn pick(flag: bool) Result[[i64; 2], i64] {\n    if flag { ret Ok([3, 4]); }\n    ret Err(9);\n}\nfn chain(flag: bool) Result[i64, i64] {\n    const p = pick(flag)?;\n    ret Ok(p[0] * 10 + p[1]);\n}\nfn triple() [i64; 3] { ret [7, 8, 9]; }\nfn sum(p: [i64; 3], k: i64) i64 { ret p[0] + p[1] + p[2] + k; }\nfn call[T](f: fn() T) T { ret f(); }\nfn main() i32 {\n    const s = Shape.Pair([5, 6], 7);\n    match s {\n        Shape.Pair(a, b) => println("{} {} {}", a[0], a[1], b),\n        Shape.Single(x) => println("{}", x),\n    };\n    println("{} {}", first(Some([1, 2])), first(None));\n    println("{} {}", chain(true).unwrap(), chain(false).unwrap_err());\n    const f: fn() [i64; 3] = triple;\n    const v = f();\n    const w = call(triple);\n    const g: fn([i64; 3], i64) i64 = sum;\n    println("{} {} {} {}", v[2], w[0], g([1, 2, 3], 10), thread.spawn(triple).unwrap().join().unwrap()[1]);\n    const ch: Channel[[i64; 3]] = Channel.new(2);\n    ch.send([4, 5, 6]);\n    match ch.receive() { Some(a) => println("{} {} {}", a[0], a[1], a[2]), None => println("none") };\n    0\n}\n'
+ENUMS_OUT = "5 6 7\n3 -1\n34 9\n9 7 16 8\n4 5 6\n"
 ITERATE = r'''struct P { x: i64, y: i64, }
 fn main() i32 {
     const c: [P; 2] = [P { x: 1, y: 10 }, P { x: 2, y: 20 }];
@@ -109,7 +111,8 @@ def main():
         root = Path(directory)
         for name, source, expected in (("nested", NESTED, NESTED_OUT), ("owned", OWNED, OWNED_OUT),
                                        ("fields", FIELDS, FIELDS_OUT),
-                                       ("variadic", VARIADIC, VARIADIC_OUT)):
+                                       ("variadic", VARIADIC, VARIADIC_OUT),
+                                       ("enums", ENUMS, ENUMS_OUT)):
             path = project(root, name, source, bool(args.valgrind))
             run([qz, "build", *common, "-o", str(path / "native")], path)
             assert run([str(path / "native")], path) == expected, name
@@ -124,7 +127,7 @@ def main():
         assert "cannot iterate over a fixed array of `P` by value" in output, output
     checked = ", valgrind clean" if args.valgrind else ""
     print("PASS fixed arrays: nested layout and indexing, owned literal elements, "
-          f"destruction, owning by-value iteration rejected, inline array fields, multi-slot variadics and loops; native and QZI{checked}")
+          f"destruction, owning by-value iteration rejected, inline array fields, multi-slot variadics and loops, enum payloads, fn-value calls, raw derefs; native and QZI{checked}")
 
 
 if __name__ == "__main__":

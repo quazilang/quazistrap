@@ -3048,6 +3048,19 @@ struct DropLocal {
 const CLOSURE_DROP_OFFSET: u16 = 8;
 const CLOSURE_CAPTURE_OFFSET: u16 = 16;
 
+impl DropAction {
+    /// Words a value with this action occupies when stored inline (a fixed
+    /// array spans its elements; every other owned value is one handle).
+    fn inline_slots(&self) -> usize {
+        match self {
+            DropAction::FixedArray { len, element_slots, .. } => {
+                (*len as usize * *element_slots as usize).max(1)
+            }
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum DropAction {
     /// Compiler-owned source aggregate storage, after source teardown.
@@ -4518,6 +4531,14 @@ impl<'a> FnCompiler<'a> {
                 expr: ptr_expr,
             } => {
                 let ptr = self.compile_value(ptr_expr);
+                let slots = self.raw_pointee_slots(self.type_of_expr(ptr_expr).as_ref());
+                if slots > 1 {
+                    return LvalueAddr::FieldBlock {
+                        obj: ptr,
+                        offset: 0,
+                        slots,
+                    };
+                }
                 let (width, signed, float32) = self.raw_pointee_access(ptr_expr);
                 LvalueAddr::Deref {
                     ptr,
@@ -5567,6 +5588,52 @@ impl<'a> FnCompiler<'a> {
             .is_some_and(|local| matches!(local.action, DropAction::Structural(_)))
     }
 
+    /// Byte offset and register slots of each payload of variant `tag` of
+    /// `enum_ty`: payloads are stored inline after the discriminant, a
+    /// multi-slot payload (a fixed array) taking consecutive words. Unknown
+    /// types (template chunks) keep one slot per payload.
+    fn enum_payload_layout(&self, enum_ty: Option<&TypeKind>, tag: usize, count: usize) -> Vec<(u16, usize)> {
+        let types = enum_ty.and_then(|ty| self.enum_variant_payload_types(ty, tag));
+        let mut offset = ENUM_PAYLOAD_OFFSET;
+        (0..count)
+            .map(|index| {
+                let slots = types
+                    .as_ref()
+                    .and_then(|types| types.get(index))
+                    .and_then(|ty| crate::runtime_layout::runtime_value_layout(ty).slot_count())
+                    .unwrap_or(1)
+                    .max(1);
+                let at = offset;
+                offset = offset.saturating_add((slots * 8) as u16);
+                (at, slots)
+            })
+            .collect()
+    }
+
+    /// Register slots of the value a raw pointer of type `pointer_ty` points
+    /// to (1 for scalars, handles and unknown types).
+    fn raw_pointee_slots(&self, pointer_ty: Option<&TypeKind>) -> usize {
+        match pointer_ty.map(|ty| self.resolve_type(ty)) {
+            Some(TypeKind::RawPtr { inner, .. }) => {
+                crate::runtime_layout::runtime_value_layout(&self.resolve_type(&inner.node))
+                    .slot_count()
+                    .unwrap_or(1)
+                    .max(1)
+            }
+            _ => 1,
+        }
+    }
+
+    /// Load `slots` words at `offset` of the object in `object` into a fresh
+    /// register block.
+    fn emit_inline_load(&mut self, object: u8, offset: u16, slots: usize) -> u8 {
+        let dst = self.reserve_reg_block(slots.max(1));
+        for slot in 0..slots.max(1) {
+            self.chunk.emit(field_load(dst + slot as u8, object, offset + 8 * slot as u16));
+        }
+        dst
+    }
+
     /// The payload types of the variant with discriminant `tag` of `enum_ty`.
     fn enum_variant_payload_types(&self, enum_ty: &TypeKind, tag: usize) -> Option<Vec<TypeKind>> {
         let TypeKind::Named { name, type_args } = self.resolve_type(enum_ty) else {
@@ -5617,15 +5684,14 @@ impl<'a> FnCompiler<'a> {
                     });
                     return;
                 };
+                let layout = self.enum_payload_layout(Some(ty), tag, sub_patterns.len());
                 for (index, (sub, payload_ty)) in sub_patterns.iter().zip(&payload_types).enumerate()
                 {
                     let payload = match &sub.node {
                         PatternKind::Bind(name) => self.reg_of(name),
                         _ => {
-                            let payload = self.alloc_reg();
-                            let offset = ENUM_PAYLOAD_OFFSET + index as u16 * 8;
-                            self.chunk.emit(field_load(payload, value, offset));
-                            payload
+                            let (offset, slots) = layout[index];
+                            self.emit_inline_load(value, offset, slots)
                         }
                     };
                     self.consume_pattern(sub, payload, payload_ty);
@@ -5740,13 +5806,26 @@ impl<'a> FnCompiler<'a> {
         &mut self,
         pattern: &Pattern,
         value_reg: u8,
+        value_ty: Option<&TypeKind>,
         skip_patches: &mut Vec<usize>,
     ) {
         match &pattern.node.clone() {
             PatternKind::Wildcard => { /* no check, no bind */ }
             PatternKind::Bind(name) => {
-                let bound = self.bind(name.clone());
-                self.chunk.emit(rrr(Opcode::Mov, bound, value_reg, 0));
+                let slots = value_ty
+                    .and_then(|ty| crate::runtime_layout::runtime_value_layout(&self.resolve_type(ty)).slot_count())
+                    .unwrap_or(1);
+                if slots > 1 {
+                    let bound = self.reserve_reg_block(slots);
+                    self.regs.insert(name.clone(), bound);
+                    for slot in 0..slots {
+                        self.chunk
+                            .emit(rrr(Opcode::Mov, bound + slot as u8, value_reg + slot as u8, 0));
+                    }
+                } else {
+                    let bound = self.bind(name.clone());
+                    self.chunk.emit(rrr(Opcode::Mov, bound, value_reg, 0));
+                }
             }
             PatternKind::Literal(lit) => {
                 match lit {
@@ -5853,11 +5932,13 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_reg));
                 skip_patches.push(self.chunk.emit(ri16(Opcode::Jne, 0, 0)));
+                let layout = self.enum_payload_layout(value_ty, tag, sub_patterns.len());
+                let payload_types = value_ty.and_then(|ty| self.enum_variant_payload_types(ty, tag));
                 for (i, sub) in sub_patterns.iter().enumerate() {
-                    let payload_reg = self.alloc_reg();
-                    let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
-                    self.chunk.emit(field_load(payload_reg, value_reg, off));
-                    self.compile_pattern_match(sub, payload_reg, skip_patches);
+                    let (offset, slots) = layout[i];
+                    let payload_reg = self.emit_inline_load(value_reg, offset, slots);
+                    let payload_ty = payload_types.as_ref().and_then(|types| types.get(i)).cloned();
+                    self.compile_pattern_match(sub, payload_reg, payload_ty.as_ref(), skip_patches);
                 }
             }
             PatternKind::Struct { name, fields, .. } => {
@@ -5883,7 +5964,7 @@ impl<'a> FnCompiler<'a> {
                     let field_reg = self.alloc_reg();
                     let offset = self.field_offset_by_name(&struct_name, field);
                     self.chunk.emit(field_load(field_reg, value_reg, offset));
-                    self.compile_pattern_match(sub, field_reg, skip_patches);
+                    self.compile_pattern_match(sub, field_reg, None, skip_patches);
                 }
             }
         }
@@ -6222,14 +6303,21 @@ impl<'a> FnCompiler<'a> {
         let mut variants = Vec::new();
         for (tag, fields) in payloads.iter().enumerate() {
             let mut drops = Vec::new();
-            for (index, field_ty) in fields.iter().enumerate() {
+            let mut offset = ENUM_PAYLOAD_OFFSET;
+            for field_ty in fields {
                 let resolved = self.resolve_type(&crate::semantic::typecheck::substitute_type_kind(
                     field_ty,
                     &substitution,
                 ));
+                let at = offset;
+                let slots = crate::runtime_layout::runtime_value_layout(&resolved)
+                    .slot_count()
+                    .unwrap_or(1)
+                    .max(1);
+                offset = offset.checked_add(u16::try_from(slots * 8).ok()?)?;
                 match self.structural_field_drop_action(&resolved, visiting) {
                     Some(action) => drops.push(StructuralFieldDrop {
-                        offset: ENUM_PAYLOAD_OFFSET + u16::try_from(index * 8).ok()?,
+                        offset: at,
                         action: Box::new(action),
                     }),
                     None if self.type_requires_structural_drop(&resolved) => return None,
@@ -6431,8 +6519,7 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(rrr(Opcode::Shl, bit, bit, shift));
             self.chunk.emit(rrr(Opcode::And, bit, bit, mask));
             let moved = self.chunk.emit(ri16(Opcode::Jnz, bit, 0));
-            let field_reg = self.alloc_reg();
-            self.chunk.emit(field_load(field_reg, reg, field.offset));
+            let field_reg = self.emit_inline_load(reg, field.offset, field.action.inline_slots());
             match field.action.as_ref() {
                 DropAction::Structural(nested) => {
                     let nested = nested.clone();
@@ -6588,8 +6675,7 @@ impl<'a> FnCompiler<'a> {
             }
             DropAction::Structural(fields) => {
                 for field in fields {
-                    let field_reg = self.alloc_reg();
-                    self.chunk.emit(field_load(field_reg, reg, field.offset));
+                    let field_reg = self.emit_inline_load(reg, field.offset, field.action.inline_slots());
                     self.emit_drop_action(field_reg, *field.action);
                 }
                 self.emit_drop_action(reg, DropAction::ReleaseStorage);
@@ -7648,10 +7734,59 @@ impl<'a> FnCompiler<'a> {
 
     /// Emit an indirect call through a register, dispatching via env-wrapper convention
     /// when `callee_reg` is a closure environment struct pointer.
-    fn emit_indirect_call(&mut self, dst: u8, callee_reg: u8, arg_regs: &[u8]) {
+    /// Register slots of each parameter and of the result of a `fn` type
+    /// (1 for unknown types).
+    fn fn_type_slots(&self, fn_ty: Option<&TypeKind>) -> (Vec<usize>, usize) {
+        let slots = |ty: &TypeKind| {
+            crate::runtime_layout::runtime_value_layout(&self.resolve_type(ty))
+                .slot_count()
+                .unwrap_or(1)
+        };
+        match fn_ty.map(|ty| self.resolve_type(ty)) {
+            Some(TypeKind::Fn { params, return_ty }) => (
+                params.iter().map(|param| slots(&param.node).max(1)).collect(),
+                slots(&return_ty.node),
+            ),
+            _ => (Vec::new(), 1),
+        }
+    }
+
+    /// The chunk a named function value dispatches to:
+    /// `(env, [sret], param slots...)` forwarded to `target` with the
+    /// direct-call ABI (`[sret], param slots...`).
+    fn function_value_forwarder(&self, name: &str, target: &str, fn_ty: Option<&TypeKind>) -> Chunk {
+        // The target's own recorded layout is authoritative; the value's
+        // `fn` type is the fallback.
+        let (params, result_slots) = match self.fn_value_layouts.get(target) {
+            Some(layout) => (
+                layout
+                    .params
+                    .iter()
+                    .map(|param| param.layout.slot_count().unwrap_or(1).max(1))
+                    .collect::<Vec<_>>(),
+                layout.result.layout.slot_count().unwrap_or(1),
+            ),
+            None => self.fn_type_slots(fn_ty),
+        };
+        let sret = usize::from(result_slots > 1);
+        let forwarded = sret + params.iter().sum::<usize>();
+        let mut chunk = Chunk::with_params(name, forwarded + 1);
+        for register in 1..=forwarded {
+            chunk.emit(rrr(Opcode::CallArg, register as u8, 0, 0));
+        }
+        chunk.emit_named_call(target, 0, result_slots.max(1) as u8);
+        chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+        chunk
+    }
+
+    /// Call through a `fn` value (an environment whose word 0 is the code
+    /// address): `(env, [sret], param slots...)`. Returns the result's first
+    /// register (`dst`, or a new block for a multi-slot result).
+    fn emit_indirect_call(&mut self, dst: u8, callee_reg: u8, arg_regs: &[u8], fn_ty: Option<&TypeKind>) -> u8 {
         for &reg in arg_regs {
             self.transfer_expression_temporary(reg);
         }
+        let (param_slots, result_slots) = self.fn_type_slots(fn_ty);
         // All fn-ptr values use env struct representation: {fn_ptr at offset 0, captures...}.
         // Always do env dispatch: load fn_ptr from env[0], pass env as hidden first arg.
         let fn_ptr_reg = self.alloc_reg();
@@ -7661,11 +7796,28 @@ impl<'a> FnCompiler<'a> {
             callee_reg,
             ENUM_DISCRIM_OFFSET,
         ));
+        let sret_base = (result_slots > 1).then(|| {
+            let base = self.reserve_reg_block(result_slots);
+            let pointer = self.alloc_reg();
+            self.chunk
+                .emit(mem_lea_block(base, pointer, 0, result_slots as u8));
+            (base, pointer)
+        });
         self.chunk.emit(rrr(Opcode::CallArg, callee_reg, 0, 0));
-        for &r in arg_regs {
-            self.chunk.emit(rrr(Opcode::CallArg, r, 0, 0));
+        if let Some((_, pointer)) = sret_base {
+            self.chunk.emit(rrr(Opcode::CallArg, pointer, 0, 0));
+        }
+        for (index, &r) in arg_regs.iter().enumerate() {
+            let slots = param_slots.get(index).copied().unwrap_or(1);
+            for slot in 0..slots {
+                self.chunk.emit(rrr(Opcode::CallArg, r + slot as u8, 0, 0));
+            }
         }
         self.chunk.emit(rrr(Opcode::CallReg, dst, fn_ptr_reg, 0));
+        match sret_base {
+            Some((base, _)) => base,
+            None => dst,
+        }
     }
 
     fn emit_c_indirect_call(
@@ -10015,20 +10167,9 @@ impl<'a> FnCompiler<'a> {
                         return address;
                     }
                     if self.fn_index.contains_key(resolved_name.as_str()) {
-                        let user_param_count =
-                            if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
-                                params.len()
-                            } else {
-                                0
-                            };
-                        // Forwarder chunk: (env_ptr_ignored, user_args...) → call named_fn(user_args...)
+                        let fn_ty = self.type_map.get(&key).cloned();
                         let fwd_name = format!("__quazi_fwd_{}", resolved_name);
-                        let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
-                        for i in 0..user_param_count {
-                            fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
-                        }
-                        fwd_chunk.emit_named_call(&resolved_name, 0, 0);
-                        fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                        let fwd_chunk = self.function_value_forwarder(&fwd_name, &resolved_name, fn_ty.as_ref());
                         if !self
                             .output_chunks
                             .iter()
@@ -10139,13 +10280,19 @@ impl<'a> FnCompiler<'a> {
                         ) {
                             return self.load_reference_value(ptr, pointer_ty);
                         }
-                        if let Some(TypeKind::RawPtr { inner, .. }) = pointer_ty
+                        if let Some(TypeKind::RawPtr { inner, .. }) = &pointer_ty
                             && let TypeKind::Named { name, .. } = self.resolve_type(&inner.node)
                             && self.repr_c_structs.contains(&name)
                         {
                             // A C aggregate value is represented by its inline
                             // storage address, not by the contents of word zero.
                             return ptr;
+                        }
+                        // A multi-slot pointee (`*[i64; 3]`, a generic `*T`)
+                        // occupies consecutive words.
+                        let slots = self.raw_pointee_slots(pointer_ty.as_ref());
+                        if slots > 1 {
+                            return self.emit_inline_load(ptr, 0, slots);
                         }
                         let (width, signed, float32) = self.raw_pointee_access(inner);
                         self.emit_c_load(ptr, width, signed, float32)
@@ -10784,20 +10931,33 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_value(a)
                             })
                             .collect();
+                        // Payloads are stored inline: a multi-slot payload
+                        // takes consecutive words.
+                        let payload_slots: Vec<usize> = args
+                            .iter()
+                            .map(|a| self.known_value_slot_count(a).unwrap_or(1).max(1))
+                            .collect();
                         let ptr = self.alloc_reg();
                         self.chunk.emit(ri16(
                             Opcode::New,
                             ptr,
-                            enum_variant_alloc_size(payload_regs.len()),
+                            enum_variant_alloc_size(payload_slots.iter().sum()),
                         ));
                         let tag_reg = self.alloc_reg();
                         let encoded_tag = self.qzi_u16(tag, "enum variant tag");
                         self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
-                        for (i, &payload) in payload_regs.iter().enumerate() {
-                            let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
-                            self.chunk.emit(field_store(payload, ptr, off));
+                        let mut offset = ENUM_PAYLOAD_OFFSET;
+                        for (&payload, &slots) in payload_regs.iter().zip(&payload_slots) {
+                            for slot in 0..slots {
+                                self.chunk.emit(field_store(
+                                    payload + slot as u8,
+                                    ptr,
+                                    offset + 8 * slot as u16,
+                                ));
+                            }
+                            offset += 8 * slots as u16;
                             self.transfer_expression_temporary(payload);
                         }
                         if dst != ptr {
@@ -10806,7 +10966,13 @@ impl<'a> FnCompiler<'a> {
                         return dst;
                     } else if self.regs.contains_key(call_name.as_str()) {
                         // Local variable — fn pointer or closure env pointer.
-                        let callee_type = self.type_of_expr(callee);
+                        // Its declared type, not the call's annotation.
+                        let callee_type = self
+                            .local_types
+                            .get(call_name.as_str())
+                            .cloned()
+                            .filter(|ty| matches!(self.resolve_type(ty), TypeKind::Fn { .. } | TypeKind::CFn { .. }))
+                            .or_else(|| self.type_of_expr(callee));
                         let fn_reg = self.compile_value(callee);
                         let arg_regs: Vec<u8> = args
                             .iter()
@@ -10821,8 +10987,11 @@ impl<'a> FnCompiler<'a> {
                         {
                             self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
                         } else {
-                            self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                            let result = self.emit_indirect_call(dst, fn_reg, &arg_regs, callee_type.as_ref());
                             self.cleanup_temporary_fn_callee(callee, fn_reg);
+                            if result != dst {
+                                return result;
+                            }
                         }
                     } else {
                         let arg_regs: Vec<u8> = args
@@ -10853,8 +11022,11 @@ impl<'a> FnCompiler<'a> {
                     {
                         self.emit_c_indirect_call(dst, fn_reg, &arg_regs, signature);
                     } else {
-                        self.emit_indirect_call(dst, fn_reg, &arg_regs);
+                        let result = self.emit_indirect_call(dst, fn_reg, &arg_regs, callee_type.as_ref());
                         self.cleanup_temporary_fn_callee(callee, fn_reg);
+                        if result != dst {
+                            return result;
+                        }
                     }
                 }
                 dst
@@ -11014,20 +11186,33 @@ impl<'a> FnCompiler<'a> {
                                 self.compile_value(a)
                             })
                             .collect();
+                        // Payloads are stored inline: a multi-slot payload
+                        // takes consecutive words.
+                        let payload_slots: Vec<usize> = args
+                            .iter()
+                            .map(|a| self.known_value_slot_count(a).unwrap_or(1).max(1))
+                            .collect();
                         let ptr = self.alloc_reg();
                         self.chunk.emit(ri16(
                             Opcode::New,
                             ptr,
-                            enum_variant_alloc_size(payload_regs.len()),
+                            enum_variant_alloc_size(payload_slots.iter().sum()),
                         ));
                         let tag_reg = self.alloc_reg();
                         let encoded_tag = self.qzi_u16(tag, "enum variant tag");
                         self.chunk.emit(ri16(Opcode::MovI, tag_reg, encoded_tag));
                         self.chunk
                             .emit(rrr(Opcode::FieldStore, tag_reg, ptr, ENUM_DISCRIM_OFFSET));
-                        for (i, &payload) in payload_regs.iter().enumerate() {
-                            let off = ENUM_PAYLOAD_OFFSET + (i as u16 * 8);
-                            self.chunk.emit(field_store(payload, ptr, off));
+                        let mut offset = ENUM_PAYLOAD_OFFSET;
+                        for (&payload, &slots) in payload_regs.iter().zip(&payload_slots) {
+                            for slot in 0..slots {
+                                self.chunk.emit(field_store(
+                                    payload + slot as u8,
+                                    ptr,
+                                    offset + 8 * slot as u16,
+                                ));
+                            }
+                            offset += 8 * slots as u16;
                             self.transfer_expression_temporary(payload);
                         }
                         let dst = self.alloc_reg();
@@ -11522,19 +11707,9 @@ impl<'a> FnCompiler<'a> {
                     }
                     let key = (expr.span.start, expr.span.end);
                     if self.fn_index.contains_key(resolved.as_str()) {
-                        let user_param_count =
-                            if let Some(TypeKind::Fn { params, .. }) = self.type_map.get(&key) {
-                                params.len()
-                            } else {
-                                0
-                            };
+                        let fn_ty = self.type_map.get(&key).cloned();
                         let fwd_name = format!("__quazi_fwd_{}", resolved);
-                        let mut fwd_chunk = Chunk::with_params(&fwd_name, user_param_count + 1);
-                        for i in 0..user_param_count {
-                            fwd_chunk.emit(rrr(Opcode::CallArg, (i + 1) as u8, 0, 0));
-                        }
-                        fwd_chunk.emit_named_call(&resolved, 0, 0);
-                        fwd_chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
+                        let fwd_chunk = self.function_value_forwarder(&fwd_name, &resolved, fn_ty.as_ref());
                         if !self
                             .output_chunks
                             .iter()
@@ -11834,7 +12009,11 @@ impl<'a> FnCompiler<'a> {
 
                     // Compile pattern: collect jumps that skip to the next arm on mismatch.
                     let mut skip_patches: Vec<usize> = Vec::new();
-                    self.compile_pattern_match(&arm.pattern, scr, &mut skip_patches);
+                    let scrutinee_ty = self.type_of_expr(scrutinee).map(|ty| match self.resolve_type(&ty) {
+                        TypeKind::Ref { inner } | TypeKind::MutRef { inner } => self.resolve_type(&inner.node),
+                        other => other,
+                    });
+                    self.compile_pattern_match(&arm.pattern, scr, scrutinee_ty.as_ref(), &mut skip_patches);
 
                     // Optional guard: failed guard → try next arm.
                     if let Some(guard) = &arm.guard {
@@ -11938,9 +12117,10 @@ impl<'a> FnCompiler<'a> {
                 self.chunk.emit(rrr(Opcode::Cmp, 0, disc, tag_ok));
                 let jne = self.chunk.emit(ri16(Opcode::Jne, 0, 0));
 
-                // Success path: extract first payload.
-                let val = self.alloc_reg();
-                self.chunk.emit(field_load(val, scr, ENUM_PAYLOAD_OFFSET));
+                // Success path: extract the first payload (all its slots).
+                let wrapper_ty = self.type_of_span(key);
+                let success_slots = self.enum_payload_layout(wrapper_ty.as_ref(), success_tag, 1)[0].1;
+                let val = self.emit_inline_load(scr, ENUM_PAYLOAD_OFFSET, success_slots);
                 if consumed {
                     self.emit_drop_action(scr, DropAction::ReleaseStorage);
                 }
@@ -11971,12 +12151,12 @@ impl<'a> FnCompiler<'a> {
                     none_ptr
                 } else {
                     // Return Err(payload) — copy scrutinee payload into new Err object.
-                    let err_payload = self.alloc_reg();
-                    self.chunk
-                        .emit(field_load(err_payload, scr, ENUM_PAYLOAD_OFFSET));
+                    let failure_slots =
+                        self.enum_payload_layout(wrapper_ty.as_ref(), failure_tag, 1)[0].1;
+                    let err_payload = self.emit_inline_load(scr, ENUM_PAYLOAD_OFFSET, failure_slots);
                     let err_ptr = self.alloc_reg();
                     self.chunk
-                        .emit(ri16(Opcode::New, err_ptr, enum_variant_alloc_size(1)));
+                        .emit(ri16(Opcode::New, err_ptr, enum_variant_alloc_size(failure_slots)));
                     let tag_fail = self.alloc_reg();
                     let encoded_failure = self.qzi_u16(failure_tag, "result failure tag");
                     self.chunk
@@ -11987,8 +12167,13 @@ impl<'a> FnCompiler<'a> {
                         err_ptr,
                         ENUM_DISCRIM_OFFSET,
                     ));
-                    self.chunk
-                        .emit(field_store(err_payload, err_ptr, ENUM_PAYLOAD_OFFSET));
+                    for slot in 0..failure_slots {
+                        self.chunk.emit(field_store(
+                            err_payload + slot as u8,
+                            err_ptr,
+                            ENUM_PAYLOAD_OFFSET + 8 * slot as u16,
+                        ));
+                    }
                     err_ptr
                 };
                 if consumed {

@@ -234,3 +234,4 @@ tests or examples establishing behavior.
 - [2026-11-27: Trait objects of types whose methods are never called directly](2026-11-27-uncalled-vtable-methods.md)
 - [2026-11-27: Fixed arrays: nested indexing, owned elements, destruction](2026-11-27-fixed-array-fixes.md)
 - [2026-11-27: Fixed arrays can be struct fields and variadic elements](2026-11-27-inline-array-fields.md)
+- [2026-11-28: Multi-slot enum payloads, function values and raw pointers](2026-11-28-multi-slot-payloads-and-calls.md)
