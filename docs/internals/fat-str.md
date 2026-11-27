@@ -2,7 +2,8 @@
 
 Audience: compiler developers.
 
-Status: planned; nothing landed yet. Decision: [D-030](../decisions/fat-str.md)
+Status: stage 1 landed for concrete plain structs (fixed-array fields,
+2026-11-27); stages 2-7 open. Decision: [D-030](../decisions/fat-str.md)
 (`str` is `{ptr, len}`, no terminating NUL).
 
 ## Measured starting point (2026-11-27)

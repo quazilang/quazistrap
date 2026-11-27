@@ -4,7 +4,8 @@
 owned call results move into array literals (they were destroyed as
 temporaries: use after free); arrays of owned elements are destroyed with
 their owner (they leaked) and once when moved; iterating a fixed array of
-owned elements by value is rejected (it read freed memory). Native and QZI;
+owned elements by value is rejected (it read freed memory); fixed arrays are stored inline in struct fields (reads,
+writes through the struct and through `&S!`). Native and QZI;
 with --valgrind also under memcheck with libc's allocator."""
 
 import argparse
@@ -50,6 +51,25 @@ fn main() i32 {
 }
 '''
 OWNED_OUT = "[one] [p] [t] ZZZZZZZZ\ntook\ndrop 3\ndrop 4\n2\ndrop 1\ndrop 2\n"
+FIELDS = r'''import std.io.println;
+struct S { head: i64, pair: [i64; 2], tail: i64 }
+fn make(x: i64) S { ret S { head: x, pair: [x + 1, x + 2], tail: x + 3 }; }
+fn bump(s: &S!, i: usize) void { s.pair[i] += 100; s.tail = s.pair[0]; }
+fn main() i32 {
+    var s = make(10);
+    println("{} {} {} {}", s.head, s.pair[0], s.pair[1], s.tail);
+    s.pair[1] = 50;
+    s.pair = [7, 8];
+    var i: usize = 1;
+    println("{} {}", s.pair[i], s.tail);
+    bump(&s!, 1);
+    bump(&s!, 0);
+    const p: [i64; 2] = s.pair;
+    println("{} {} {}", p[0], p[1], s.tail);
+    0
+}
+'''
+FIELDS_OUT = "10 11 12 13\n8 13\n107 108 107\n"
 ITERATE = r'''struct P { x: i64, y: i64, }
 fn main() i32 {
     const c: [P; 2] = [P { x: 1, y: 10 }, P { x: 2, y: 20 }];
@@ -85,7 +105,8 @@ def main():
     common = ["--no-incremental", "--no-color", "--silent"]
     with tempfile.TemporaryDirectory(prefix="quazi-fixed-arrays-") as directory:
         root = Path(directory)
-        for name, source, expected in (("nested", NESTED, NESTED_OUT), ("owned", OWNED, OWNED_OUT)):
+        for name, source, expected in (("nested", NESTED, NESTED_OUT), ("owned", OWNED, OWNED_OUT),
+                                       ("fields", FIELDS, FIELDS_OUT)):
             path = project(root, name, source, bool(args.valgrind))
             run([qz, "build", *common, "-o", str(path / "native")], path)
             assert run([str(path / "native")], path) == expected, name
@@ -100,7 +121,7 @@ def main():
         assert "cannot iterate over a fixed array of `P` by value" in output, output
     checked = ", valgrind clean" if args.valgrind else ""
     print("PASS fixed arrays: nested layout and indexing, owned literal elements, "
-          f"destruction, owning by-value iteration rejected; native and QZI{checked}")
+          f"destruction, owning by-value iteration rejected, inline array fields; native and QZI{checked}")
 
 
 if __name__ == "__main__":

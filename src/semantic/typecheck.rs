@@ -578,9 +578,24 @@ impl Analyzer {
                             ),
                         );
                     }
-                    // Plain Quazi aggregates store one slot per field; C
-                    // aggregates have a real layout solver and are exempt.
-                    if !self.repr_c_structs.contains(name) {
+                    // Concrete plain structs store a multi-slot field (a
+                    // fixed array) inline; generic structs keep one slot per
+                    // field (their instantiations are checked at the
+                    // literal). C aggregates have a real layout solver.
+                    let inline_owned = !self.repr_c_structs.contains(name)
+                        && matches!(self.resolve_type_aliases(&field_ty.node), TypeKind::Array { .. })
+                        && crate::runtime_layout::runtime_move_kind(&self.resolve_type_aliases(&field_ty.node))
+                            == crate::runtime_layout::MoveKind::Owned;
+                    if inline_owned {
+                        self.push_error(
+                            field_ty.span,
+                            "S14",
+                            format!(
+                                "field `{field_name}` in `{name}` cannot store a fixed array of owning elements inline yet; use `Array[T]`"
+                            ),
+                        );
+                    }
+                    if !self.repr_c_structs.contains(name) && !generic_params.is_empty() {
                         let resolved = self.resolve_type_aliases(&field_ty.node);
                         if !matches!(resolved, TypeKind::Error)
                             && !crate::runtime_layout::runtime_value_layout(&resolved)

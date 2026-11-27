@@ -3142,6 +3142,13 @@ enum LvalueAddr {
     Ident {
         name: String,
     },
+    /// A multi-slot field of a plain struct (a fixed array stored inline):
+    /// slot `k` at `offset + 8k`.
+    FieldBlock {
+        obj: u8,
+        offset: u16,
+        slots: usize,
+    },
     Deref {
         ptr: u8,
         width: MemWidth,
@@ -4527,6 +4534,16 @@ impl<'a> FnCompiler<'a> {
                 let obj = self.snapshot_slots(obj, 1);
                 if let Some(layout) = self.bit_field_layout(object, field_name) {
                     LvalueAddr::BitField { obj, layout }
+                } else if let Some(slots) = self
+                    .known_value_slot_count(target)
+                    .filter(|slots| *slots > 1)
+                {
+                    let byte_offset = self.field_offset(object, field_name);
+                    LvalueAddr::FieldBlock {
+                        obj,
+                        offset: byte_offset,
+                        slots,
+                    }
                 } else {
                     let byte_offset = self.field_offset(object, field_name);
                     let (width, signed, float32) = self.ffi_field_access(object, field_name);
@@ -4605,6 +4622,8 @@ impl<'a> FnCompiler<'a> {
                     let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
                     LvalueAddr::IndexSlice { ptr, idx }
+                } else if let Some(address) = self.inline_array_field_element(object, index) {
+                    address
                 } else if let Some(TypeKind::Array { elem_ty, .. }) = &obj_ty
                     && let Some((base, flat, total)) = self.nested_fixed_array_place(target)
                 {
@@ -4676,6 +4695,14 @@ impl<'a> FnCompiler<'a> {
     fn load_lvalue(&mut self, addr: &LvalueAddr) -> u8 {
         match addr {
             LvalueAddr::Ident { name, .. } => self.reg_of(name),
+            LvalueAddr::FieldBlock { obj, offset, slots } => {
+                let dst = self.reserve_reg_block(*slots);
+                for slot in 0..*slots {
+                    self.chunk
+                        .emit(field_load(dst + slot as u8, *obj, *offset + 8 * slot as u16));
+                }
+                dst
+            }
             LvalueAddr::Deref {
                 ptr,
                 width,
@@ -4813,9 +4840,61 @@ impl<'a> FnCompiler<'a> {
         Some((base, flat, total))
     }
 
+    /// `s.array[i]` where `array` is a fixed array stored inline in a plain
+    /// struct: the element's memory address (bounds-checked), so writes reach
+    /// the struct rather than a register copy.
+    fn inline_array_field_element(&mut self, object: &Expr, index: &Expr) -> Option<LvalueAddr> {
+        let mut field = object;
+        while let ExprKind::Group(inner) = &field.node {
+            field = inner;
+        }
+        let ExprKind::Field { object: owner, name } = &field.node else {
+            return None;
+        };
+        let Some(TypeKind::Array { len, elem_ty }) = self.receiver_value_type(field) else {
+            return None;
+        };
+        let element = self.resolve_type(&elem_ty.node);
+        let element_slots = crate::runtime_layout::runtime_value_layout(&element).slot_count()?;
+        if element_slots != 1 || self.bit_field_layout(owner, name).is_some() {
+            if element_slots > 1 {
+                self.codegen_error.get_or_insert_with(|| {
+                    "writing an element of a nested fixed array stored in a struct field is not supported yet".to_string()
+                });
+            }
+            return None;
+        }
+        let obj = self.compile_aggregate_object(owner);
+        let obj = self.snapshot_slots(obj, 1);
+        let byte_offset = self.field_offset(owner, name);
+        let idx = self.compile_value(index);
+        let length = self.emit_length_constant(len);
+        self.emit_bounds_guard(idx, length, index.span);
+        let eight = self.alloc_reg();
+        self.chunk.emit(ri16(Opcode::MovI, eight, 8));
+        let scaled = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, scaled, idx, eight));
+        let base_offset = self.emit_u64_constant(byte_offset as u64);
+        let ptr = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Add, ptr, obj, base_offset));
+        self.chunk.emit(rrr(Opcode::Add, ptr, ptr, scaled));
+        Some(LvalueAddr::Deref {
+            ptr,
+            width: MemWidth::Qword,
+            signed: false,
+            float32: false,
+        })
+    }
+
     /// Store `src` into an lvalue address.
     fn store_lvalue(&mut self, addr: &LvalueAddr, src: u8) {
         match addr {
+            LvalueAddr::FieldBlock { obj, offset, slots } => {
+                for slot in 0..*slots {
+                    self.chunk
+                        .emit(field_store(src + slot as u8, *obj, *offset + 8 * slot as u16));
+                }
+            }
             LvalueAddr::Ident { name, .. } => {
                 self.drop_local_now(name);
                 let dst = self.reg_of(name);
@@ -10344,15 +10423,23 @@ impl<'a> FnCompiler<'a> {
                     .map(|(name, value)| {
                         self.mark_consumed_expr(value);
                         let reg = self.compile_value(value);
-                        (name, reg)
+                        let slots = self.known_value_slot_count(value).unwrap_or(1);
+                        (name, reg, slots)
                     })
                     .collect::<Vec<_>>();
                 let dst = self.alloc_reg();
                 self.chunk.emit(ri16(Opcode::New, dst, struct_size));
 
                 // Compile and store each field in declaration order using computed offsets
-                for (field_name, val) in initialized {
+                for (field_name, val, slots) in initialized {
                     self.transfer_expression_temporary(val);
+                    if slots > 1 && !self.repr_c_structs.contains(name) {
+                        let off = self.field_offset_by_name(name, &field_name);
+                        for slot in 0..slots {
+                            self.chunk.emit(field_store(val + slot as u8, dst, off + 8 * slot as u16));
+                        }
+                        continue;
+                    }
                     {
                         if let Some(layout) = self.bit_field_layout_by_name(name, &field_name) {
                             self.emit_bit_field_store(dst, val, layout);
@@ -11463,6 +11550,17 @@ impl<'a> FnCompiler<'a> {
                     return self.emit_bit_field_load(obj, layout);
                 }
                 let byte_offset = self.field_offset(object, name);
+                // A multi-slot field (a fixed array) is stored inline: slot
+                // `k` at `offset + 8k`.
+                let slots = self.known_value_slot_count(expr).unwrap_or(1);
+                if slots > 1 {
+                    let dst = self.reserve_reg_block(slots);
+                    for slot in 0..slots {
+                        self.chunk
+                            .emit(field_load(dst + slot as u8, obj, byte_offset + 8 * slot as u16));
+                    }
+                    return dst;
+                }
                 let (width, signed, float32) = self.ffi_field_access(object, name);
                 let dst = self.alloc_reg();
                 self.chunk.emit(field_load_typed(

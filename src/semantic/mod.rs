@@ -3423,7 +3423,7 @@ impl Analyzer {
                         )
                         .size
                     } else {
-                        fields.len() * 8
+                        fields.iter().map(|(_, ty)| self.plain_field_slots(ty) * 8).sum()
                     };
                     (name.clone(), size)
                 })
@@ -3448,8 +3448,11 @@ impl Analyzer {
                     } else {
                         fields
                             .iter()
-                            .enumerate()
-                            .map(|(i, (fname, _))| (fname.clone(), i * 8))
+                            .scan(0usize, |offset, (fname, ty)| {
+                                let at = *offset;
+                                *offset += self.plain_field_slots(ty) * 8;
+                                Some((fname.clone(), at))
+                            })
                             .collect()
                     };
                     (name.clone(), offsets)
@@ -4046,6 +4049,16 @@ impl Analyzer {
             }
         }
         Ok(())
+    }
+
+    /// Register slots a field of a plain (non-`repr(C)`) struct occupies:
+    /// a multi-slot value (a fixed array) is stored inline. Generic
+    /// parameters keep one slot.
+    pub(super) fn plain_field_slots(&self, ty: &TypeKind) -> usize {
+        crate::runtime_layout::runtime_value_layout(&self.resolve_type_aliases(ty))
+            .slot_count()
+            .unwrap_or(1)
+            .max(1)
     }
 
     pub(super) fn generic_params_for_function(&self, fn_name: &str) -> Vec<String> {
@@ -9992,21 +10005,27 @@ fn main() void { ret; }
     }
 
     #[test]
-    fn multi_slot_struct_fields_are_rejected() {
+    fn multi_slot_struct_fields_are_stored_inline() {
+        // A concrete plain struct stores a fixed-array field inline (offsets
+        // count slots); a generic struct instantiated with a multi-slot
+        // field type is still rejected.
         let report = analyze(
             r#"
-struct Bad { data: [i32; 3], }
-
-fn main() void { ret; }
+struct Inline { head: i64, data: [i32; 3], tail: i64, }
+struct Wrap[T] { value: T, }
+fn main() void { var w = Wrap { value: [1, 2] }; ret; }
 "#,
         );
+        assert_eq!(
+            report.struct_field_offsets.get("Inline"),
+            Some(&vec![("head".to_string(), 0), ("data".to_string(), 8), ("tail".to_string(), 32)])
+        );
+        assert_eq!(report.struct_sizes.get("Inline"), Some(&40));
         assert!(
             report.errors.iter().any(|error| {
-                error.code == "S14"
-                    && error.message.contains("data")
-                    && error.message.contains("one-slot aggregate representation")
+                error.code == "S14" && error.message.contains("one-slot aggregate representation")
             }),
-            "multi-slot struct field reached codegen: {:?}",
+            "{:?}",
             report.errors
         );
     }
