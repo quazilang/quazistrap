@@ -24,7 +24,9 @@ Fixed arrays, locals, parameters, results and contiguous containers
 ## Stages
 
 Each stage ends with `cargo test`, std `qz test`, every `scripts/check_*.py`
-(Wine and NetBSD columns where available) passing.
+(Wine and NetBSD columns where available) passing. Run the scripts and std
+with the release compiler (`cargo build --release`, `--qz
+target/release/qz`); the debug compiler is several times slower.
 
 1. Multi-slot struct fields: layout-driven field offsets and multi-slot
    field load/store/drop/move. Test vehicle: slice (`[T]`) fields, which hit
