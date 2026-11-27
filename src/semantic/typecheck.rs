@@ -309,9 +309,13 @@ impl Analyzer {
                         let resolved = self.resolve_type_aliases(&self.source_type(&param.ty));
                         let erased_format_param =
                             erased_format_variadic && matches!(resolved, TypeKind::Any);
+                        // Multi-slot elements are packed with their slot
+                        // stride; only representations without a fixed
+                        // slot count stay out.
                         if !erased_format_param
-                            && !crate::runtime_layout::runtime_value_layout(&resolved)
-                                .fits_single_slot()
+                            && crate::runtime_layout::runtime_value_layout(&resolved)
+                                .slot_count()
+                                .is_none()
                         {
                             self.push_error(
                                 param.ty.span,
@@ -2614,7 +2618,9 @@ impl Analyzer {
                                 // element in place: owning elements would be
                                 // destroyed twice (by the loop and the array).
                                 if let Some(TypeKind::Array { elem_ty, .. }) = iter_ty
-                                    && self.bc_is_move_type(&self.resolve_type_aliases(&elem_ty.node))
+                                    && crate::runtime_layout::runtime_move_kind(
+                                        &self.resolve_type_aliases(&elem_ty.node),
+                                    ) == crate::runtime_layout::MoveKind::Owned
                                 {
                                     self.push_error(
                                         expr.span,

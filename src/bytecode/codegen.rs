@@ -4773,6 +4773,36 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
+    /// Register slots of one element of a fixed array or slice type.
+    fn sequence_element_slots(&self, ty: Option<&TypeKind>) -> usize {
+        match ty {
+            Some(TypeKind::Array { elem_ty, .. } | TypeKind::Slice { elem_ty }) => {
+                let element = self.resolve_type(&elem_ty.node);
+                crate::runtime_layout::runtime_value_layout(&element)
+                    .slot_count()
+                    .unwrap_or(1)
+                    .max(1)
+            }
+            _ => 1,
+        }
+    }
+
+    /// Load element `index` of a register-block sequence whose slot 0 is at
+    /// `base_addr` (slots descend in memory) into `dst..dst + slots`.
+    fn emit_block_element_load(&mut self, base_addr: u8, index: u8, slots: usize, dst: u8) {
+        let stride = self.alloc_reg();
+        self.chunk
+            .emit(ri16(Opcode::MovI, stride, (8 * slots).min(u16::MAX as usize) as u16));
+        let offset = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Mul, offset, index, stride));
+        let address = self.alloc_reg();
+        self.chunk.emit(rrr(Opcode::Sub, address, base_addr, offset));
+        for slot in 0..slots {
+            let displacement = -((slot * 8).min(i16::MAX as usize) as i16);
+            self.chunk.emit(mem_load(address, dst + slot as u8, displacement));
+        }
+    }
+
     /// `a[i][j]...` where `a` is a fixed array of fixed arrays: the root
     /// register block, the flat slot index of the element (bounds-checked at
     /// every level) and the root's total slot count. `None` when the chain
@@ -8188,22 +8218,33 @@ impl<'a> FnCompiler<'a> {
                                         ptr + 1
                                     }
                                 };
+                                let element_slots = self.sequence_element_slots(iter_ty.as_ref());
                                 let base_addr = if static_array_len.is_some() {
                                     let r = self.alloc_reg();
-                                    let block_length = self.fixed_array_block_length(u64::from(
-                                        static_array_len.unwrap(),
-                                    ));
+                                    let block_length = self.fixed_array_block_length(
+                                        u64::from(static_array_len.unwrap())
+                                            .saturating_mul(element_slots as u64),
+                                    );
                                     self.chunk.emit(mem_lea_block(ptr, r, 0, block_length));
                                     r
                                 } else {
                                     ptr
                                 };
+                                let mut bind_value = |codegen: &mut Self, name: &String| {
+                                    if element_slots > 1 {
+                                        let block = codegen.reserve_reg_block(element_slots);
+                                        codegen.regs.insert(name.clone(), block);
+                                        block
+                                    } else {
+                                        codegen.bind(name.clone())
+                                    }
+                                };
                                 let (r_counter, r_val_opt) = match vars.as_slice() {
                                     [] => (self.alloc_reg(), None),
-                                    [v] => (self.alloc_reg(), Some(self.bind(v.clone()))),
+                                    [v] => (self.alloc_reg(), Some(bind_value(self, v))),
                                     [i, v, ..] => {
                                         let ri = self.bind(i.clone());
-                                        let rv = self.bind(v.clone());
+                                        let rv = bind_value(self, v);
                                         (ri, Some(rv))
                                     }
                                 };
@@ -8212,13 +8253,7 @@ impl<'a> FnCompiler<'a> {
                                 self.chunk.emit(rrr(Opcode::Cmp, 0, r_counter, len_reg));
                                 let jump_exit = self.chunk.emit(ri16(Opcode::Jge, 0, 0));
                                 if let Some(r_val) = r_val_opt {
-                                    let eight = self.alloc_reg();
-                                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                                    let offset = self.alloc_reg();
-                                    self.chunk.emit(rrr(Opcode::Mul, offset, r_counter, eight));
-                                    let addr = self.alloc_reg();
-                                    self.chunk.emit(rrr(Opcode::Sub, addr, base_addr, offset));
-                                    self.chunk.emit(mem_load(addr, r_val, 0));
+                                    self.emit_block_element_load(base_addr, r_counter, element_slots, r_val);
                                 }
                                 self.loop_stack
                                     .push(LoopFrame::new(self.drop_scopes.len()));
@@ -9143,6 +9178,12 @@ impl<'a> FnCompiler<'a> {
     /// Copy `values` into consecutive frame slots and return the (pointer,
     /// count) pair a variadic parameter receives.
     fn pack_variadic_block(&mut self, values: &[u8]) -> (u8, u8) {
+        self.pack_variadic_block_with(values, 1)
+    }
+
+    /// Like `pack_variadic_block` for elements of `slots` registers each
+    /// (the callee indexes the block with that stride).
+    fn pack_variadic_block_with(&mut self, values: &[u8], slots: usize) -> (u8, u8) {
         if values.is_empty() {
             let pointer = self.alloc_reg();
             self.chunk.emit(ri16(Opcode::MovI, pointer, 0));
@@ -9150,16 +9191,19 @@ impl<'a> FnCompiler<'a> {
             self.chunk.emit(ri16(Opcode::MovI, count, 0));
             return (pointer, count);
         }
-        let first_slot = self.next_reg_slot();
-        for &value in values {
-            let slot = self.alloc_reg();
-            if value != slot {
-                self.chunk.emit(rrr(Opcode::Mov, slot, value, 0));
+        let first_slot = self.reserve_reg_block(values.len() * slots);
+        for (index, &value) in values.iter().enumerate() {
+            for part in 0..slots {
+                let slot = first_slot + (index * slots + part) as u8;
+                let source = value + part as u8;
+                if source != slot {
+                    self.chunk.emit(rrr(Opcode::Mov, slot, source, 0));
+                }
             }
         }
         // Lea first_slot → pointer to its stack slot on this frame.
         let pointer = self.alloc_reg();
-        let block_length = self.qzi_u8(values.len(), "variadic argument count");
+        let block_length = self.qzi_u8(values.len() * slots, "variadic argument block");
         self.chunk
             .emit(mem_lea_block(first_slot, pointer, 0, block_length));
         let count = self.alloc_reg();
@@ -9176,7 +9220,13 @@ impl<'a> FnCompiler<'a> {
                 self.compile_value(arg)
             })
             .collect();
-        let packed = self.pack_variadic_block(&values);
+        let slots = args
+            .iter()
+            .filter_map(|arg| self.known_value_slot_count(arg))
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let packed = self.pack_variadic_block_with(&values, slots);
         // Like fixed arguments, pending owners transfer only after the
         // arguments are ready. A later argument can return early via `?`.
         for (arg, value) in args.iter().zip(values) {
@@ -11694,14 +11744,9 @@ impl<'a> FnCompiler<'a> {
                     let idx = self.compile_value(index);
                     let length = ptr + 1;
                     self.emit_bounds_guard(idx, length, index.span);
-                    let eight = self.alloc_reg();
-                    self.chunk.emit(ri16(Opcode::MovI, eight, 8));
-                    let offset = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Mul, offset, idx, eight));
-                    let addr = self.alloc_reg();
-                    self.chunk.emit(rrr(Opcode::Sub, addr, ptr, offset));
-                    let dst = self.alloc_reg();
-                    self.chunk.emit(mem_load(addr, dst, 0));
+                    let slots = self.sequence_element_slots(object_value_ty.as_ref());
+                    let dst = self.reserve_reg_block(slots);
+                    self.emit_block_element_load(ptr, idx, slots, dst);
                     return dst;
                 }
                 // Fallback: raw static-array register arithmetic (single index only).

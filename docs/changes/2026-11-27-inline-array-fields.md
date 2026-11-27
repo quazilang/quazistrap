@@ -1,4 +1,4 @@
-# Fixed arrays can be struct fields
+# Fixed arrays can be struct fields and variadic elements
 
 Date: 2026-11-27
 
@@ -21,4 +21,9 @@ Still rejected: fixed arrays of owning elements (`[String; 2]`; use
 `Array[T]`), writing an element of a nested array field, and generic structs
 instantiated with a multi-slot field type.
 
-Regression: `scripts/check_fixed_arrays.py` (fields case).
+Variadic parameters accept multi-slot elements too (`...pairs: [i64; 2]`):
+arguments are packed with the element's slot stride, and indexing
+(`pairs[i]`), `for p : pairs` and `pairs.len()` follow it. `for row : m`
+over a nested fixed array now yields whole rows (it read single slots).
+
+Regression: `scripts/check_fixed_arrays.py` (fields and variadic cases).
