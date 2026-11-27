@@ -1434,14 +1434,7 @@ impl<'a> Codegen<'a> {
                                     .borrow_mut()
                                     .insert(adapter_name.clone(), mask);
                             }
-                            let mut adapter = Chunk::with_params(adapter_name, params.len());
-                            adapter.export = Some(foreign);
-                            adapter.reg_count = params.len().max(1) as u8;
-                            for index in 0..params.len() {
-                                adapter.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
-                            }
-                            adapter.emit_named_call(&compile_name, 0, 0);
-                            adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+                            let adapter = self.export_adapter(adapter_name, foreign, &compile_name, params);
                             chunks.push(adapter);
                         }
                     }
@@ -2940,6 +2933,61 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// The C entry of an `@export` function: C arguments are one word each.
+    /// D-030: a C string (`char*`) for a fat `str` parameter is measured once;
+    /// a fat `str` result returns its pointer to C.
+    fn export_adapter(
+        &self,
+        adapter_name: String,
+        foreign: ForeignSymbol,
+        target: &str,
+        params: &[crate::parser::ast::Param],
+    ) -> Chunk {
+        let empty = HashMap::new();
+        let slots = |ty: &TypeKind| {
+            crate::runtime_layout::runtime_value_layout(&self.resolve_type_for_layout(ty, &empty))
+                .slot_count()
+                .unwrap_or(1)
+                .max(1)
+        };
+        let result_slots = self
+            .fn_value_layouts
+            .get(target)
+            .and_then(|layout| layout.result.layout.slot_count())
+            .unwrap_or(1);
+        let mut adapter = Chunk::with_params(adapter_name, params.len());
+        adapter.export = Some(foreign);
+        let mut next = params.len();
+        let mut arguments = Vec::new();
+        for (index, param) in params.iter().enumerate() {
+            arguments.push(index as u8);
+            if slots(&param.ty.node) == 2 {
+                let length = next as u8;
+                next += 1;
+                adapter.emit(rrr(Opcode::StrLen, length, index as u8, 0));
+                arguments.push(length);
+            }
+        }
+        let result_block = (result_slots > 1).then(|| {
+            let base = next as u8;
+            let pointer = base + result_slots as u8;
+            next += result_slots + 1;
+            adapter.emit(mem_lea_block(base, pointer, 0, result_slots as u8));
+            adapter.emit(rrr(Opcode::CallArg, pointer, 0, 0));
+            base
+        });
+        for argument in arguments {
+            adapter.emit(rrr(Opcode::CallArg, argument, 0, 0));
+        }
+        adapter.emit_named_call(target, 0, result_slots.max(1) as u8);
+        if let Some(base) = result_block {
+            adapter.emit(rrr(Opcode::Mov, 0, base, 0));
+        }
+        adapter.emit(rrr(Opcode::Ret, 0, 0, 0));
+        adapter.reg_count = next.max(1) as u8;
+        adapter
+    }
+
     fn compile_api_fn(
         &self,
         name: &str,
@@ -2966,13 +3014,53 @@ impl<'a> Codegen<'a> {
                 },
             });
         let sym_idx = chunk.add_constant(ConstPoolEntry::ForeignSymbol(foreign));
+        // D-030: a fat `str` crosses into C as its pointer (`char*`); a
+        // `str` result is measured once and returned through the hidden
+        // result pointer.
+        let empty = HashMap::new();
+        let slots: Vec<usize> = params
+            .iter()
+            .map(|param| {
+                crate::runtime_layout::runtime_value_layout(
+                    &self.resolve_type_for_layout(&param.ty.node, &empty),
+                )
+                .slot_count()
+                .unwrap_or(1)
+                .max(1)
+            })
+            .collect();
+        let result_slots = self
+            .fn_value_layouts
+            .get(name)
+            .and_then(|layout| layout.result.layout.slot_count())
+            .unwrap_or(1);
+        let sret = result_slots > 1;
         // Normalize fixed Quazi parameters into an explicit foreign-call argument list.
-        for index in 0..params.len() {
-            chunk.emit(rrr(Opcode::CallArg, index as u8, 0, 0));
+        let mut register = usize::from(sret);
+        for slot_count in &slots {
+            chunk.emit(rrr(Opcode::CallArg, register as u8, 0, 0));
+            register += slot_count;
         }
         let mut instr = ri16(Opcode::CallExt, 0, sym_idx);
         instr.flags = 0;
-        chunk.emit(instr);
+        if sret {
+            // The call result lands in r0, which held the result pointer.
+            let pointer = register as u8;
+            chunk.emit(rrr(Opcode::Mov, pointer, 0, 0));
+            chunk.emit(instr);
+            chunk.emit(field_store(0, pointer, 0));
+            let mut measure = ri16(Opcode::Intrinsic, 0, 10);
+            measure.flags = 1;
+            chunk.emit(measure);
+            chunk.emit(field_store(0, pointer, 8));
+            chunk.reg_count = chunk.reg_count.max(pointer + 1);
+        } else {
+            chunk.emit(instr);
+        }
+        if register != params.len() || sret {
+            chunk.param_count = register;
+            chunk.reg_count = chunk.reg_count.max(register as u8 + u8::from(sret));
+        }
         chunk.emit(rrr(Opcode::Ret, 0, 0, 0));
         chunk
     }
